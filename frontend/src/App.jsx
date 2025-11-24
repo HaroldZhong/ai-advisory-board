@@ -64,30 +64,53 @@ function App() {
     try {
       // Optimistically add user message to UI
       const userMessage = { role: 'user', content };
+
+      // Determine mode based on existing messages
+      // If we have messages, it's a follow-up chat
+      const isFollowUp = currentConversation.messages.length > 0;
+      const mode = isFollowUp ? 'chat' : 'council';
+
       setCurrentConversation((prev) => ({
         ...prev,
         messages: [...prev.messages, userMessage],
       }));
 
-      // Create a partial assistant message that will be updated progressively
-      const assistantMessage = {
-        role: 'assistant',
-        stage1: null,
-        stage2: null,
-        stage3: null,
-        metadata: null,
-        loading: {
-          stage1: false,
-          stage2: false,
-          stage3: false,
-        },
-      };
+      if (mode === 'council') {
+        // Create a partial assistant message for Council process
+        const assistantMessage = {
+          role: 'assistant',
+          stage1: null,
+          stage2: null,
+          stage3: null,
+          metadata: null,
+          loading: {
+            stage1: false,
+            stage2: false,
+            stage3: false,
+          },
+        };
 
-      // Add the partial assistant message
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, assistantMessage],
-      }));
+        // Add the partial assistant message
+        setCurrentConversation((prev) => ({
+          ...prev,
+          messages: [...prev.messages, assistantMessage],
+        }));
+      } else {
+        // Create a partial assistant message for Chat
+        const assistantMessage = {
+          role: 'assistant',
+          content: '', // Will be streamed
+          loading: {
+            chat: true
+          }
+        };
+
+        // Add the partial assistant message
+        setCurrentConversation((prev) => ({
+          ...prev,
+          messages: [...prev.messages, assistantMessage],
+        }));
+      }
 
       // Send message with streaming
       await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
@@ -150,6 +173,33 @@ function App() {
             });
             break;
 
+          case 'chat_start':
+            setCurrentConversation((prev) => {
+              const messages = [...prev.messages];
+              const lastMsg = messages[messages.length - 1];
+              lastMsg.loading.chat = true;
+              return { ...prev, messages };
+            });
+            break;
+
+          case 'chat_response':
+            setCurrentConversation((prev) => {
+              const messages = [...prev.messages];
+              const lastMsg = messages[messages.length - 1];
+              // event.data is now an object with content and optional reasoning
+              if (typeof event.data === 'string') {
+                lastMsg.content = event.data;
+              } else {
+                lastMsg.content = event.data.content;
+                if (event.data.reasoning) {
+                  lastMsg.reasoning = event.data.reasoning;
+                }
+              }
+              lastMsg.loading.chat = false;
+              return { ...prev, messages };
+            });
+            break;
+
           case 'title_complete':
             // Reload conversations to get updated title
             loadConversations();
@@ -169,7 +219,7 @@ function App() {
           default:
             console.log('Unknown event type:', eventType);
         }
-      });
+      }, mode);
     } catch (error) {
       console.error('Failed to send message:', error);
       // Remove optimistic messages on error

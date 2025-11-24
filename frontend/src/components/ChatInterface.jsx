@@ -104,6 +104,29 @@ export default function ChatInterface({
                     </div>
                   )}
                   {msg.stage3 && <Stage3 finalResponse={msg.stage3} />}
+
+                  {/* Simple Chat Content (Follow-up) */}
+                  {msg.loading?.chat && !msg.content && (
+                    <div className="stage-loading">
+                      <div className="spinner"></div>
+                      <span>Chairman is thinking...</span>
+                    </div>
+                  )}
+                  {msg.reasoning && (
+                    <details className="reasoning-details">
+                      <summary>💭 Chain of Thought (Click to expand)</summary>
+                      <div className="reasoning-content">
+                        <ReactMarkdown>{msg.reasoning}</ReactMarkdown>
+                      </div>
+                    </details>
+                  )}
+                  {msg.content && (
+                    <div className="message-content">
+                      <div className="markdown-content">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -113,33 +136,31 @@ export default function ChatInterface({
         {isLoading && (
           <div className="loading-indicator">
             <div className="spinner"></div>
-            <span>Consulting the council...</span>
+            <span>Processing...</span>
           </div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
-      {conversation.messages.length === 0 && (
-        <form className="input-form" onSubmit={handleSubmit}>
-          <textarea
-            className="message-input"
-            placeholder="Ask your question... (Shift+Enter for new line, Enter to send)"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isLoading}
-            rows={3}
-          />
-          <button
-            type="submit"
-            className="send-button"
-            disabled={!input.trim() || isLoading}
-          >
-            Send
-          </button>
-        </form>
-      )}
+      <form className="input-form" onSubmit={handleSubmit}>
+        <textarea
+          className="message-input"
+          placeholder="Ask your question... (Shift+Enter for new line, Enter to send)"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={isLoading}
+          rows={3}
+        />
+        <button
+          type="submit"
+          className="send-button"
+          disabled={!input.trim() || isLoading}
+        >
+          Send
+        </button>
+      </form>
     </div>
   );
 }

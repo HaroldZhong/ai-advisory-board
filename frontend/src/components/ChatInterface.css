@@ -161,3 +161,46 @@
   background: #ccc;
   border-color: #ccc;
 }
+
+/* Chain of Thought / Reasoning */
+.reasoning-details {
+  margin: 12px 0;
+  padding: 16px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reasoning-details summary {
+  font-weight: 600;
+  color: #555;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.reasoning-details summary:hover {
+  color: #333;
+}
+
+.reasoning-details[open] summary {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.reasoning-content {
+  color: #666;
+  font-size: 14px;
+  line-height: 1.6;
+  font-style: italic;
+}
+
+.reasoning-content p:first-child {
+  margin-top: 0;
+}
+
+.reasoning-content p:last-child {
+  margin-bottom: 0;
+}

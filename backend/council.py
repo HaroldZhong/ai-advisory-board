@@ -333,3 +333,102 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     }
 
     return stage1_results, stage2_results, stage3_result, metadata
+
+
+async def chat_with_chairman(
+    user_query: str,
+    conversation_history: List[Dict[str, Any]],
+    rag_context: str = ""
+) -> Dict[str, Any]:
+    """
+    Chat directly with the Chairman, using RAG-retrieved context.
+
+    Args:
+        user_query: The user's new question
+        conversation_history: Full history of the conversation
+        rag_context: Relevant context retrieved from ChromaDB
+
+    Returns:
+        Dict with 'content' and optional 'reasoning' (chain of thought)
+    """
+    messages = []
+    
+    # System prompt to set the persona and inject RAG context
+    system_prompt = """You are the Chairman of the AI Council. 
+You have previously presided over a council of AI models who debated and ranked answers to the user's questions.
+Your goal now is to answer follow-up questions from the user.
+
+You may optionally receive previous council deliberations for this conversation.
+Use them only if they are relevant to the user's question.
+Do not repeat old answers verbatim; instead, build on them.
+
+"""
+
+    if rag_context:
+        system_prompt += f"""Relevant previous council outputs (may be partial):
+{rag_context}
+
+Guidance on context labels:
+- If a chunk is labeled 'synthesis', treat it as a previous final decision.
+- If a chunk is labeled 'opinion', treat it as a single model's draft answer, not consensus.
+- If a chunk is labeled 'review', treat it as an evaluation of other models' answers.
+"""
+
+    system_prompt += "\nBe helpful, authoritative, and transparent about the council's reasoning."
+
+    messages.append({"role": "system", "content": system_prompt})
+
+    # Build context from history (simplified for chat)
+    for msg in conversation_history:
+        role = msg.get("role")
+        
+        if role == "user":
+            messages.append({"role": "user", "content": msg.get("content", "")})
+            
+        elif role == "assistant":
+            # Check if this was a full council turn
+            if "stage3" in msg:
+                # Only include the final response in the immediate history
+                # Details are in RAG if needed
+                final_response = msg["stage3"].get("response", "")
+                messages.append({"role": "assistant", "content": final_response})
+                
+            elif "content" in msg:
+                # Standard chat message
+                messages.append({"role": "assistant", "content": msg["content"]})
+
+    # Add the new user query
+    messages.append({"role": "user", "content": user_query})
+
+    # Query the chairman
+    print(f"[CHAIRMAN] Calling {CHAIRMAN_MODEL} with {len(messages)} messages...")
+    import time
+    start_time = time.time()
+    response = await query_model(CHAIRMAN_MODEL, messages)
+    elapsed = time.time() - start_time
+    print(f"[CHAIRMAN] Response received in {elapsed:.2f}s")
+    
+    if response is None:
+        print(f"[CHAIRMAN] ERROR: query_model returned None")
+        return {
+            "content": "I apologize, but I am unable to respond at this moment."
+        }
+        
+    content = response.get("content", "")
+    reasoning = response.get("reasoning_details")
+    
+    result = {"content": content}
+    
+    if reasoning:
+        print(f"[CHAIRMAN] Model provided reasoning with {len(reasoning)} steps")
+        # Extract text reasoning if available
+        reasoning_text = None
+        for step in reasoning:
+            if step.get("type") == "reasoning.text":
+                reasoning_text = step.get("text", "")
+                break
+        
+        if reasoning_text:
+            result["reasoning"] = reasoning_text
+    
+    return result

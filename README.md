@@ -1,24 +1,59 @@
-# LLM Council
+# LLM Council Enhanced
+
+> **Forked from [karpathy/llm-council](https://github.com/karpathy/llm-council)**
+> 
+> This is an enhanced version with multi-turn chat, RAG-powered context retrieval, chain of thought display, and additional AI models.
+
+[![Fork of karpathy/llm-council](https://img.shields.io/badge/fork-karpathy%2Fllm--council-blue)](https://github.com/karpathy/llm-council)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 ![llmcouncil](header.jpg)
 
-The idea of this repo is that instead of asking a question to your favorite LLM provider (e.g. OpenAI GPT 5.1, Google Gemini 3.0 Pro, Anthropic Claude Sonnet 4.5, xAI Grok 4, eg.c), you can group them into your "LLM Council". This repo is a simple, local web app that essentially looks like ChatGPT except it uses OpenRouter to send your query to multiple LLMs, it then asks them to review and rank each other's work, and finally a Chairman LLM produces the final response.
+## ✨ What's New in This Fork
 
-In a bit more detail, here is what happens when you submit a query:
+| Feature | Original | Enhanced |
+|---------|----------|----------|
+| Multi-turn chat | ❌ | ✅ |
+| RAG context retrieval | ❌ | ✅ (ChromaDB) |
+| Chain of thought display | ❌ | ✅ |
+| Models supported | 4 | 6 (added Kimi-K2, DeepSeek-v3.2) |
+| Follow-up questions | ❌ | ✅ |
+| Context-aware responses | ❌ | ✅ (Smart RAG) |
 
-1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected. The individual responses are shown in a "tab view", so that the user can inspect them all one by one.
-2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs. Under the hood, the LLM identities are anonymized so that the LLM can't play favorites when judging their outputs. The LLM is asked to rank them in accuracy and insight.
-3. **Stage 3: Final response**. The designated Chairman of the LLM Council takes all of the model's responses and compiles them into a single final answer that is presented to the user.
+### Key Enhancements
 
-## Vibe Code Alert
+- **💬 Multi-turn Chat Mode**: Ask follow-up questions to the Chairman without re-running the full Council
+- **🧠 RAG System**: ChromaDB-powered context retrieval for efficient follow-ups (no extra LLM calls!)
+- **💭 Chain of Thought Display**: See the model's reasoning process (collapsible UI)
+- **🤖 Additional Models**: Support for `moonshotai/kimi-k2-thinking` and `deepseek/deepseek-v3.2-exp`
+- **⚡ Smart Context Management**: Similarity-based retrieval (threshold: 0.2, max tokens: 1000)
+- **📊 Structured Metadata**: Council sessions indexed with turn, stage, and model information
 
-This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
+## Original Project
+
+This project is based on Andrej Karpathy's [llm-council](https://github.com/karpathy/llm-council), which implements a fascinating multi-LLM deliberation system. The original concept of having LLMs review and rank each other's work before synthesis is entirely from the original project.
+
+### How It Works (Original Concept)
+
+1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected.
+2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs (anonymized) and asked to rank them.
+3. **Stage 3: Final response**. The designated Chairman takes all responses and compiles them into a single final answer.
+
+### What This Fork Adds
+
+After Stage 3, you can now:
+- Ask follow-up questions in "Chat Mode"
+- The Chairman retrieves only relevant context via RAG (not the full history)
+- See the model's reasoning process if the model provides it
+- Continue the conversation naturally without re-running the Council
+
+---
 
 ## Setup
 
 ### 1. Install Dependencies
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
+The project uses [uv](https://docs.astral.sh/uv/) for Python package management.
 
 **Backend:**
 ```bash
@@ -34,13 +69,13 @@ cd ..
 
 ### 2. Configure API Key
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root (copy from `.env.example`):
 
 ```bash
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
+Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase credits or enable automatic top-up.
 
 ### 3. Configure Models (Optional)
 
@@ -52,15 +87,30 @@ COUNCIL_MODELS = [
     "google/gemini-3-pro-preview",
     "anthropic/claude-sonnet-4.5",
     "x-ai/grok-4",
+    "moonshotai/kimi-k2-thinking",  # New!
+    "deepseek/deepseek-v3.2-exp",   # New!
 ]
 
 CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+```
+
+### 4. (Optional) Adjust RAG Settings
+
+Edit `backend/rag.py` to tune retrieval:
+
+```python
+RAG_SIM_THRESHOLD = 0.2  # Similarity threshold for context retrieval
+RAG_MAX_TOKENS = 1000    # Maximum tokens to include from RAG
 ```
 
 ## Running the Application
 
 **Option 1: Use the start script**
 ```bash
+# Windows
+./start.ps1
+
+# Linux/Mac
 ./start.sh
 ```
 
@@ -77,11 +127,52 @@ cd frontend
 npm run dev
 ```
 
-Then open http://localhost:5173 in your browser.
+Then open http://localhost:5173 (or the port shown) in your browser.
+
+## Usage
+
+1. **Start a conversation** by clicking "New Conversation"
+2. **Ask a question** - the full Council will deliberate (Stages 1-3)
+3. **Ask follow-up questions** - the Chairman will respond using RAG context
+4. **Expand reasoning** - click "💭 Chain of Thought" to see the model's thinking
 
 ## Tech Stack
 
 - **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
 - **Frontend:** React + Vite, react-markdown for rendering
-- **Storage:** JSON files in `data/conversations/`
+- **RAG:** ChromaDB with `all-MiniLM-L6-v2` embeddings
+- **Storage:** JSON files in `data/conversations/`, ChromaDB in `data/chroma_db/`
 - **Package Management:** uv for Python, npm for JavaScript
+
+## Architecture
+
+### RAG System
+
+The RAG system indexes Council deliberations with structured metadata:
+
+- **Indexing**: After Stage 3, all responses are embedded with the original question prepended
+- **Retrieval**: Follow-up questions query ChromaDB with cosine similarity
+- **Gating**: Only chunks above the similarity threshold are retrieved
+- **Formatting**: Context is formatted with `[Turn | Stage | Model]` headers for LLM consumption
+
+See `backend/rag.py` for implementation details.
+
+## Contributing
+
+This is a fork for personal enhancement. If you'd like to contribute:
+- For core functionality changes, consider contributing to the [original repo](https://github.com/karpathy/llm-council)
+- For enhancements specific to RAG/chat features, feel free to open issues or PRs here
+
+## Credits
+
+**Original Author:** [Andrej Karpathy](https://github.com/karpathy) - [llm-council](https://github.com/karpathy/llm-council)
+
+**Enhancements:** Multi-turn chat, RAG integration, chain of thought display
+
+See [CREDITS.md](CREDITS.md) for detailed attribution.
+
+## License
+
+MIT License - See [LICENSE](LICENSE) for details.
+
+This fork maintains the spirit of the original "vibe code" project while adding production-ready features for extended conversations.

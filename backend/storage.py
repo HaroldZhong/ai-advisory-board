@@ -156,6 +156,26 @@ def add_assistant_message(
     save_conversation(conversation)
 
 
+def add_chat_message(conversation_id: str, content: str):
+    """
+    Add a simple chat message (from assistant) to a conversation.
+
+    Args:
+        conversation_id: Conversation identifier
+        content: The assistant's response text
+    """
+    conversation = get_conversation(conversation_id)
+    if conversation is None:
+        raise ValueError(f"Conversation {conversation_id} not found")
+
+    conversation["messages"].append({
+        "role": "assistant",
+        "content": content
+    })
+
+    save_conversation(conversation)
+
+
 def update_conversation_title(conversation_id: str, title: str):
     """
     Update the title of a conversation.
