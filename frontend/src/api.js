@@ -19,13 +19,17 @@ export const api = {
   /**
    * Create a new conversation.
    */
-  async createConversation() {
+  async createConversation(topic, councilMembers = null, chairmanModel = null) {
     const response = await fetch(`${API_BASE}/api/conversations`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        topic,
+        council_members: councilMembers,
+        chairman_model: chairmanModel
+      }),
     });
     if (!response.ok) {
       throw new Error('Failed to create conversation');
@@ -112,5 +116,47 @@ export const api = {
         }
       }
     }
+  },
+
+  /**
+   * Upload a file and get extracted text.
+   * @param {File} file - The file to upload
+   * @returns {Promise<{text: string, filename: string, truncated: boolean}>}
+   */
+  async uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE}/api/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to upload file');
+    }
+
+    return response.json();
+  },
+
+  // Get available models
+  async getModels() {
+    const response = await fetch(`${API_BASE}/api/models`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch models');
+    }
+    return response.json();
+  },
+
+  /**
+   * Get analytics data.
+   */
+  async getAnalytics() {
+    const response = await fetch(`${API_BASE}/api/analytics`);
+    if (!response.ok) {
+      throw new Error('Failed to fetch analytics');
+    }
+    return response.json();
   },
 };

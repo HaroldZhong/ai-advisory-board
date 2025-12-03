@@ -3,22 +3,25 @@
 from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .logger import logger
 
 
-async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(user_query: str, models: List[str] = None) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
     Args:
         user_query: The user's question
+        models: Optional list of models to query (defaults to COUNCIL_MODELS)
 
     Returns:
         List of dicts with 'model' and 'response' keys
     """
+    target_models = models or COUNCIL_MODELS
     messages = [{"role": "user", "content": user_query}]
 
     # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(target_models, messages)
 
     # Format results
     stage1_results = []
@@ -26,7 +29,8 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
         if response is not None:  # Only include successful responses
             stage1_results.append({
                 "model": model,
-                "response": response.get('content', '')
+                "response": response.get('content', ''),
+                "usage": response.get('usage', {})
             })
 
     return stage1_results
@@ -34,7 +38,8 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
 
 async def stage2_collect_rankings(
     user_query: str,
-    stage1_results: List[Dict[str, Any]]
+    stage1_results: List[Dict[str, Any]],
+    models: List[str] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -42,10 +47,13 @@ async def stage2_collect_rankings(
     Args:
         user_query: The original user query
         stage1_results: Results from Stage 1
+        models: Optional list of models to query (defaults to COUNCIL_MODELS)
 
     Returns:
         Tuple of (rankings list, label_to_model mapping)
     """
+    target_models = models or COUNCIL_MODELS
+    
     # Create anonymized labels for responses (Response A, Response B, etc.)
     labels = [chr(65 + i) for i in range(len(stage1_results))]  # A, B, C, ...
 
@@ -95,7 +103,7 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(target_models, messages)
 
     # Format results
     stage2_results = []
@@ -106,7 +114,8 @@ Now provide your evaluation and ranking:"""
             stage2_results.append({
                 "model": model,
                 "ranking": full_text,
-                "parsed_ranking": parsed
+                "parsed_ranking": parsed,
+                "usage": response.get('usage', {})
             })
 
     return stage2_results, label_to_model
@@ -115,24 +124,38 @@ Now provide your evaluation and ranking:"""
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    label_to_model: Dict[str, str],
+    quality_metrics: Dict[str, Dict[str, Any]],
+    chairman_model: str = None
 ) -> Dict[str, Any]:
     """
-    Stage 3: Chairman synthesizes final response.
-
+    Stage 3: Chairman synthesizes final answer with confidence scoring.
+    
     Args:
-        user_query: The original user query
-        stage1_results: Individual model responses from Stage 1
-        stage2_results: Rankings from Stage 2
-
+        user_query: Original user question
+        stage1_results: Individual model responses
+        stage2_results: Model rankings
+        label_to_model: Mapping from anonymous labels to model names
+        quality_metrics: Per-model quality metrics from Stage 2 rankings
+        chairman_model: Optional chairman model ID
+        
     Returns:
-        Dict with 'model' and 'response' keys
+        Dict with 'response', 'model', 'usage', 'confidence', 'avg_consensus', 'quality_metrics'
     """
+    target_chairman = chairman_model or CHAIRMAN_MODEL
+    
+    # Compute overall confidence
+    confidence_label, avg_consensus = compute_overall_confidence(quality_metrics)
+    consensus_details = format_consensus_details(quality_metrics)
+    
     # Build comprehensive context for chairman
-    stage1_text = "\n\n".join([
-        f"Model: {result['model']}\nResponse: {result['response']}"
-        for result in stage1_results
-    ])
+    # Use anonymous labels to match the rankings
+    stage1_text_parts = []
+    for i, result in enumerate(stage1_results):
+        label = chr(65 + i)  # A, B, C...
+        stage1_text_parts.append(f"Response {label}:\n{result['response']}")
+    stage1_text = "\n\n".join(stage1_text_parts)
 
     stage2_text = "\n\n".join([
         f"Model: {result['model']}\nRanking: {result['ranking']}"
@@ -149,28 +172,52 @@ STAGE 1 - Individual Responses:
 STAGE 2 - Peer Rankings:
 {stage2_text}
 
+Consensus summary:
+Overall council confidence: {confidence_label}
+{consensus_details}
+
 Your task as Chairman is to synthesize all of this information into a single, comprehensive, accurate answer to the user's original question. Consider:
 - The individual responses and their insights
 - The peer rankings and what they reveal about response quality
 - Any patterns of agreement or disagreement
+
+Guidelines:
+- If confidence is HIGH, you can present a unified answer.
+- If confidence is MEDIUM or LOW, clearly mention that the council had mixed views and explain the main perspectives.
+- Stick to what the answers actually said - do not invent new facts.
+
+Note: The system will display "Confidence: {confidence_label}" in the UI automatically.
+You may mention the confidence level in your answer, but it's not required.
 
 Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
 
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    logger.info(f"[STAGE3] Requesting synthesis from {target_chairman}...")
+    response = await query_model(target_chairman, messages)
 
     if response is None:
+        logger.error(f"[STAGE3] ERROR: query_model returned None")
         # Fallback if chairman fails
         return {
-            "model": CHAIRMAN_MODEL,
-            "response": "Error: Unable to generate final synthesis."
+            "model": target_chairman,
+            "response": "Error: Unable to generate final synthesis.",
+            "usage": {},
+            "confidence": "UNKNOWN",
+            "avg_consensus": 0.0,
+            "quality_metrics": quality_metrics,
         }
 
+    logger.info(f"[STAGE3] Synthesis complete, confidence={confidence_label}")
+
     return {
-        "model": CHAIRMAN_MODEL,
-        "response": response.get('content', '')
+        "model": target_chairman,
+        "response": response.get('content', ''),
+        "usage": response.get('usage', {}),
+        "confidence": confidence_label,
+        "avg_consensus": avg_consensus,
+        "quality_metrics": quality_metrics,
     }
 
 
@@ -196,8 +243,13 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
             # This pattern looks for: number, period, optional space, "Response X"
             numbered_matches = re.findall(r'\d+\.\s*Response [A-Z]', ranking_section)
             if numbered_matches:
-                # Extract just the "Response X" part
-                return [re.search(r'Response [A-Z]', m).group() for m in numbered_matches]
+                # Safely extract Response labels
+                parsed = []
+                for m in numbered_matches:
+                    match = re.search(r'Response [A-Z]', m)
+                    if match:
+                        parsed.append(match.group())
+                return parsed
 
             # Fallback: Extract all "Response X" patterns in order
             matches = re.findall(r'Response [A-Z]', ranking_section)
@@ -206,6 +258,158 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
     # Fallback: try to find any "Response X" patterns in order
     matches = re.findall(r'Response [A-Z]', ranking_text)
     return matches
+
+
+async def extract_topics(text: str, max_topics: int = 3) -> List[str]:
+    """
+    Extract main topics using a fast LLM.
+    Text is truncated for cost and latency.
+    
+    Args:
+        text: Combined user question + response text
+        max_topics: Maximum number of topics to extract
+        
+    Returns:
+        List of topic strings (1-3 words each)
+    """
+    if not text:
+        return []
+
+    prompt = f"""Extract {max_topics} main topics or keywords from the text below.
+Return only a comma separated list, no explanations.
+Each topic should be 1 to 3 words.
+
+Text:
+{text[:800]}
+
+Topics:"""
+
+    try:
+        response = await query_model(
+            "google/gemini-2.5-flash",
+            [{"role": "user", "content": prompt}],
+            timeout=10.0,
+        )
+    except Exception as e:
+        logger.exception("[PHASE1] extract_topics failed: %s", e)
+        return []
+
+    if response is None:
+        return []
+
+    topics_raw = (response.get("content") or "").strip()
+    topics = [t.strip() for t in topics_raw.split(",") if t.strip()]
+
+    topics = topics[:max_topics]
+    logger.info("[PHASE1] Topics extracted: %s", topics)
+    return topics
+
+
+def calculate_quality_metrics(
+    stage2_results: List[Dict[str, Any]],
+    label_to_model: Dict[str, str],
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute avg_rank and consensus_score per model from Stage 2 rankings.
+    
+    Args:
+        stage2_results: Rankings from each model in Stage 2
+        label_to_model: Mapping from anonymous labels to model names
+        
+    Returns:
+        Dict mapping model name to quality metrics:
+        - avg_rank: lower is better (1 is best)
+        - consensus_score: 0-1, higher means more agreement
+        - num_rankings: number of times ranked
+    """
+    from collections import defaultdict
+    
+    positions_by_model = defaultdict(list)
+
+    for ranking in stage2_results:
+        parsed = ranking.get("parsed_ranking") or []
+        for position, label in enumerate(parsed, start=1):
+            model = label_to_model.get(label)
+            if model:
+                positions_by_model[model].append(position)
+
+    quality_metrics: Dict[str, Dict[str, float]] = {}
+
+    for model, positions in positions_by_model.items():
+        if not positions:
+            continue
+
+        avg_rank = sum(positions) / len(positions)
+
+        variance = sum((p - avg_rank) ** 2 for p in positions) / len(positions)
+        consensus_score = 1.0 / (1.0 + variance)
+
+        quality_metrics[model] = {
+            "avg_rank": round(avg_rank, 2),
+            "consensus_score": round(consensus_score, 2),
+            "num_rankings": len(positions),
+        }
+
+    logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
+    return quality_metrics
+
+
+def compute_overall_confidence(
+    quality_metrics: Dict[str, Dict[str, Any]]
+) -> tuple[str, float]:
+    """
+    Compute overall consensus based on per model consensus_score.
+
+    Returns (label, avg_consensus) where:
+      - label in {"HIGH", "MEDIUM", "LOW", "UNKNOWN"}
+      - avg_consensus is 0 to 1
+    """
+    if not quality_metrics:
+        logger.info("[PHASE1] No quality_metrics - confidence=UNKNOWN")
+        return "UNKNOWN", 0.0
+
+    scores = [m.get("consensus_score", 0.0) for m in quality_metrics.values()]
+    if not scores:
+        logger.info("[PHASE1] Empty scores in quality_metrics - confidence=UNKNOWN")
+        return "UNKNOWN", 0.0
+
+    avg_consensus = sum(scores) / len(scores)
+
+    if avg_consensus > 0.75:
+        label = "HIGH"
+    elif avg_consensus > 0.5:
+        label = "MEDIUM"
+    else:
+        label = "LOW"
+
+    logger.info(
+        "[PHASE1] Confidence computed: label=%s avg_consensus=%.3f",
+        label,
+        avg_consensus,
+    )
+    return label, avg_consensus
+
+
+def format_consensus_details(
+    quality_metrics: Dict[str, Dict[str, Any]]
+) -> str:
+    """
+    Format quality metrics into human-readable consensus details.
+    """
+    if not quality_metrics:
+        return ""
+
+    lines = []
+    for model, metrics in sorted(
+        quality_metrics.items(),
+        key=lambda item: item[1].get("avg_rank", 999),
+    ):
+        lines.append(
+            f"- {model}: avg rank {metrics.get('avg_rank')}, "
+            f"consensus {metrics.get('consensus_score')}"
+        )
+
+    return "\n".join(lines)
 
 
 def calculate_aggregate_rankings(
@@ -293,18 +497,24 @@ Title:"""
     return title
 
 
-async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
+async def run_full_council(
+    user_query: str, 
+    council_models: List[str] = None, 
+    chairman_model: str = None
+) -> Tuple[List, List, Dict, Dict]:
     """
     Run the complete 3-stage council process.
 
     Args:
         user_query: The user's question
+        council_models: Optional list of council models (defaults to COUNCIL_MODELS)
+        chairman_model: Optional chairman model (defaults to CHAIRMAN_MODEL)
 
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
     # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query)
+    stage1_results = await stage1_collect_responses(user_query, council_models)
 
     # If no models responded successfully, return error
     if not stage1_results:
@@ -314,16 +524,22 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
         }, {}
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
+    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results, council_models)
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+    
+    # Calculate quality metrics for confidence scoring
+    quality_metrics = calculate_quality_metrics(stage2_results, label_to_model)
 
-    # Stage 3: Synthesize final answer
+    # Stage 3: Synthesize final answer with confidence
     stage3_result = await stage3_synthesize_final(
         user_query,
         stage1_results,
-        stage2_results
+        stage2_results,
+        label_to_model,
+        quality_metrics,
+        chairman_model
     )
 
     # Prepare metadata
@@ -335,10 +551,105 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     return stage1_results, stage2_results, stage3_result, metadata
 
 
+async def rewrite_query(query: str, conversation_history: List[Dict[str, str]]) -> str:
+    """
+    Rewrite a query to be self-contained by resolving coreferences.
+    Uses conversation history to expand pronouns and references.
+    
+    Args:
+        query: The user's query (may contain pronouns like "it", "its", "that")
+        conversation_history: List of previous messages
+        
+    Returns:
+        Rewritten self-contained query, or original if rewriting fails
+    """
+    from .config import ENABLE_QUERY_REWRITE
+    
+    if not ENABLE_QUERY_REWRITE:
+        return query
+    
+    # Heuristic: skip if query looks self-contained (>10 words)
+    word_count = len(query.split())
+    if word_count > 10:
+        logger.info("[PHASE1] Query looks self-contained, skipping rewrite")
+        return query
+    
+    # Skip if no context available
+    if not conversation_history or len(conversation_history) < 2:
+        logger.info("[PHASE1] No context available, skipping rewrite")
+        return query
+    
+    # Build context from last 2 turns
+    context_parts = []
+    for msg in conversation_history[-4:]:  # Last 2 turns (user + assistant)
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        
+        # For assistant messages, use stage3 response if available
+        if role == "assistant":
+            stage3 = msg.get("stage3", {})
+            content = stage3.get("response", content)
+        
+        if content:
+            context_parts.append(f"{role}: {content[:200]}")  # Truncate for cost
+    
+    context = "\n".join(context_parts)
+    
+    prompt = f"""Rewrite the user's question to be self-contained by replacing pronouns (it, its, that, they, etc.) with the specific topics from the conversation.
+
+Conversation context:
+{context}
+
+User's question: {query}
+
+Rewritten question (ONE sentence, no explanations):"""
+    
+    try:
+        response = await query_model(
+            "google/gemini-2.5-flash",
+            [{"role": "user", "content": prompt}],
+            timeout=10.0,
+        )
+        
+        if response and response.get("content"):
+            rewritten = response["content"].strip()
+            
+            # Extract just the first meaningful line if multiple options given
+            if "\n" in rewritten or "option" in rewritten.lower():
+                lines = [line.strip() for line in rewritten.split("\n") if line.strip()]
+                # Find first line that looks like a question
+                for line in lines:
+                    # Skip meta-commentary
+                    if any(skip in line.lower() for skip in ["option", "rewriting", "here are", "could be"]):
+                        continue
+                    if len(line) > 10:  # Reasonable length
+                        rewritten = line
+                        break
+                else:
+                    rewritten = lines[0] if lines else rewritten
+            
+            # Remove common prefixes
+            for prefix in ["> ", "* ", "- ", "• ", "**"]:
+                if rewritten.startswith(prefix):
+                    rewritten = rewritten[len(prefix):].lstrip()
+            
+            logger.info("[PHASE1] Query rewrite: original=%r", query)
+            logger.info("[PHASE1] Query rewrite: rewritten=%r", rewritten)
+            return rewritten
+        else:
+            logger.info("[PHASE1] Query rewrite failed, using original")
+            return query
+            
+    except Exception as e:
+        logger.error("[PHASE1] Query rewrite error: %s", e)
+        return query
+
+
 async def chat_with_chairman(
     user_query: str,
     conversation_history: List[Dict[str, Any]],
-    rag_context: str = ""
+    rag_context: str = "",
+    chairman_model: str = None
 ) -> Dict[str, Any]:
     """
     Chat directly with the Chairman, using RAG-retrieved context.
@@ -347,10 +658,12 @@ async def chat_with_chairman(
         user_query: The user's new question
         conversation_history: Full history of the conversation
         rag_context: Relevant context retrieved from ChromaDB
+        chairman_model: Optional chairman model ID (defaults to CHAIRMAN_MODEL)
 
     Returns:
         Dict with 'content' and optional 'reasoning' (chain of thought)
     """
+    target_chairman = chairman_model or CHAIRMAN_MODEL
     messages = []
     
     # System prompt to set the persona and inject RAG context
@@ -401,34 +714,43 @@ Guidance on context labels:
     messages.append({"role": "user", "content": user_query})
 
     # Query the chairman
-    print(f"[CHAIRMAN] Calling {CHAIRMAN_MODEL} with {len(messages)} messages...")
+    logger.info(f"[CHAIRMAN] Calling {target_chairman} with {len(messages)} messages...")
     import time
     start_time = time.time()
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(target_chairman, messages)
     elapsed = time.time() - start_time
-    print(f"[CHAIRMAN] Response received in {elapsed:.2f}s")
+    logger.info(f"[CHAIRMAN] Response received in {elapsed:.2f}s")
     
     if response is None:
-        print(f"[CHAIRMAN] ERROR: query_model returned None")
+        logger.error(f"[CHAIRMAN] ERROR: query_model returned None")
         return {
             "content": "I apologize, but I am unable to respond at this moment."
         }
         
     content = response.get("content", "")
     reasoning = response.get("reasoning_details")
+    usage = response.get("usage", {})
     
-    result = {"content": content}
+    result = {"content": content, "usage": usage}
     
     if reasoning:
-        print(f"[CHAIRMAN] Model provided reasoning with {len(reasoning)} steps")
-        # Extract text reasoning if available
-        reasoning_text = None
-        for step in reasoning:
-            if step.get("type") == "reasoning.text":
-                reasoning_text = step.get("text", "")
-                break
-        
-        if reasoning_text:
-            result["reasoning"] = reasoning_text
+        # Handle both string (from new extract_reasoning) and list (legacy API format)
+        if isinstance(reasoning, str):
+            # New format: reasoning is already extracted as a string
+            logger.info(f"[CHAIRMAN] Model provided reasoning ({len(reasoning)} chars)")
+            result["reasoning"] = reasoning
+        elif isinstance(reasoning, list):
+            # Legacy format: reasoning_details is a list of steps
+            logger.info(f"[CHAIRMAN] Model provided reasoning with {len(reasoning)} steps")
+            # Extract text reasoning if available
+            reasoning_text = None
+            for step in reasoning:
+                if step.get("type") == "reasoning.text":
+                    reasoning_text = step.get("text", "")
+                    break
+            
+            if reasoning_text:
+                result["reasoning"] = reasoning_text
     
     return result
+

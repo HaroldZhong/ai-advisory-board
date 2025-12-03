@@ -3,31 +3,55 @@ from chromadb.utils import embedding_functions
 from typing import List, Dict, Any, Optional
 import os
 
+from .hybrid_retrieval import HybridRetriever
+from .logger import logger
+
 # RAG Configuration
-RAG_SIM_THRESHOLD = 0.2  # Lowered from 0.3 for better retrieval
-RAG_MAX_TOKENS = 1000
+RAG_SIM_THRESHOLD = 0.15  # Lowered threshold for better recall (was 0.3)
+RAG_MAX_TOKENS = 3000    # Increased context window
 
 class CouncilRAG:
     def __init__(self, persist_path: str = "./data/chroma_db"):
         """
         Initialize the Council RAG system with ChromaDB.
         """
-        # Ensure the directory exists
-        os.makedirs(persist_path, exist_ok=True)
-        
-        self.client = chromadb.PersistentClient(path=persist_path)
-        
-        # Use a lightweight, local embedding model
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
-        
-        # Create or get the collection with cosine distance
-        self.collection = self.client.get_or_create_collection(
-            name="council_context",
-            embedding_function=self.embedding_fn,
-            metadata={"hnsw:space": "cosine"}
-        )
+        try:
+            # Ensure the directory exists
+            os.makedirs(persist_path, exist_ok=True)
+            
+            self.client = chromadb.PersistentClient(path=persist_path)
+            
+            # Use a lightweight, local embedding model
+            self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name="all-MiniLM-L6-v2"
+            )
+            
+            # Create or get the collection with cosine distance
+            self.collection = self.client.get_or_create_collection(
+                name="council_context",
+                embedding_function=self.embedding_fn,
+                metadata={"hnsw:space": "cosine"}
+            )
+            
+            # Initialize hybrid retriever
+            self.hybrid_retriever = HybridRetriever(self.collection)
+            
+            self.enabled = True
+            logger.info("[RAG] Initialized successfully with hybrid retrieval")
+        except Exception as e:
+            logger.exception("[RAG] WARNING: Failed to initialize: %s", e)
+            logger.info("[RAG] RAG features will be disabled, but application will continue to work")
+            self.enabled = False
+            self.collection = None
+            self.hybrid_retriever = None
+    
+    def refresh_hybrid_index(self) -> None:
+        """
+        Convenience wrapper for refreshing BM25 index.
+        Call this after backfilling or after a batch of new sessions.
+        """
+        if self.enabled and self.hybrid_retriever:
+            self.hybrid_retriever.refresh_index()
 
     def index_session(
         self, 
@@ -36,12 +60,32 @@ class CouncilRAG:
         user_question: str,
         stage1_results: List[Dict[str, Any]],
         stage2_results: List[Dict[str, Any]],
-        stage3_result: Dict[str, Any]
+        stage3_result: Dict[str, Any],
+        topics: List[str],
+        quality_metrics: Dict[str, Dict[str, float]],
     ):
         """
-        Index a full council session (Stage 1, 2, 3) into ChromaDB.
-        Uses upsert behavior with deterministic IDs.
+        Index one council session with enhanced metadata.
+        
+        Args:
+            conversation_id: Unique conversation identifier
+            turn_index: Turn number in conversation
+            user_question: Original user question
+            stage1_results: Individual model responses
+            stage2_results: Model rankings (unused in indexing, but kept for API consistency)
+            stage3_result: Final synthesis
+            topics: List of extracted topics (required)
+            quality_metrics: Per-model quality metrics (required)
         """
+        # Early return if RAG is disabled
+        if not self.enabled:
+            return
+        
+        from datetime import datetime
+        import json
+        
+        timestamp = datetime.utcnow().isoformat()
+        
         ids = []
         documents = []
         metadatas = []
@@ -50,52 +94,56 @@ class CouncilRAG:
         def format_text(text: str) -> str:
             return f"Q: {user_question}\n\nA: {text}"
 
+        topics_str = json.dumps(topics or [])
+
         # Stage 1: Individual Opinions
-        for res in stage1_results:
+        for idx, res in enumerate(stage1_results):
             model = res['model']
             text = res['response']
+            quality = quality_metrics.get(model, {})
             
-            doc_id = f"{conversation_id}:{turn_index}:opinion:{model}"
+            doc_id = f"{conversation_id}:turn:{turn_index}:opinion:{idx}:{model}"
             ids.append(doc_id)
             documents.append(format_text(text))
             metadatas.append({
                 "conversation_id": conversation_id,
                 "turn_index": turn_index,
                 "stage": "opinion",
-                "model": model
-            })
-
-        # Stage 2: Peer Reviews
-        for res in stage2_results:
-            model = res['model']
-            text = res['ranking']  # This contains the critique/ranking text
-            
-            doc_id = f"{conversation_id}:{turn_index}:review:{model}"
-            ids.append(doc_id)
-            documents.append(format_text(text))
-            metadatas.append({
-                "conversation_id": conversation_id,
-                "turn_index": turn_index,
-                "stage": "review",
-                "model": model
+                "model": model,
+                "topics": topics_str,
+                "avg_rank": quality.get("avg_rank", 999.0),
+                "consensus_score": quality.get("consensus_score", 0.0),
+                "timestamp": timestamp,
             })
 
         # Stage 3: Final Synthesis
+        stage3_model = stage3_result.get('model', 'unknown')
         final_text = stage3_result.get('response', '')
+        stage3_quality = quality_metrics.get(stage3_model, {})
+        
         if final_text:
-            doc_id = f"{conversation_id}:{turn_index}:synthesis:chairman"
+            doc_id = f"{conversation_id}:turn:{turn_index}:synthesis:{stage3_model}"
             ids.append(doc_id)
             documents.append(format_text(final_text))
             metadatas.append({
                 "conversation_id": conversation_id,
                 "turn_index": turn_index,
                 "stage": "synthesis",
-                "model": "chairman"
+                "model": stage3_model,
+                "topics": topics_str,
+                "avg_rank": stage3_quality.get("avg_rank", 999.0),
+                "consensus_score": stage3_quality.get("consensus_score", 0.0),
+                "timestamp": timestamp,
             })
 
         # Upsert to ChromaDB
         if ids:
-            print(f"[RAG] Indexing {len(ids)} chunks for conversation {conversation_id}, turn {turn_index}")
+            logger.info(
+                "[PHASE1] Indexing session conv=%s turn=%d docs=%d",
+                conversation_id,
+                turn_index,
+                len(ids),
+            )
             self.collection.upsert(
                 ids=ids,
                 documents=documents,
@@ -104,66 +152,84 @@ class CouncilRAG:
 
     def retrieve(self, query: str, conversation_id: str) -> str:
         """
-        Retrieve relevant context for a query within a specific conversation.
-        Returns a formatted string of context chunks.
+        Retrieve using hybrid BM25 plus dense approach.
+        Returns formatted context string for Chairman.
         """
-        # Query ChromaDB
-        print(f"[RAG] Querying for conversation_id: {conversation_id}")
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=5,  # Fetch a few candidates
-            where={"conversation_id": conversation_id}
-        )
-
-        print(f"[RAG] ChromaDB returned: {len(results['ids'][0]) if results['ids'] and results['ids'][0] else 0} results")
-        
-        if not results['ids'] or not results['ids'][0]:
-            print(f"[RAG] No documents found in ChromaDB for conversation {conversation_id}")
+        # Early return if RAG is disabled
+        if not self.enabled:
+            logger.info("[RAG] RAG disabled, returning empty context")
             return ""
-
-        # Process results
-        ids = results['ids'][0]
-        distances = results['distances'][0]
-        metadatas = results['metadatas'][0]
-        documents = results['documents'][0]
-
-        # Combine into a list of dicts for sorting
-        chunks = []
-        for i in range(len(ids)):
-            # Calculate similarity from cosine distance
-            similarity = 1 - distances[i]
-            
-            if similarity >= RAG_SIM_THRESHOLD:
-                chunks.append({
-                    "id": ids[i],
-                    "similarity": similarity,
-                    "metadata": metadatas[i],
-                    "text": documents[i]
-                })
-
-        # Sort by similarity descending
-        chunks.sort(key=lambda x: x['similarity'], reverse=True)
-
-        # Build context with token budget
-        formatted_context = []
-        current_tokens = 0
         
-        print(f"[RAG] Query: '{query}'")
-        print(f"[RAG] Found {len(chunks)} relevant chunks (threshold {RAG_SIM_THRESHOLD})")
+        logger.info("[RAG] Starting hybrid retrieval for query=%r conv=%s", query[:50], conversation_id)
+        
+        try:
+            # Use hybrid retrieval
+            logger.info("[RAG] Calling hybrid_retriever.retrieve()...")
+            results = self.hybrid_retriever.retrieve(
+                query=query,
+                conversation_id=conversation_id,
+                top_k=10,
+            )
+            logger.info("[RAG] Hybrid retriever returned %d results", len(results))
 
-        for chunk in chunks:
-            # Approx token count
-            tokens = int(len(chunk['text'].split()) * 1.3)
+            logger.info(
+                "[PHASE1] Hybrid RAG returned %d results for conv=%s",
+                len(results),
+                conversation_id,
+            )
+
+            # RRF scores are small, so threshold is low and empirical
+            threshold = 0.01
             
-            if current_tokens + tokens > RAG_MAX_TOKENS:
-                print(f"[RAG] Skipping chunk {chunk['id']} (budget exceeded)")
-                continue
-                
-            current_tokens += tokens
-            formatted_context.append(self._format_chunk(chunk))
-            print(f"[RAG] Added chunk {chunk['id']} (sim: {chunk['similarity']:.3f}, tokens: {tokens})")
+            filtered_chunks = []
+            for res in results:
+                score = float(res["score"])
+                if score < threshold:
+                    continue
 
-        return "\n\n".join(formatted_context)
+                text = res.get("text") or ""
+                meta = res.get("metadata") or {}
+
+                filtered_chunks.append(
+                    {
+                        "id": res["id"],
+                        "similarity": score,
+                        "metadata": meta,
+                        "text": text,
+                    }
+                )
+
+            logger.info(
+                "[PHASE1] Hybrid RAG chunks passing threshold=%d",
+                len(filtered_chunks),
+            )
+
+            # Build context with token budget
+            formatted_parts: List[str] = []
+            used_tokens = 0
+
+            for chunk in filtered_chunks:
+                text = chunk["text"]
+                # crude token estimate
+                est_tokens = int(len(text.split()) * 1.3)
+
+                if used_tokens + est_tokens > RAG_MAX_TOKENS:
+                    break
+
+                used_tokens += est_tokens
+                formatted_parts.append(self._format_chunk(chunk))
+
+            context = "\n\n".join(formatted_parts)
+            logger.info(
+                "[PHASE1] Hybrid RAG context tokens=%d, pieces=%d",
+                used_tokens,
+                len(formatted_parts),
+            )
+            logger.info("[RAG] Retrieve completed successfully, returning %d chars", len(context))
+            return context
+        except Exception as e:
+            logger.error("[RAG] Error in retrieve: %s", e, exc_info=True)
+            return ""
 
     def _format_chunk(self, chunk: Dict[str, Any]) -> str:
         """

@@ -6,6 +6,7 @@ export default function Sidebar({
   currentConversationId,
   onSelectConversation,
   onNewConversation,
+  onShowAnalytics,
 }) {
   return (
     <div className="sidebar">
@@ -13,6 +14,9 @@ export default function Sidebar({
         <h1>LLM Council</h1>
         <button className="new-conversation-btn" onClick={onNewConversation}>
           + New Conversation
+        </button>
+        <button className="analytics-btn" onClick={onShowAnalytics} style={{ marginTop: '8px', width: '100%', padding: '8px', cursor: 'pointer', backgroundColor: '#f0f0f0', border: 'none', borderRadius: '4px' }}>
+          📊 Analytics
         </button>
       </div>
 
@@ -23,9 +27,8 @@ export default function Sidebar({
           conversations.map((conv) => (
             <div
               key={conv.id}
-              className={`conversation-item ${
-                conv.id === currentConversationId ? 'active' : ''
-              }`}
+              className={`conversation-item ${conv.id === currentConversationId ? 'active' : ''
+                }`}
               onClick={() => onSelectConversation(conv.id)}
             >
               <div className="conversation-title">
