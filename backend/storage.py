@@ -2,10 +2,25 @@
 
 import json
 import os
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR
+
+
+class ConversationLock:
+    """Thread-safe locking mechanism for conversation access."""
+    _locks = {}
+    _main_lock = threading.Lock()
+    
+    @classmethod
+    def get_lock(cls, conversation_id: str):
+        """Get or create a lock for a specific conversation."""
+        with cls._main_lock:
+            if conversation_id not in cls._locks:
+                cls._locks[conversation_id] = threading.Lock()
+            return cls._locks[conversation_id]
 
 
 def ensure_data_dir():
@@ -18,12 +33,13 @@ def get_conversation_path(conversation_id: str) -> str:
     return os.path.join(DATA_DIR, f"{conversation_id}.json")
 
 
-def create_conversation(conversation_id: str) -> Dict[str, Any]:
+def create_conversation(conversation_id: str, metadata: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Create a new conversation.
 
     Args:
         conversation_id: Unique identifier for the conversation
+        metadata: Optional metadata to store (e.g., selected models)
 
     Returns:
         New conversation dict
@@ -34,7 +50,9 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
         "id": conversation_id,
         "created_at": datetime.utcnow().isoformat(),
         "title": "New Conversation",
-        "messages": []
+        "messages": [],
+        "metadata": metadata or {},
+        "total_cost": 0.0
     }
 
     # Save to file
@@ -115,16 +133,17 @@ def add_user_message(conversation_id: str, content: str):
         conversation_id: Conversation identifier
         content: User message content
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["messages"].append({
-        "role": "user",
-        "content": content
-    })
+        conversation["messages"].append({
+            "role": "user",
+            "content": content
+        })
 
-    save_conversation(conversation)
+        save_conversation(conversation)
 
 
 def add_assistant_message(
@@ -142,18 +161,19 @@ def add_assistant_message(
         stage2: List of model rankings
         stage3: Final synthesized response
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["messages"].append({
-        "role": "assistant",
-        "stage1": stage1,
-        "stage2": stage2,
-        "stage3": stage3
-    })
+        conversation["messages"].append({
+            "role": "assistant",
+            "stage1": stage1,
+            "stage2": stage2,
+            "stage3": stage3
+        })
 
-    save_conversation(conversation)
+        save_conversation(conversation)
 
 
 def add_chat_message(conversation_id: str, content: str):
@@ -164,16 +184,17 @@ def add_chat_message(conversation_id: str, content: str):
         conversation_id: Conversation identifier
         content: The assistant's response text
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["messages"].append({
-        "role": "assistant",
-        "content": content
-    })
+        conversation["messages"].append({
+            "role": "assistant",
+            "content": content
+        })
 
-    save_conversation(conversation)
+        save_conversation(conversation)
 
 
 def update_conversation_title(conversation_id: str, title: str):
@@ -184,9 +205,28 @@ def update_conversation_title(conversation_id: str, title: str):
         conversation_id: Conversation identifier
         title: New title for the conversation
     """
-    conversation = get_conversation(conversation_id)
-    if conversation is None:
-        raise ValueError(f"Conversation {conversation_id} not found")
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["title"] = title
-    save_conversation(conversation)
+        conversation["title"] = title
+        save_conversation(conversation)
+
+
+def update_conversation_cost(conversation_id: str, cost: float):
+    """
+    Update the total cost of a conversation.
+
+    Args:
+        conversation_id: Conversation identifier
+        cost: Cost to add to the total
+    """
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        current_cost = conversation.get("total_cost", 0.0)
+        conversation["total_cost"] = current_cost + cost
+        save_conversation(conversation)

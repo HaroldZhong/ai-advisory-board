@@ -80,3 +80,9 @@ $RECYCLE.BIN/
 *.temp
 *.bak
 *.backup
+
+# Test and development files
+test_*.py
+verify_*.py
+CONFIDENCE_BADGE_UI.jsx
+system_review.md
