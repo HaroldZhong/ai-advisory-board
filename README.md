@@ -1,178 +1,375 @@
 # LLM Council Enhanced
 
+An enhanced multi-turn AI chat system featuring a **3-stage deliberative council process** where multiple LLMs debate and synthesize answers, combined with **advanced RAG (Retrieval-Augmented Generation)** for context-aware conversations.
+
 > **Forked from [karpathy/llm-council](https://github.com/karpathy/llm-council)**
-> 
-> This is an enhanced version with multi-turn chat, RAG-powered context retrieval, chain of thought display, and additional AI models.
 
 [![Fork of karpathy/llm-council](https://img.shields.io/badge/fork-karpathy%2Fllm--council-blue)](https://github.com/karpathy/llm-council)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 ![llmcouncil](header.jpg)
 
-## ✨ What's New in This Fork
+---
 
-| Feature | Original | Enhanced |
-|---------|----------|----------|
-| Multi-turn chat | ❌ | ✅ |
-| RAG context retrieval | ❌ | ✅ (ChromaDB) |
-| Chain of thought display | ❌ | ✅ |
-| Models supported | 4 | 6 (added Kimi-K2, DeepSeek-v3.2) |
-| Follow-up questions | ❌ | ✅ |
-| Context-aware responses | ❌ | ✅ (Smart RAG) |
+## 🎯 Key Features
 
-### Key Enhancements
+### ✨ Phase 1: Advanced RAG System (NEW - Dec 2024)
+- **Hybrid Retrieval**: BM25 (keyword) + Dense (semantic) search with Reciprocal Rank Fusion
+- **Query Rewriting**: Automatic coreference resolution for natural follow-up questions
+- **Confidence Scoring**: HIGH/MEDIUM/LOW trust indicators based on council consensus
+- **Enhanced Metadata**: Topic extraction and quality metrics for every conversation turn
 
-- **💬 Multi-turn Chat Mode**: Ask follow-up questions to the Chairman without re-running the full Council
-- **🧠 RAG System**: ChromaDB-powered context retrieval for efficient follow-ups (no extra LLM calls!)
-- **💭 Chain of Thought Display**: See the model's reasoning process (collapsible UI)
-- **🤖 Additional Models**: Support for `moonshotai/kimi-k2-thinking` and `deepseek/deepseek-v3.2-exp`
-- **⚡ Smart Context Management**: Similarity-based retrieval (threshold: 0.2, max tokens: 1000)
-- **📊 Structured Metadata**: Council sessions indexed with turn, stage, and model information
+### Core Council Process
+- **Stage 1 (Collect)**: Multiple LLMs provide independent responses to your question
+- **Stage 2 (Rank)**: Council members evaluate and rank each other's answers anonymously
+- **Stage 3 (Synthesize)**: Chairman LLM creates final answer based on rankings and deliberation
 
-## Original Project
-
-This project is based on Andrej Karpathy's [llm-council](https://github.com/karpathy/llm-council), which implements a fascinating multi-LLM deliberation system. The original concept of having LLMs review and rank each other's work before synthesis is entirely from the original project.
-
-### How It Works (Original Concept)
-
-1. **Stage 1: First opinions**. The user query is given to all LLMs individually, and the responses are collected.
-2. **Stage 2: Review**. Each individual LLM is given the responses of the other LLMs (anonymized) and asked to rank them.
-3. **Stage 3: Final response**. The designated Chairman takes all responses and compiles them into a single final answer.
-
-### What This Fork Adds
-
-After Stage 3, you can now:
-- Ask follow-up questions in "Chat Mode"
-- The Chairman retrieves only relevant context via RAG (not the full history)
-- See the model's reasoning process if the model provides it
-- Continue the conversation naturally without re-running the Council
+### Additional Features
+- **Multi-turn Conversations**: Context-aware dialogue with RAG-powered memory
+- **Chain of Thought**: See reasoning steps from models that support it
+- **Cost Tracking**: Real-time usage and cost analytics per conversation
+- **Model Selection**: Choose your council members and chairman dynamically
+- **File Upload**: Process PDFs, images, and text files with AI analysis
+- **Analytics Dashboard**: Usage statistics, model performance, and cost breakdowns
 
 ---
 
-## Setup
+## 🚀 Quick Start
 
-### 1. Install Dependencies
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- OpenRouter API key ([get one here](https://openrouter.ai/))
 
-The project uses [uv](https://docs.astral.sh/uv/) for Python package management.
+### Installation
 
-**Backend:**
-```bash
-uv sync
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/HaroldZhong/llm-council-enhanced.git
+   cd llm-council-enhanced
+   ```
+
+2. **Backend Setup**
+   ```bash
+   # Install uv (fast Python package manager)
+   pip install uv
+   
+   # Install Python dependencies
+   uv sync
+   
+   # Create .env file
+   echo "OPENROUTER_API_KEY=your_key_here" > .env
+   ```
+
+3. **Frontend Setup**
+   ```bash
+   cd frontend
+   npm install
+   cd ..
+   ```
+
+4. **Start the Application**
+   ```bash
+   # Option 1: Use the start script (recommended)
+   ./start.ps1  # Windows
+   ./start.sh   # Linux/Mac
+   
+   # Option 2: Start manually
+   # Terminal 1 - Backend
+   uv run uvicorn backend.main:app --reload --port 8001
+   
+   # Terminal 2 - Frontend  
+   cd frontend && npm run dev
+   ```
+
+5. **Open in Browser**
+   ```
+   http://localhost:5173
+   ```
+
+---
+
+## 📖 How It Works
+
+### The 3-Stage Council Process
+
+When you ask a question in **Council Mode**:
+
+1. **Stage 1: Independent Responses**
+   - 5+ council models each provide their own answer
+   - No knowledge of what others are saying
+   - Responses shown side-by-side for comparison
+
+2. **Stage 2: Anonymous Ranking**
+   - Each model ranks ALL responses (including their own)
+   - Responses are anonymized during ranking
+   - Creates aggregate rankings showing consensus
+
+3. **Stage 3: Final Synthesis**
+   - Chairman model reviews all responses and rankings
+   - Creates authoritative final answer
+   - **NEW**: Includes confidence score (HIGH/MEDIUM/LOW)
+
+### Advanced RAG Architecture
+
+**Before Phase 1:**
+- Simple dense-only retrieval
+- No query preprocessing
+- Basic metadata
+
+**After Phase 1:**
+- **Hybrid Retrieval**: Combines BM25 (keyword matching) + Dense (semantic understanding)
+- **Query Rewriting**: Resolves pronouns like "it", "its", "that" in follow-ups
+- **Rich Metadata**: Topics, quality scores, consensus metrics for every turn
+- **Confidence Scoring**: Trust indicators based on model agreement
+
+**Example:**
+```
+You: "Explain RAG systems"
+Council: [Detailed explanation with HIGH confidence]
+
+You: "What are its limitations?"
+↓ Rewritten to: "What are the limitations of RAG systems?"
+↓ Hybrid search finds relevant context
+↓ Chairman answers using retrieved context
 ```
 
-**Frontend:**
-```bash
-cd frontend
-npm install
-cd ..
+---
+
+## 📊 Phase 1 RAG Features
+
+### 1. Query Rewriting
+Automatically expands abbreviated follow-up questions:
+- **Original**: "What about its limitations?"
+- **Rewritten**: "What are the limitations of RAG systems?"
+- **Config**: `ENABLE_QUERY_REWRITE = True` in `backend/config.py`
+
+### 2. Hybrid Retrieval
+Combines keyword and semantic search:
+- **BM25**: Exact keyword matching (e.g., "BM25", "ChromaDB")
+- **Dense**: Semantic similarity (understands concepts)
+- **Fusion**: Reciprocal Rank Fusion merges results
+- **Filtering**: Conversation-scoped to prevent cross-talk
+
+### 3. Confidence Scoring
+Trust indicators based on council agreement:
+- **HIGH** (>0.75): Strong consensus, factual questions
+- **MEDIUM** (>0.5): Some disagreement, nuanced topics  
+- **LOW** (≤0.5): Significant disagreement, subjective questions
+
+### 4. Enhanced Metadata
+Every council turn stores:
+- **Topics**: Extracted keywords (e.g., "RAG", "ChromaDB")
+- **Quality Metrics**: Per-model average rank and consensus score
+- **Timestamps**: For temporal queries and analysis
+
+---
+
+## 🛠️ Architecture
+
+### Backend (FastAPI + Python)
+```
+backend/
+├── main.py                  # API endpoints and routing
+├── council.py               # 3-stage council orchestration
+├── rag.py                   # RAG system with ChromaDB
+├── hybrid_retrieval.py      # BM25 + Dense fusion (NEW)
+├── openrouter.py            # OpenRouter API client
+├── storage.py               # JSON-based conversation storage
+├── config.py                # Model configuration
+├── analytics.py             # Usage analytics (NEW)
+└── file_processing.py       # File upload handling (NEW)
 ```
 
-### 2. Configure API Key
-
-Create a `.env` file in the project root (copy from `.env.example`):
-
-```bash
-OPENROUTER_API_KEY=sk-or-v1-...
+### Frontend (React + Vite)
+```
+frontend/src/
+├── App.jsx                  # Main application
+├── components/
+│   ├── ChatInterface.jsx    # Chat UI with council stages
+│   ├── ModelSelector.jsx    # Dynamic model selection (NEW)
+│   ├── AnalyticsDashboard.jsx  # Stats and metrics (NEW)
+│   └── Sidebar.jsx          # Conversation management
+└── api.js                   # Backend API client
 ```
 
-Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase credits or enable automatic top-up.
+### Data Flow
+```
+User Query
+    ↓
+Query Rewriting (resolve coreferences)
+    ↓
+RAG Retrieval (hybrid BM25 + dense)
+    ↓
+Stage 1: Council responses
+    ↓
+Stage 2: Peer ranking
+    ↓
+Stage 3: Chairman synthesis + confidence
+    ↓
+Index session (topics, quality, consensus)
+    ↓
+Display to user
+```
 
-### 3. Configure Models (Optional)
+---
 
-Edit `backend/config.py` to customize the council:
+## 🔧 Configuration
 
+### Environment Variables (.env)
+```bash
+OPENROUTER_API_KEY=sk-or-...  # Required
+```
+
+### Model Configuration (backend/config.py)
 ```python
+# Council members (5-7 recommended)
 COUNCIL_MODELS = [
     "openai/gpt-5.1",
     "google/gemini-3-pro-preview",
     "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
-    "moonshotai/kimi-k2-thinking",  # New!
-    "deepseek/deepseek-v3.2-exp",   # New!
+    # ... add more
 ]
 
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+# Chairman (usually most capable model)
+CHAIRMAN_MODEL = "google/gemini-2.5-pro"
+
+# Phase 1 features
+ENABLE_QUERY_REWRITE = True  # Enable/disable query rewriting
 ```
 
-### 4. (Optional) Adjust RAG Settings
-
-Edit `backend/rag.py` to tune retrieval:
-
+### RAG Tuning (backend/rag.py, backend/hybrid_retrieval.py)
 ```python
-RAG_SIM_THRESHOLD = 0.2  # Similarity threshold for context retrieval
-RAG_MAX_TOKENS = 1000    # Maximum tokens to include from RAG
+# Retrieval settings
+RAG_MAX_TOKENS = 3000        # Max context size
+threshold = 0.01             # RRF score threshold
+
+# Hybrid weights
+bm25_weight = 0.5           # Keyword importance
+dense_weight = 0.5          # Semantic importance
 ```
 
-## Running the Application
+---
 
-**Option 1: Use the start script**
+## 💡 Usage Examples
+
+### Council Mode (Full Deliberation)
+Best for: Complex questions, important decisions, diverse perspectives
+```
+Ask: "Should I use microservices or monolithic architecture?"
+→ 5 models debate
+→ See rankings and reasoning
+→ Get synthesized answer with MEDIUM confidence
+```
+
+### Chat Mode (Quick Responses)
+Best for: Follow-ups, clarifications, quick answers
+```
+Ask: "What did you say about databases?"
+→ Query rewritten automatically
+→ Retrieves relevant past context
+→ Quick answer from Chairman
+```
+
+---
+
+## 📈 Analytics
+
+Access the analytics dashboard to view:
+- **Total Conversations**: Count and cost
+- **Model Usage**: Which models are used most
+- **Average Costs**: Per conversation and per model
+- **Confidence Distribution**: HIGH/MEDIUM/LOW breakdown
+
+---
+
+## 🧪 Testing
+
+### Manual Testing
 ```bash
-# Windows
-./start.ps1
+# Test query rewriting
+python test_query_rewrite.py
 
-# Linux/Mac
-./start.sh
+# Test metadata extraction
+python test_metadata_smoke.py
+
+# Phase 1 smoke tests (requires running backend)
+python -m backend.eval_phase1
 ```
 
-**Option 2: Run manually**
-
-Terminal 1 (Backend):
+### Log Monitoring
+Phase 1 features use `[PHASE1]` prefix for easy filtering:
 ```bash
-uv run python -m backend.main
+# Watch logs for Phase 1 activity
+tail -f backend.log | grep PHASE1
+
+# You should see:
+[PHASE1] Query rewrite: original='...' rewritten='...'
+[PHASE1] Topics extracted: ['RAG', 'BM25']
+[PHASE1] Confidence computed: label=HIGH avg_consensus=0.85
+[PHASE1] Hybrid retrieval, candidates=6, returned=4
 ```
 
-Terminal 2 (Frontend):
-```bash
-cd frontend
-npm run dev
-```
+---
 
-Then open http://localhost:5173 (or the port shown) in your browser.
+## 📁 Data Storage
 
-## Usage
+### Conversations
+- **Location**: `data/conversations/`
+- **Format**: JSON files per conversation
+- **Content**: All messages, council stages, costs, metadata
 
-1. **Start a conversation** by clicking "New Conversation"
-2. **Ask a question** - the full Council will deliberate (Stages 1-3)
-3. **Ask follow-up questions** - the Chairman will respond using RAG context
-4. **Expand reasoning** - click "💭 Chain of Thought" to see the model's thinking
+### RAG Index
+- **Location**: `data/chroma_db/`
+- **Engine**: ChromaDB vector database
+- **Embedding Model**: `all-MiniLM-L6-v2`
+- **Metadata**: Topics, quality scores, timestamps
 
-## Tech Stack
+---
 
-- **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
-- **Frontend:** React + Vite, react-markdown for rendering
-- **RAG:** ChromaDB with `all-MiniLM-L6-v2` embeddings
-- **Storage:** JSON files in `data/conversations/`, ChromaDB in `data/chroma_db/`
-- **Package Management:** uv for Python, npm for JavaScript
+## 🚦 Roadmap
 
-## Architecture
+### Phase 1 ✅ COMPLETE (Dec 2024)
+- [x] Query rewriting
+- [x] Hybrid retrieval (BM25 + Dense)
+- [x] Confidence scoring
+- [x] Enhanced metadata
 
-### RAG System
+### Phase 1.5 (Future)
+- [ ] Reranker for improved precision
+- [ ] Web search integration for latest info
+- [ ] Knowledge graph for complex relationships
+- [ ] Contradiction detection
 
-The RAG system indexes Council deliberations with structured metadata:
+### Phase 2 (Planned)
+- [ ] Multi-modal support (images, audio)
+- [ ] Custom embedding models
+- [ ] Advanced analytics and insights
+- [ ] Storage migration (JSON → SQLite)
 
-- **Indexing**: After Stage 3, all responses are embedded with the original question prepended
-- **Retrieval**: Follow-up questions query ChromaDB with cosine similarity
-- **Gating**: Only chunks above the similarity threshold are retrieved
-- **Formatting**: Context is formatted with `[Turn | Stage | Model]` headers for LLM consumption
+---
 
-See `backend/rag.py` for implementation details.
+## 📝 License
 
-## Contributing
+MIT License - See LICENSE file for details
 
-This is a fork for personal enhancement. If you'd like to contribute:
-- For core functionality changes, consider contributing to the [original repo](https://github.com/karpathy/llm-council)
-- For enhancements specific to RAG/chat features, feel free to open issues or PRs here
+---
 
-## Credits
+## 🙏 Acknowledgments
 
-**Original Author:** [Andrej Karpathy](https://github.com/karpathy) - [llm-council](https://github.com/karpathy/llm-council)
+- **Original Concept**: [llm-council](https://github.com/karpathy/llm-council) by Andrej Karpathy
+- **Enhancements**: RAG integration, hybrid retrieval, confidence scoring
+- **APIs**: [OpenRouter](https://openrouter.ai/) for unified LLM access
+- **Vector DB**: [ChromaDB](https://www.trychroma.com/)
+- **Retrieval**: [rank-bm25](https://github.com/dorianbrown/rank_bm25)
 
-**Enhancements:** Multi-turn chat, RAG integration, chain of thought display
+---
 
-See [CREDITS.md](CREDITS.md) for detailed attribution.
+## 📞 Support
 
-## License
+- **Issues**: [GitHub Issues](https://github.com/HaroldZhong/llm-council-enhanced/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/HaroldZhong/llm-council-enhanced/discussions)
 
-MIT License - See [LICENSE](LICENSE) for details.
+---
 
-This fork maintains the spirit of the original "vibe code" project while adding production-ready features for extended conversations.
+**Built with ❤️ for transparent, deliberative AI conversations**
