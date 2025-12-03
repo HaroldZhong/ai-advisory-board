@@ -13,7 +13,7 @@ An enhanced multi-turn AI chat system featuring a **3-stage deliberative council
 
 ## 🎯 Key Features
 
-### ✨ Phase 1: Advanced RAG System (NEW - Dec 2024)
+### ✨ Phase 1: Advanced RAG System (NEW - Dec 2025)
 - **Hybrid Retrieval**: BM25 (keyword) + Dense (semantic) search with Reciprocal Rank Fusion
 - **Query Rewriting**: Automatic coreference resolution for natural follow-up questions
 - **Confidence Scoring**: HIGH/MEDIUM/LOW trust indicators based on council consensus
@@ -329,7 +329,7 @@ tail -f backend.log | grep PHASE1
 
 ## 🚦 Roadmap
 
-### Phase 1 ✅ COMPLETE (Dec 2024)
+### Phase 1 ✅ COMPLETE (Dec 2025)
 - [x] Query rewriting
 - [x] Hybrid retrieval (BM25 + Dense)
 - [x] Confidence scoring
