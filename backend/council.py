@@ -4,21 +4,59 @@ from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
 from .logger import logger
+from .tools.types import EvidencePack, UsageLimits
+from .tools.registry import ToolRegistry
+from .tools.router import ToolRouter
+from .tools.parser import ToolParser
+import uuid
+import json
 
 
-async def stage1_collect_responses(user_query: str, models: List[str] = None) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(user_query: str, models: List[str] = None, evidence_pack: EvidencePack = None) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
     Args:
         user_query: The user's question
         models: Optional list of models to query (defaults to COUNCIL_MODELS)
+        evidence_pack: Optional evidence gathered by the Steward
 
     Returns:
         List of dicts with 'model' and 'response' keys
     """
     target_models = models or COUNCIL_MODELS
-    messages = [{"role": "user", "content": user_query}]
+    
+    # Format evidence for the prompt if available
+    evidence_context = ""
+    if evidence_pack and evidence_pack.tools_used:
+        # Render a compact summary with [sID] citations
+        summary_lines = ["\nEVIDENCE FROM TOOL STEWARD:"]
+        
+        # 1. Tool Outputs
+        for tool_run in evidence_pack.tools_used:
+             if tool_run.status == "executed":
+                 summary_lines.append(f"- {tool_run.tool_name}: {tool_run.output_summary}")
+             else:
+                 summary_lines.append(f"- {tool_run.tool_name} (Rejected): {tool_run.output_summary}")
+        
+        # 2. Key Facts with IDs
+        if evidence_pack.key_facts:
+            summary_lines.append("\nKEY FACTS:")
+            for fact in evidence_pack.key_facts:
+                summary_lines.append(f"- {fact.fact} [s{fact.source_id}] (Confidence: {fact.confidence_score})")
+        
+        summary_lines.append("\nINSTRUCTIONS FOR EVIDENCE:")
+        summary_lines.append("1. Uses facts from the evidence above to answer the user's question.")
+        summary_lines.append("2. When you use a fact, cite it using the [sID] format at the end of the sentence. Example: 'Apple stock is up [s1].'")
+        summary_lines.append("3. If the evidence is insufficient, state what is unknown. Do NOT hallucinations.")
+        
+        evidence_context = "\n".join(summary_lines)
+
+    prompt = f"""{user_query}
+
+{evidence_context}"""
+
+    messages = [{"role": "user", "content": prompt}]
 
     # Query all models in parallel
     responses = await query_models_parallel(target_models, messages)
@@ -497,13 +535,106 @@ Title:"""
     return title
 
 
+async def run_tool_steward_phase(user_query: str, run_id: str, chairman_model: str = None) -> Tuple[EvidencePack, Dict[str, Any]]:
+    """
+    Stage 0: Tool Steward decides and executes tools.
+    Returns: (EvidencePack, usage_dict)
+    """
+    target_model = chairman_model or CHAIRMAN_MODEL
+    logger.info(f"[STEWARD] Starting phase for run {run_id}")
+
+    # 1. Dynamic Prompting
+    tool_descriptions = ToolRegistry.to_prompt_format()
+    
+    steward_prompt = f"""You are the Tool Steward for an AI Council.
+Your job is to decide if tools are needed to answer the user's question, and if so, which ones.
+
+User Question: {user_query}
+
+{tool_descriptions}
+
+INSTRUCTIONS:
+1. Analyze the detailed question.
+2. Select the most relevant tools from the list above.
+3. Return a JSON object with your decision.
+
+FORMAT (JSON ONLY):
+{{
+  "action": "use_tools" | "no_tools",
+  "reason": "Why you made this decision",
+  "calls": [
+    {{
+      "name": "tool.name",
+      "arguments": {{ "arg": "value" }},
+      "purpose": "Why this specific call is needed",
+      "priority": "high" | "normal" | "low"
+    }}
+  ]
+}}
+
+If no tools are needed (e.g., for general chit-chat or pure logic questions), return action="no_tools".
+"""
+
+    messages = [{"role": "user", "content": steward_prompt}]
+    
+    # 2. Query Model
+    response = await query_model(target_model, messages, timeout=60.0)
+    usage = response.get("usage", {}) if response else {}
+    
+    # 3. Parse & Router
+    parser = ToolParser()
+    parsed_data = {"action": "no_tools"} # Fallback
+    
+    if response and response.get("content"):
+        parsed_data = parser.parse_steward_output(response["content"])
+    
+    # 4. Execute Logic
+    router = ToolRouter(
+        allowlist=["web.search", "web.fetch", "finance.quote"], # Explicit allowlist
+        max_calls_per_run=3
+    )
+
+    if parsed_data.get("action") == "use_tools" and parsed_data.get("calls"):
+        logger.info(f"[STEWARD] Decided to use tools: {len(parsed_data['calls'])} calls")
+        from .tools.types import ToolCall
+        
+        tool_calls = []
+        for call_dict in parsed_data["calls"]:
+            try:
+                tool_calls.append(ToolCall(
+                    run_id=run_id,
+                    name=call_dict.get("name"),
+                    arguments=call_dict.get("arguments", {}),
+                    purpose=call_dict.get("purpose", "Unknown"),
+                    priority=call_dict.get("priority", "normal"),
+                    requested_by=target_model
+                ))
+            except Exception as e:
+                logger.warning(f"[STEWARD] internal error parsing tool call: {e}")
+        
+        evidence_pack = await router.execute_tool_calls(tool_calls, run_id)
+        
+    else:
+        logger.info("[STEWARD] No tools needed.")
+        # Return empty pack
+        evidence_pack = EvidencePack(
+            run_id=run_id,
+            query=user_query,
+            tools_used=[],
+            key_facts=[],
+            limits=UsageLimits()
+        )
+        
+    return evidence_pack, usage
+
+
 async def run_full_council(
     user_query: str, 
     council_models: List[str] = None, 
     chairman_model: str = None
-) -> Tuple[List, List, Dict, Dict]:
+) -> Tuple[List, List, Dict, Dict, EvidencePack]:
     """
-    Run the complete 3-stage council process.
+    Run the complete 3-stage council process (now with Stage 0 Steward).
 
     Args:
         user_query: The user's question
@@ -511,10 +642,16 @@ async def run_full_council(
         chairman_model: Optional chairman model (defaults to CHAIRMAN_MODEL)
 
     Returns:
-        Tuple of (stage1_results, stage2_results, stage3_result, metadata)
+        Tuple of (stage1_results, stage2_results, stage3_result, metadata, evidence_pack)
     """
-    # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query, council_models)
+    run_id = str(uuid.uuid4())
+    logger.info(f"[COUNCIL] Starting run {run_id}")
+
+    # Stage 0: Tool Steward
+    evidence_pack, steward_usage = await run_tool_steward_phase(user_query, run_id, chairman_model)
+
+    # Stage 1: Collect individual responses (with evidence)
+    stage1_results = await stage1_collect_responses(user_query, council_models, evidence_pack)
 
     # If no models responded successfully, return error
     if not stage1_results:
@@ -548,7 +685,7 @@ async def run_full_council(
         "aggregate_rankings": aggregate_rankings
     }
 
-    return stage1_results, stage2_results, stage3_result, metadata
+    return stage1_results, stage2_results, stage3_result, metadata, evidence_pack
 
 
 async def rewrite_query(query: str, conversation_history: List[Dict[str, str]]) -> str:

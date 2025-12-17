@@ -173,24 +173,39 @@ backend/
 ├── main.py                  # API endpoints and routing
 ├── council.py               # 3-stage council orchestration
 ├── rag.py                   # RAG system with ChromaDB
-├── hybrid_retrieval.py      # BM25 + Dense fusion (NEW)
+├── hybrid_retrieval.py      # BM25 + Dense fusion
+├── rag_utils.py             # Query rewriting utilities
 ├── openrouter.py            # OpenRouter API client
+├── openrouter_client.py     # Enhanced API client
 ├── storage.py               # JSON-based conversation storage
-├── config.py                # Model configuration
-├── analytics.py             # Usage analytics (NEW)
-└── file_processing.py       # File upload handling (NEW)
+├── config.py                # Model and system configuration
+├── analytics.py             # Usage analytics
+├── file_processing.py       # File upload handling
+├── attachment_storage.py    # Attachment management
+├── budget_policy.py         # Session budget policies
+├── budget_router.py         # Budget-aware routing
+├── cost_predictor.py        # Cost estimation
+├── execution_modes.py       # Task-aware execution
+└── logger.py                # Logging configuration
 ```
 
-### Frontend (React + Vite)
+### Frontend (React + Vite + Tailwind)
 ```
 frontend/src/
 ├── App.jsx                  # Main application
+├── api.js                   # Backend API client
 ├── components/
 │   ├── ChatInterface.jsx    # Chat UI with council stages
-│   ├── ModelSelector.jsx    # Dynamic model selection (NEW)
-│   ├── AnalyticsDashboard.jsx  # Stats and metrics (NEW)
-│   └── Sidebar.jsx          # Conversation management
-└── api.js                   # Backend API client
+│   ├── MarkdownRenderer.jsx # LaTeX/Markdown rendering
+│   ├── ModelSelector.jsx    # Dynamic model selection
+│   ├── SessionBudgetSelector.jsx # Budget controls
+│   ├── AnalyticsDashboard.jsx   # Stats and metrics
+│   ├── Sidebar.jsx          # Conversation management
+│   └── ui/                  # shadcn/ui components
+├── contexts/                # React context providers
+├── hooks/                   # Custom React hooks
+├── utils/                   # Utility functions
+└── lib/                     # Shared libraries
 ```
 
 ### Data Flow
@@ -283,31 +298,50 @@ Access the analytics dashboard to view:
 
 ---
 
-## 🧪 Testing
+## 💰 Cost Governance (NEW - Dec 2025)
 
-### Manual Testing
-```bash
-# Test query rewriting
-python test_query_rewrite.py
+### Session Budget
+Set a spending limit per conversation:
+- **Presets**: $1 / $2 / $5 / No Limit
+- **Warnings**: Inline alerts at 70%, 85%, 100% of budget
+- **Graceful degradation**: No hard stops, just reduced context
 
-# Test metadata extraction
-python test_metadata_smoke.py
+### Automatic Budget-Aware Routing
+The system automatically adjusts based on your budget status:
 
-# Phase 1 smoke tests (requires running backend)
-python -m backend.eval_phase1
-```
+| Spent | RAG Context | Mode |
+|-------|-------------|------|
+| ≤70% | Auto (from task) | From task signal |
+| 70-85% | Medium (8k) | Standard |
+| 85-100% | Low (4k) | Quick |
+| >100% | Low (minimal) | Quick |
 
-### Log Monitoring
-Phase 1 features use `[PHASE1]` prefix for easy filtering:
-```bash
-# Watch logs for Phase 1 activity
-tail -f backend.log | grep PHASE1
+### Task Awareness
+Query analysis detects intent:
+- **Quick**: Short queries, "briefly", "quick"
+- **Research**: Long queries, "cite", "compare", "analyze"
+- **Standard**: Default balanced mode
 
-# You should see:
-[PHASE1] Query rewrite: original='...' rewritten='...'
-[PHASE1] Topics extracted: ['RAG', 'BM25']
-[PHASE1] Confidence computed: label=HIGH avg_consensus=0.85
-[PHASE1] Hybrid retrieval, candidates=6, returned=4
+### Quality Floor
+Budget constraints never break the experience:
+- Always responds (no "budget exceeded" errors)
+- Always includes ≥1 RAG chunk when available
+
+### Configuration (backend/config.py)
+```python
+RAG_SETTINGS = {
+    "presets": {
+        "low": {"tokens": 4000},
+        "medium": {"tokens": 8000},
+        "high": {"tokens": 16000},
+    },
+    "absolute_max_tokens": 32000,
+}
+
+SESSION_POLICY_DEFAULTS = {
+    "budget_usd": None,  # None = no limit
+    "notify_thresholds": [0.70, 0.85, 1.00],
+}
 ```
 
 ---
@@ -335,16 +369,24 @@ tail -f backend.log | grep PHASE1
 - [x] Confidence scoring
 - [x] Enhanced metadata
 
-### Phase 1.5 (Future)
+### Phase 1.5 ✅ COMPLETE (Dec 2025)
+- [x] Session budget system with presets ($1/$2/$5/unlimited)
+- [x] Budget-aware routing and graceful degradation
+- [x] Cost tracking and real-time estimates
+- [x] File attachments (PDF, images, text)
+- [x] Tailwind CSS migration with shadcn/ui
+- [x] LaTeX/math rendering support
+- [x] Tool calling infrastructure (Steward + Router + Registry)
 - [ ] Reranker for improved precision
-- [ ] Web search integration for latest info
-- [ ] Knowledge graph for complex relationships
 - [ ] Contradiction detection
 
+> **Note**: Tool calling infrastructure is complete with the Tool Steward phase, Router, and Registry. Web search currently uses a mock implementation—real API integration coming in next update.
+
 ### Phase 2 (Planned)
+- [ ] Web search integration (real API)
 - [ ] Multi-modal support (images, audio)
 - [ ] Custom embedding models
-- [ ] Advanced analytics and insights
+- [x] Advanced analytics and insights
 - [ ] Storage migration (JSON → SQLite)
 
 ---

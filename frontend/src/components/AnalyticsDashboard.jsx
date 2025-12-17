@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
-import './AnalyticsDashboard.css';
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { Loader2 } from "lucide-react";
 
 export default function AnalyticsDashboard({ onClose }) {
     const [data, setData] = useState(null);
@@ -21,44 +27,48 @@ export default function AnalyticsDashboard({ onClose }) {
     }, []);
 
     return (
-        <div className="analytics-overlay">
-            <div className="analytics-modal">
-                <div className="analytics-header">
-                    <h2>Model Performance Analytics</h2>
-                    <button onClick={onClose} className="close-button">×</button>
-                </div>
+        <Dialog open={true} onOpenChange={onClose}>
+            <DialogContent className="max-w-3xl">
+                <DialogHeader>
+                    <DialogTitle>Model Performance Analytics</DialogTitle>
+                </DialogHeader>
 
-                <div className="analytics-content">
+                <div className="py-4">
                     {loading ? (
-                        <div className="analytics-loading">Loading stats...</div>
+                        <div className="flex justify-center items-center h-40 text-muted-foreground">
+                            <Loader2 className="h-6 w-6 animate-spin mr-2" />
+                            Loading stats...
+                        </div>
                     ) : (
-                        <table className="analytics-table">
-                            <thead>
-                                <tr>
-                                    <th>Model</th>
-                                    <th>Avg Rank</th>
-                                    <th>Win Rate</th>
-                                    <th>Evaluations</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {data?.models.length === 0 ? (
-                                    <tr><td colSpan="4" className="no-data">No data available yet</td></tr>
-                                ) : (
-                                    data?.models.map(m => (
-                                        <tr key={m.model}>
-                                            <td className="model-name">{m.model}</td>
-                                            <td>#{m.average_rank.toFixed(2)}</td>
-                                            <td>{m.win_rate}%</td>
-                                            <td>{m.evaluations}</td>
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
+                        <div className="rounded-md border">
+                            <table className="w-full caption-bottom text-sm">
+                                <thead className="[&_tr]:border-b">
+                                    <tr className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
+                                        <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Model</th>
+                                        <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Avg Rank</th>
+                                        <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Win Rate</th>
+                                        <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground">Evaluations</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="[&_tr:last-child]:border-0">
+                                    {data?.models.length === 0 ? (
+                                        <tr><td colSpan="4" className="p-4 text-center text-muted-foreground">No data available yet</td></tr>
+                                    ) : (
+                                        data?.models.map(m => (
+                                            <tr key={m.model} className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
+                                                <td className="p-4 align-middle font-medium">{m.model}</td>
+                                                <td className="p-4 align-middle">#{m.average_rank.toFixed(2)}</td>
+                                                <td className="p-4 align-middle">{m.win_rate}%</td>
+                                                <td className="p-4 align-middle">{m.evaluations}</td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     )}
                 </div>
-            </div>
-        </div>
+            </DialogContent>
+        </Dialog>
     );
 }

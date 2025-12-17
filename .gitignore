@@ -11,6 +11,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
 lib64/
 parts/
 sdist/
@@ -86,3 +87,8 @@ test_*.py
 verify_*.py
 CONFIDENCE_BADGE_UI.jsx
 system_review.md
+walkthrough.md
+test_output.txt
+
+# Application logs
+logs/

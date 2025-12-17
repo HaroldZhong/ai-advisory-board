@@ -2,7 +2,9 @@
  * API client for the LLM Council backend.
  */
 
-const API_BASE = 'http://localhost:8001';
+// Use environment variable for API URL, fallback to localhost for local development
+// In production with reverse proxy, set VITE_API_URL to empty string or omit it
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8001';
 
 export const api = {
   /**
@@ -76,9 +78,10 @@ export const api = {
    * @param {string} content - The message content
    * @param {function} onEvent - Callback function for each event: (eventType, data) => void
    * @param {string} mode - The mode: 'auto', 'council', or 'chat'
+   * @param {string[]} attachmentIds - Optional list of attachment IDs to include
    * @returns {Promise<void>}
    */
-  async sendMessageStream(conversationId, content, onEvent, mode = 'auto') {
+  async sendMessageStream(conversationId, content, onEvent, mode = 'auto', attachmentIds = []) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
@@ -86,7 +89,7 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content, mode }),
+        body: JSON.stringify({ content, mode, attachment_ids: attachmentIds }),
       }
     );
 
@@ -96,13 +99,18 @@ export const api = {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = ''; // Buffer to handle partial lines across chunks
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
+      // Append decoded chunk to buffer, using stream mode to handle multi-byte chars
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      
+      // Keep the last (potentially incomplete) line in the buffer
+      buffer = lines.pop() || '';
 
       for (const line of lines) {
         if (line.startsWith('data: ')) {
@@ -114,6 +122,16 @@ export const api = {
             console.error('Failed to parse SSE event:', e);
           }
         }
+      }
+    }
+    
+    // Process any remaining data in buffer after stream ends
+    if (buffer.startsWith('data: ')) {
+      try {
+        const event = JSON.parse(buffer.slice(6));
+        onEvent(event.type, event);
+      } catch (e) {
+        // Ignore incomplete final chunk
       }
     }
   },
@@ -156,6 +174,93 @@ export const api = {
     const response = await fetch(`${API_BASE}/api/analytics`);
     if (!response.ok) {
       throw new Error('Failed to fetch analytics');
+    }
+    return response.json();
+  },
+
+  // ==========================================================================
+  // ATTACHMENT API (New unified file upload system)
+  // ==========================================================================
+
+  /**
+   * Upload a file and create an attachment.
+   * Returns attachment metadata with status.
+   * @param {File} file - The file to upload
+   * @returns {Promise<{attachment_id, status, filename, cached, method, warning, error, stats}>}
+   */
+  async uploadAttachment(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE}/api/attachments`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to upload attachment');
+    }
+
+    return response.json();
+  },
+
+  /**
+   * Get attachment metadata.
+   * @param {string} attachmentId - The attachment ID
+   * @returns {Promise<Attachment>}
+   */
+  async getAttachment(attachmentId) {
+    const response = await fetch(`${API_BASE}/api/attachments/${attachmentId}`);
+    if (!response.ok) {
+      throw new Error('Failed to get attachment');
+    }
+    return response.json();
+  },
+
+  /**
+   * Get attachment extracted text.
+   * @param {string} attachmentId - The attachment ID
+   * @param {boolean} preview - If true, returns first 1000 chars only
+   * @returns {Promise<{text: string, preview: boolean}>}
+   */
+  async getAttachmentText(attachmentId, preview = false) {
+    const url = `${API_BASE}/api/attachments/${attachmentId}/text${preview ? '?preview=true' : ''}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to get attachment text');
+    }
+    return response.json();
+  },
+
+  /**
+   * Get extraction recommendation for an attachment.
+   * @param {string} attachmentId - The attachment ID
+   * @returns {Promise<{needs_enhanced, recommended_engine, reason, estimated_cost, cost_hint}>}
+   */
+  async getExtractionRecommendation(attachmentId) {
+    const response = await fetch(`${API_BASE}/api/attachments/${attachmentId}/recommendation`);
+    if (!response.ok) {
+      throw new Error('Failed to get recommendation');
+    }
+    return response.json();
+  },
+
+  /**
+   * Retry extraction with OpenRouter enhanced processing.
+   * @param {string} attachmentId - The attachment ID
+   * @param {string} engine - "pdf-text" (free) or "mistral-ocr" (paid)
+   * @param {boolean} useZdr - Enable Zero Data Retention
+   * @returns {Promise<{attachment_id, status, method, char_count, cost, error}>}
+   */
+  async enhanceAttachment(attachmentId, engine = 'pdf-text', useZdr = false) {
+    const response = await fetch(
+      `${API_BASE}/api/attachments/${attachmentId}/enhance?engine=${engine}&use_zdr=${useZdr}`,
+      { method: 'POST' }
+    );
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to enhance attachment');
     }
     return response.json();
   },

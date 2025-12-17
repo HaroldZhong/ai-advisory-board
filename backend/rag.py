@@ -5,10 +5,7 @@ import os
 
 from .hybrid_retrieval import HybridRetriever
 from .logger import logger
-
-# RAG Configuration
-RAG_SIM_THRESHOLD = 0.15  # Lowered threshold for better recall (was 0.3)
-RAG_MAX_TOKENS = 3000    # Increased context window
+from .config import RAG_SETTINGS
 
 class CouncilRAG:
     def __init__(self, persist_path: str = "./data/chroma_db"):
@@ -150,16 +147,37 @@ class CouncilRAG:
                 metadatas=metadatas
             )
 
-    def retrieve(self, query: str, conversation_id: str) -> str:
+    def retrieve(self, query: str, conversation_id: str, max_tokens: int = None) -> str:
         """
         Retrieve using hybrid BM25 plus dense approach.
         Returns formatted context string for Chairman.
+        Backward compatible wrapper around retrieve_with_stats().
+        """
+        result = self.retrieve_with_stats(query, conversation_id, max_tokens)
+        return result["context"]
+    
+    def retrieve_with_stats(self, query: str, conversation_id: str, max_tokens: int = None) -> Dict[str, Any]:
+        """
+        Retrieve with full stats for budget tracking.
+        Returns {"context": str, "used_tokens": int, "pieces": int}
         """
         # Early return if RAG is disabled
         if not self.enabled:
             logger.info("[RAG] RAG disabled, returning empty context")
-            return ""
+            return {"context": "", "used_tokens": 0, "pieces": 0}
         
+        # Resolve budget from config
+        if max_tokens is None:
+            default_key = RAG_SETTINGS["default_preset"]
+            requested = RAG_SETTINGS["presets"][default_key]["tokens"]
+        else:
+            requested = max_tokens
+        
+        actual_budget = min(requested, RAG_SETTINGS["absolute_max_tokens"])
+        max_chunk_tokens = RAG_SETTINGS["max_chunk_tokens"]
+        score_threshold = RAG_SETTINGS["score_threshold"]
+        
+        logger.info("[RAG] Budget: requested=%d, actual=%d", requested, actual_budget)
         logger.info("[RAG] Starting hybrid retrieval for query=%r conv=%s", query[:50], conversation_id)
         
         try:
@@ -178,8 +196,14 @@ class CouncilRAG:
                 conversation_id,
             )
 
-            # RRF scores are small, so threshold is low and empirical
-            threshold = 0.01
+            # RRF scores are very small, so threshold needs to be low
+            if results:
+                scores = [float(r["score"]) for r in results]
+                logger.debug("[RAG] RRF scores: min=%.6f, max=%.6f, scores=%s", 
+                           min(scores), max(scores), [f"{s:.6f}" for s in scores[:5]])
+            
+            # Use threshold from config
+            threshold = score_threshold
             
             filtered_chunks = []
             for res in results:
@@ -200,9 +224,17 @@ class CouncilRAG:
                 )
 
             logger.info(
-                "[PHASE1] Hybrid RAG chunks passing threshold=%d",
-                len(filtered_chunks),
+                "[PHASE1] Hybrid RAG chunks passing threshold=%d (threshold=%.4f)",
+                len(filtered_chunks), threshold,
             )
+            
+            for i, chunk in enumerate(filtered_chunks[:3]):  # Log first 3 chunks for diagnostics
+                text_preview = (chunk.get("text") or "")[:100]
+                logger.debug(
+                    "[RAG] Chunk %d: id=%s, score=%.4f, text_len=%d, preview=%r",
+                    i, chunk.get("id", "?")[:50], chunk.get("similarity", 0),
+                    len(chunk.get("text") or ""), text_preview
+                )
 
             # Build context with token budget
             formatted_parts: List[str] = []
@@ -210,26 +242,47 @@ class CouncilRAG:
 
             for chunk in filtered_chunks:
                 text = chunk["text"]
-                # crude token estimate
-                est_tokens = int(len(text.split()) * 1.3)
+                # Skip empty chunks
+                if not text or not text.strip():
+                    logger.warning("[RAG] Skipping chunk with empty text: %s", chunk.get("id", "?")[:50])
+                    continue
+                
+                # Crude token estimate (words * 1.3)
+                words = text.split()
+                est_tokens = int(len(words) * 1.3)
+                
+                # Truncate large chunks to fit within per-chunk limit
+                if est_tokens > max_chunk_tokens:
+                    # Calculate how many words we can keep
+                    max_words = int(max_chunk_tokens / 1.3)
+                    truncated_text = " ".join(words[:max_words]) + "\n\n...(truncated)"
+                    chunk = {**chunk, "text": truncated_text}  # Create modified copy
+                    est_tokens = max_chunk_tokens
+                    logger.info("[RAG] Truncated chunk from %d to %d tokens", len(words), max_words)
 
-                if used_tokens + est_tokens > RAG_MAX_TOKENS:
+                # Check if adding this chunk would exceed total budget
+                # Quality floor: always include at least 1 chunk even if over budget
+                if used_tokens + est_tokens > actual_budget and len(formatted_parts) >= 1:
+                    logger.info("[RAG] Token budget reached (%d/%d), stopping", used_tokens, actual_budget)
                     break
 
                 used_tokens += est_tokens
                 formatted_parts.append(self._format_chunk(chunk))
+                
+                # After adding first chunk, if we're now over budget, stop
+                if used_tokens > actual_budget:
+                    logger.info("[RAG] Quality floor: included 1 chunk (%d tokens) despite budget", used_tokens)
+                    break
 
             context = "\n\n".join(formatted_parts)
             logger.info(
-                "[PHASE1] Hybrid RAG context tokens=%d, pieces=%d",
-                used_tokens,
-                len(formatted_parts),
+                "[RAG] Budget: requested=%d, actual=%d, returned=%d, pieces=%d",
+                requested, actual_budget, used_tokens, len(formatted_parts),
             )
-            logger.info("[RAG] Retrieve completed successfully, returning %d chars", len(context))
-            return context
+            return {"context": context, "used_tokens": used_tokens, "pieces": len(formatted_parts)}
         except Exception as e:
             logger.error("[RAG] Error in retrieve: %s", e, exc_info=True)
-            return ""
+            return {"context": "", "used_tokens": 0, "pieces": 0}
 
     def _format_chunk(self, chunk: Dict[str, Any]) -> str:
         """
