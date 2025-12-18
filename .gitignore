@@ -39,6 +39,7 @@ data/
 *.sqlite
 *.sqlite3
 chroma_db/
+attachment_storage/
 
 # IDE
 .vscode/
@@ -52,6 +53,7 @@ chroma_db/
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Frontend
 frontend/node_modules/
@@ -66,6 +68,7 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
+logs/
 
 # OS
 Thumbs.db
@@ -76,19 +79,25 @@ $RECYCLE.BIN/
 .AppleDouble
 .LSOverride
 
-# Temporary files
+# Temporary and Archive
 *.tmp
 *.temp
 *.bak
 *.backup
+archive/
+
+# Security (Generic Patterns)
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+secrets.*
+**/*secret*
+**/*token*
+!**/node_modules/**
 
 # Test and development files
-test_*.py
-verify_*.py
-CONFIDENCE_BADGE_UI.jsx
-system_review.md
-walkthrough.md
+# test_*.py moved to tests/ and tracked
+# verify_*.py moved to tests/ and tracked
 test_output.txt
-
-# Application logs
-logs/
