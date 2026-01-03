@@ -359,35 +359,138 @@ export default function ChatInterface({
 
   const handleExport = () => {
     if (!conversation) return;
-    const { title, messages, created_at } = conversation;
-    let md = `# ${title}\nDate: ${new Date(created_at).toLocaleString()}\n\n`;
+    const { title, messages, created_at, metadata, total_cost } = conversation;
 
-    messages.forEach(msg => {
-      md += `## ${msg.role === 'user' ? 'User' : 'LLM Council'}\n\n`;
-      if (msg.role === 'user') {
-        md += `${msg.content}\n\n`;
-      } else {
-        if (msg.stage3) {
-          md += `### Final Answer\n${msg.stage3.response}\n\n`;
-          md += `#### Stage 1 Responses\n`;
-          msg.stage1?.forEach(r => md += `- **${r.model}**: ${r.response.substring(0, 100)}...\n`);
-        } else {
-          md += `${msg.content}\n\n`;
-        }
+    // Robust mode detection
+    const hasCouncilData = (messages ?? []).some(m => m.stage1 || m.stage2 || m.stage3);
+    const isCouncilMode = (metadata?.council_models?.length > 0) || hasCouncilData;
+
+    // Date formatting (single object, labeled UTC)
+    const date = new Date(created_at);
+    const localDate = date.toLocaleString(undefined, {
+      year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+    });
+    const isoDate = date.toISOString();
+
+    // Build header
+    let md = `# ${title || 'Untitled Conversation'}\n`;
+    md += `Date: ${localDate} (UTC: ${isoDate})\n\n`;
+
+    // Council mode: add model list
+    if (isCouncilMode && metadata?.council_models?.length > 0) {
+      const councilNames = metadata.council_models.map(m => m.split('/')[1] || m).join(', ');
+      md += `**Council**: ${councilNames}\n`;
+      if (metadata?.chairman_model) {
+        const chairName = metadata.chairman_model.split('/')[1] || metadata.chairman_model;
+        md += `**Chairman**: ${chairName}\n`;
       }
-      md += `---\n\n`;
+      md += '\n';
+    }
+
+    md += `---\n\n`;
+
+    // Filter to user + assistant only
+    const exportMessages = (messages ?? []).filter(m => m.role === 'user' || m.role === 'assistant');
+
+    exportMessages.forEach(msg => {
+      if (msg.role === 'user') {
+        md += `## User\n\n${msg.content}\n\n---\n\n`;
+      } else {
+        // Assistant message
+        const hasStages = msg.stage1 || msg.stage2 || msg.stage3;
+
+        if (hasStages) {
+          md += `## LLM Council\n\n`;
+
+          // Stage 1: Full responses
+          if (msg.stage1 && msg.stage1.length > 0) {
+            md += `### Stage 1: Individual Responses\n\n`;
+            msg.stage1.forEach(r => {
+              const modelName = r.model?.split('/')[1] || r.model || 'Unknown';
+              md += `**${modelName}**\n${r.response}\n\n`;
+            });
+          }
+
+          // Stage 2: Peer rankings
+          if (msg.stage2 && msg.stage2.length > 0) {
+            md += `### Stage 2: Peer Rankings\n\n`;
+            const labelToModel = msg.metadata?.label_to_model || {};
+
+            msg.stage2.forEach(rank => {
+              const evaluatorName = rank.model?.split('/')[1] || rank.model || 'Unknown';
+              md += `**Evaluator: ${evaluatorName}**\n${rank.ranking}\n`;
+
+              // Parsed ranking (with fallback to raw labels)
+              if (rank.parsed_ranking && rank.parsed_ranking.length > 0) {
+                const parsed = rank.parsed_ranking.map((label, i) => {
+                  const modelName = labelToModel[label]
+                    ? (labelToModel[label].split('/')[1] || labelToModel[label])
+                    : label;
+                  return `${i + 1}. ${modelName}`;
+                }).join(', ');
+                md += `Extracted: ${parsed}\n`;
+              }
+              md += '\n';
+            });
+
+            // Aggregate rankings table
+            const aggRankings = msg.metadata?.aggregate_rankings;
+            if (aggRankings && aggRankings.length > 0) {
+              md += `| Rank | Model | Avg | Votes |\n`;
+              md += `|------|-------|-----|-------|\n`;
+              aggRankings.forEach((agg, i) => {
+                const modelName = agg.model?.split('/')[1] || agg.model || 'Unknown';
+                md += `| ${i + 1} | ${modelName} | ${agg.average_rank?.toFixed(2) || 'N/A'} | ${agg.rankings_count || 0} |\n`;
+              });
+              md += '\n';
+            }
+          }
+
+          // Stage 3: Final answer
+          if (msg.stage3) {
+            md += `### Stage 3: Final Answer\n`;
+            const chairName = msg.stage3.model?.split('/')[1] || msg.stage3.model || 'Chairman';
+            md += `**Chairman**: ${chairName}`;
+            if (msg.stage3.confidence) {
+              md += ` | **Confidence**: ${msg.stage3.confidence}`;
+            }
+            md += `\n\n${msg.stage3.response}\n\n`;
+          }
+        } else {
+          // Chat mode: simple format
+          md += `## Assistant\n\n${msg.content}\n\n`;
+        }
+
+        // Turn cost (omit if missing)
+        if (msg.running_cost != null && msg.running_cost > 0) {
+          md += `*Turn Cost: $${msg.running_cost.toFixed(4)}*\n\n`;
+        }
+
+        md += `---\n\n`;
+      }
     });
 
+    // Total cost (omit if missing)
+    if (total_cost != null && total_cost > 0) {
+      md += `**Total Session Cost: $${total_cost.toFixed(4)}**\n\n`;
+    }
+
+    // Footer note about excluded messages
+    md += `*Note: System messages excluded from export.*\n`;
+
+    // Download
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.md`;
+    a.download = `${(title || 'conversation').replace(/[^a-z0-9\u4e00-\u9fff]/gi, '_').toLowerCase()}.md`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+
 
   // Get council model count from conversation metadata
   const getCouncilModelCount = () => {
