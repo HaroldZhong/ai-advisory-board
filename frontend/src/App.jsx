@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
-import LandingPage from './landing/LandingPage';
+// LandingPage import removed for isolated marketing branch
 import Sidebar, { SidebarContent } from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
@@ -366,7 +366,19 @@ function App() {
   return (
     <SettingsProvider>
       <Routes>
-        <Route path="/" element={<LandingPage />} />
+        <Route
+          path="/"
+          element={
+            <ConversationView
+              conversations={conversations}
+              onConversationsChange={setConversations}
+              availableModels={availableModels}
+              onShowAnalytics={() => setShowAnalytics(true)}
+              showAnalytics={showAnalytics}
+              onCloseAnalytics={() => setShowAnalytics(false)}
+            />
+          }
+        />
         <Route
           path="/app"
           element={
