@@ -2,9 +2,6 @@
 
 An enhanced multi-turn AI chat system featuring a **3-stage deliberative council process** where multiple LLMs debate and synthesize answers, combined with **advanced RAG (Retrieval-Augmented Generation)** for context-aware conversations.
 
-> **Forked from [karpathy/llm-council](https://github.com/karpathy/llm-council)**
-
-[![Fork of karpathy/llm-council](https://img.shields.io/badge/fork-karpathy%2Fllm--council-blue)](https://github.com/karpathy/llm-council)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 ![llmcouncil](header.jpg)
@@ -265,7 +262,7 @@ OPENROUTER_API_KEY=sk-or-...  # Required
 ```python
 # Council members (5-7 recommended)
 COUNCIL_MODELS = [
-    "openai/gpt-5.1",
+    "openai/gpt-5.2",
     "google/gemini-3-pro-preview",
     "anthropic/claude-sonnet-4.5",
     # ... add more
