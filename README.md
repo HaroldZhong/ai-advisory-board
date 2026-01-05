@@ -47,8 +47,8 @@ An enhanced multi-turn AI chat system featuring a **3-stage deliberative council
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/HaroldZhong/llm-council-enhanced.git
-   cd llm-council-enhanced
+   git clone https://github.com/HaroldZhong/ai-advisory-board.git
+   cd ai-advisory-board
    ```
 
 2. **Backend Setup**
@@ -450,8 +450,8 @@ MIT License - See LICENSE file for details
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/HaroldZhong/llm-council-enhanced/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/HaroldZhong/llm-council-enhanced/discussions)
+- **Issues**: [GitHub Issues](https://github.com/HaroldZhong/ai-advisory-board/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/HaroldZhong/ai-advisory-board/discussions)
 
 ---
 
