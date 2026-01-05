@@ -4,7 +4,7 @@ An enhanced multi-turn AI chat system featuring a **3-stage deliberative council
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-![llmcouncil](header.jpg)
+![ai-advisory-board](header.png)
 
 ---
 
