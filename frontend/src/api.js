@@ -1,5 +1,5 @@
 /**
- * API client for the LLM Council backend.
+ * API client for the AI Advisory Board backend.
  */
 
 // Use environment variable for API URL, fallback to localhost for local development
@@ -108,7 +108,7 @@ export const api = {
       // Append decoded chunk to buffer, using stream mode to handle multi-byte chars
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      
+
       // Keep the last (potentially incomplete) line in the buffer
       buffer = lines.pop() || '';
 
@@ -124,7 +124,7 @@ export const api = {
         }
       }
     }
-    
+
     // Process any remaining data in buffer after stream ends
     if (buffer.startsWith('data: ')) {
       try {

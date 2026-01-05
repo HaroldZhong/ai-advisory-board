@@ -1,4 +1,4 @@
-"""3-stage LLM Council orchestration."""
+"""3-stage AI Advisory Board council orchestration."""
 
 from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
