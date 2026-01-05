@@ -1,16 +1,33 @@
-# React + Vite
+# AI Advisory Board - Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The frontend is a modern React application built with Vite, designed to facilitate complex multi-LLM interactions.
 
-Currently, two official plugins are available:
+## Key Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Real-time Streaming**: Server-Sent Events (SSE) for granular token-by-token updates from the Council.
+- **Dynamic UI**: Components for Council deliberations, Chain of Thought steps, and cost estimation.
+- **Responsive Design**: Tailwind CSS for a seamless experience on desktop and mobile.
+- **Markdown & Math**: Full support for rendering rich text and LaTeX equations using `react-markdown` and `katex`.
 
-## React Compiler
+## Project Structure
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `src/components`: UI components (ChatInterface, Sidebar, ModelSelector, etc.)
+- `src/contexts`: React Context for global state (Settings, Theme).
+- `src/landing`: Marketing landing page (deployed separately on `marketing` branch).
+- `src/utils`: Helper functions for cost calculation, formatting, etc.
 
-## Expanding the ESLint configuration
+## Development
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Run the development server:
+
+```bash
+npm run dev
+```
+
+## Build
+
+Build for production:
+
+```bash
+npm run build
+```
