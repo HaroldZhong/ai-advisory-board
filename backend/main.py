@@ -1,4 +1,4 @@
-"""FastAPI backend for LLM Council."""
+"""FastAPI backend for AI Advisory Board."""
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,7 +51,7 @@ def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
     cost = (prompt_tokens / 1_000_000) * input_price + (completion_tokens / 1_000_000) * output_price
     return cost
 
-app = FastAPI(title="LLM Council API")
+app = FastAPI(title="AI Advisory Board API")
 
 # Enable CORS for local development
 app.add_middleware(
@@ -129,7 +129,7 @@ class Conversation(BaseModel):
 @app.get("/")
 async def root():
     """Health check endpoint."""
-    return {"status": "ok", "service": "LLM Council API"}
+    return {"status": "ok", "service": "AI Advisory Board API"}
 
 
 @app.get("/api/models")

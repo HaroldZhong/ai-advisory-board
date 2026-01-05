@@ -1,5 +1,5 @@
 """
-File processing logic for the LLM Council.
+File processing logic for the AI Advisory Board.
 
 Handles text extraction from various file types:
 - PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, HTML, JSON

@@ -120,7 +120,7 @@ async def extract_pdf_with_openrouter(
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://llm-council.local",
-        "X-Title": "LLM Council"
+        "X-Title": "AI Advisory Board"
     }
     
     logger.info(f"[OPENROUTER-PDF] Processing {filename} with engine={engine}, zdr={use_zdr}")

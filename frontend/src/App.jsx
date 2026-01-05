@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
+import LandingPage from './landing/LandingPage';
 import Sidebar, { SidebarContent } from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
@@ -365,8 +366,9 @@ function App() {
   return (
     <SettingsProvider>
       <Routes>
+        <Route path="/" element={<LandingPage />} />
         <Route
-          path="/"
+          path="/app"
           element={
             <ConversationView
               conversations={conversations}

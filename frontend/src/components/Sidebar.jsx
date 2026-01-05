@@ -34,7 +34,7 @@ export function SidebarContent({
     <div className="flex flex-col h-full">
       <div className="p-4 space-y-4">
         <div className="flex items-center justify-between px-2">
-          <h1 className="text-xl font-bold tracking-tight">LLM Council</h1>
+          <h1 className="text-xl font-bold tracking-tight">AI Advisory Board</h1>
         </div>
         <Button onClick={handleNewConversation} className="w-full justify-start" size="lg">
           <PlusCircle className="mr-2 h-4 w-4" />

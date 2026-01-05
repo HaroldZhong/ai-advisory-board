@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# LLM Council - Start script
+# AI Advisory Board - Start script
 
-echo "Starting LLM Council..."
+echo "Starting AI Advisory Board..."
 echo ""
 
 # Start backend
@@ -20,7 +20,7 @@ npm run dev &
 FRONTEND_PID=$!
 
 echo ""
-echo "✓ LLM Council is running!"
+echo "✓ AI Advisory Board is running!"
 echo "  Backend:  http://localhost:8001"
 echo "  Frontend: http://localhost:5173"
 echo ""

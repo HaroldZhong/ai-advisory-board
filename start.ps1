@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "Starting LLM Council..."
+Write-Host "Starting AI Advisory Board..."
 Write-Host ""
 
 # Start backend
@@ -16,7 +16,7 @@ $frontendProcess = Start-Process -FilePath "npm.cmd" -ArgumentList "run dev" -Pa
 Pop-Location
 
 Write-Host ""
-Write-Host "✓ LLM Council is running!"
+Write-Host "✓ AI Advisory Board is running!"
 Write-Host "  Backend:  http://localhost:8001"
 Write-Host "  Frontend: http://localhost:5173"
 Write-Host ""

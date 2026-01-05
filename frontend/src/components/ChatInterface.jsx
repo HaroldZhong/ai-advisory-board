@@ -401,7 +401,7 @@ export default function ChatInterface({
         const hasStages = msg.stage1 || msg.stage2 || msg.stage3;
 
         if (hasStages) {
-          md += `## LLM Council\n\n`;
+          md += `## AI Advisory Board\n\n`;
 
           // Stage 1: Full responses
           if (msg.stage1 && msg.stage1.length > 0) {
@@ -501,7 +501,7 @@ export default function ChatInterface({
   if (!conversation) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-        <h2 className="text-2xl font-semibold mb-2">Welcome to LLM Council</h2>
+        <h2 className="text-2xl font-semibold mb-2">Welcome to AI Advisory Board</h2>
         <p>Create a new conversation to get started</p>
       </div>
     );
@@ -542,13 +542,13 @@ export default function ChatInterface({
           {conversation.messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-10">
               <h2 className="text-xl font-semibold mb-2">Start a conversation</h2>
-              <p>Ask a question to consult the LLM Council</p>
+              <p>Ask a question to consult the AI Advisory Board</p>
             </div>
           ) : (
             conversation.messages.map((msg, index) => (
               <div key={`${conversation.id}-msg-${index}-${msg.role}`} className={cn("flex flex-col gap-2", msg.role === 'user' ? "items-end" : "items-start")}>
                 <div className={cn("text-xs text-muted-foreground", msg.role === 'user' ? "text-right" : "text-left")}>
-                  {msg.role === 'user' ? 'You' : 'LLM Council'}
+                  {msg.role === 'user' ? 'You' : 'AI Advisory Board'}
                 </div>
 
                 {msg.role === 'user' ? (
