@@ -22,6 +22,8 @@ class ConversationLock:
                 cls._locks[conversation_id] = threading.Lock()
             return cls._locks[conversation_id]
 
+FOLDER_LOCK = threading.Lock()
+
 
 def ensure_data_dir():
     """Ensure the data directory exists."""
@@ -55,10 +57,12 @@ def create_conversation(conversation_id: str, metadata: Dict[str, Any] = None) -
         "total_cost": 0.0
     }
 
-    # Save to file
+    # Save to file atomically
     path = get_conversation_path(conversation_id)
-    with open(path, 'w') as f:
+    temp_path = path + ".tmp"
+    with open(temp_path, 'w') as f:
         json.dump(conversation, f, indent=2)
+    os.replace(temp_path, path)
 
     return conversation
 
@@ -92,8 +96,10 @@ def save_conversation(conversation: Dict[str, Any]):
     ensure_data_dir()
 
     path = get_conversation_path(conversation['id'])
-    with open(path, 'w') as f:
+    temp_path = path + ".tmp"
+    with open(temp_path, 'w') as f:
         json.dump(conversation, f, indent=2)
+    os.replace(temp_path, path)
 
 
 def list_conversations() -> List[Dict[str, Any]]:
@@ -107,7 +113,7 @@ def list_conversations() -> List[Dict[str, Any]]:
 
     conversations = []
     for filename in os.listdir(DATA_DIR):
-        if filename.endswith('.json'):
+        if filename.endswith('.json') and filename != 'folders.json':
             path = os.path.join(DATA_DIR, filename)
             with open(path, 'r') as f:
                 data = json.load(f)
@@ -116,7 +122,8 @@ def list_conversations() -> List[Dict[str, Any]]:
                     "id": data["id"],
                     "created_at": data["created_at"],
                     "title": data.get("title", "New Conversation"),
-                    "message_count": len(data["messages"])
+                    "message_count": len(data["messages"]),
+                    "folder_id": data.get("metadata", {}).get("folder_id")
                 })
 
     # Sort by creation time, newest first
@@ -144,6 +151,34 @@ def add_user_message(conversation_id: str, content: str):
         })
 
         save_conversation(conversation)
+
+
+def truncate_messages(conversation_id: str, keep_count: int) -> Dict[str, Any]:
+    """
+    Truncate a conversation's messages, keeping only the first `keep_count` messages.
+    Used by Edit & Regenerate to discard messages after the edit point.
+
+    Args:
+        conversation_id: Conversation identifier
+        keep_count: Number of messages to keep (0-indexed, exclusive)
+
+    Returns:
+        The updated conversation dict
+    """
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        original_count = len(conversation["messages"])
+        conversation["messages"] = conversation["messages"][:keep_count]
+        save_conversation(conversation)
+
+        logger.info(
+            "[EDIT] Truncated conversation %s from %d to %d messages",
+            conversation_id, original_count, keep_count
+        )
+        return conversation
 
 
 def add_assistant_message(
@@ -361,3 +396,123 @@ def get_budget_spent_percentage(conversation_id: str) -> Optional[float]:
     
     spent = usage.get("spent_usd", 0.0)
     return spent / budget
+
+
+# =============================================================================
+# CHAT MANAGEMENT (PHASE 5)
+# =============================================================================
+
+def delete_conversation(conversation_id: str) -> bool:
+    """
+    Atomically delete a conversation file.
+    Note: Vector DB cleanup should be triggered by the caller.
+    """
+    path = get_conversation_path(conversation_id)
+    if not os.path.exists(path):
+        return False
+        
+    lock = ConversationLock.get_lock(conversation_id)
+    with lock:
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+
+def update_conversation_folder(conversation_id: str, folder_id: Optional[str]) -> bool:
+    """Move a conversation to a specific folder (or remove from folder if None)."""
+    lock = ConversationLock.get_lock(conversation_id)
+    with lock:
+        conv = get_conversation(conversation_id)
+        if not conv:
+            return False
+            
+        if "metadata" not in conv:
+            conv["metadata"] = {}
+            
+        if folder_id is None:
+            conv["metadata"].pop("folder_id", None)
+        else:
+            conv["metadata"]["folder_id"] = folder_id
+            
+        save_conversation(conv)
+        return True
+
+
+# =============================================================================
+# FOLDER MANAGEMENT (PHASE 5)
+# =============================================================================
+
+def get_folders_path() -> str:
+    return os.path.join(DATA_DIR, "folders.json")
+
+
+def _read_folders() -> List[Dict[str, Any]]:
+    path = get_folders_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _write_folders(folders: List[Dict[str, Any]]):
+    ensure_data_dir()
+    path = get_folders_path()
+    temp_path = path + ".tmp"
+    with open(temp_path, 'w') as f:
+        json.dump(folders, f, indent=2)
+    os.replace(temp_path, path)
+
+
+def list_folders() -> List[Dict[str, Any]]:
+    """Get all folders sorted by creation time."""
+    with FOLDER_LOCK:
+        folders = _read_folders()
+        folders.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return folders
+
+
+def create_folder(folder_id: str, name: str, color: str = None) -> Dict[str, Any]:
+    """Create a new folder."""
+    with FOLDER_LOCK:
+        folders = _read_folders()
+        new_folder = {
+            "id": folder_id,
+            "name": name,
+            "color": color,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        folders.append(new_folder)
+        _write_folders(folders)
+        return new_folder
+
+
+def update_folder(folder_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Update a folder's properties."""
+    with FOLDER_LOCK:
+        folders = _read_folders()
+        for f in folders:
+            if f["id"] == folder_id:
+                if "name" in updates and updates["name"]:
+                    f["name"] = updates["name"]
+                if "color" in updates:
+                    f["color"] = updates["color"]
+                f["updated_at"] = datetime.utcnow().isoformat()
+                _write_folders(folders)
+                return f
+        return None
+
+
+def delete_folder(folder_id: str) -> bool:
+    """Delete a folder. Note: Conversations inside will be orphaned (folder_id points to nothing), which is fine for the frontend to handle as 'root'."""
+    with FOLDER_LOCK:
+        folders = _read_folders()
+        new_folders = [f for f in folders if f["id"] != folder_id]
+        if len(new_folders) == len(folders):
+            return False
+        _write_folders(new_folders)
+        return True

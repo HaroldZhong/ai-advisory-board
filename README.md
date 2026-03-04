@@ -1,6 +1,6 @@
 # AI Advisory Board
 
-An enhanced multi-turn AI chat system featuring a **3-stage deliberative council process** where multiple LLMs debate and synthesize answers, combined with **advanced RAG (Retrieval-Augmented Generation)** for context-aware conversations.
+A desktop AI assistant powered by a **multi-LLM deliberative council** — multiple AI models debate, rank, and synthesize answers to deliver higher-quality responses than any single model alone. Features **persistent memory (PageIndex RAG)**, **web search**, **document processing**, and **custom personas**.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -10,175 +10,193 @@ An enhanced multi-turn AI chat system featuring a **3-stage deliberative council
 
 ## 🎯 Key Features
 
-### ✨ Phase 1: Advanced RAG System (NEW - Dec 2025)
+### Council Process (3-Stage Deliberation)
 
-- **Hybrid Retrieval**: BM25 (keyword) + Dense (semantic) search with Reciprocal Rank Fusion
-- **Query Rewriting**: Automatic coreference resolution for natural follow-up questions
-- **Confidence Scoring**: HIGH/MEDIUM/LOW trust indicators based on council consensus
-- **Enhanced Metadata**: Topic extraction and quality metrics for every conversation turn
+- **Stage 1 — Collect**: 5+ LLMs independently answer your question
+- **Stage 2 — Rank**: Models anonymously evaluate and rank all responses
+- **Stage 3 — Synthesize**: Chairman model creates a final answer based on rankings and deliberation, with a confidence score (HIGH/MEDIUM/LOW)
 
-### Core Council Process
+### Memory & Retrieval (PageIndex RAG)
 
-- **Stage 1 (Collect)**: Multiple LLMs provide independent responses to your question
-- **Stage 2 (Rank)**: Council members evaluate and rank each other's answers anonymously
-- **Stage 3 (Synthesize)**: Chairman LLM creates final answer based on rankings and deliberation
+- **Persistent Memory**: Conversations are indexed and retrievable across sessions
+- **Document Indexing**: Uploaded files are automatically indexed for future retrieval
+- **Query Rewriting**: Automatic coreference resolution for natural follow-ups
 
-### Additional Features
+### Web Search
 
-- **Multi-turn Conversations**: Context-aware dialogue with RAG-powered memory
-- **Chain of Thought**: See reasoning steps from models that support it
-- **Cost Tracking**: Real-time usage and cost analytics per conversation
-- **Model Selection**: Choose your council members and chairman dynamically
-- **File Upload**: Process PDFs, images, and text files with AI analysis
-- **Analytics Dashboard**: Usage statistics, model performance, and cost breakdowns
+- **Perplexity Integration**: Native web search via OpenRouter (Sonar models)
+- **Fast/Deep Modes**: Quick web lookups or thorough research-grade searches
+- **Inline Toggle**: One-click enable from the chat input bar
+
+### File Processing
+
+- **Drag & Drop**: Drop files directly into the chat
+- **Supported Formats**: PDF, DOCX, PPTX, XLSX, CSV, TXT, Markdown, HTML, JSON, and images
+- **Vision**: Images are analyzed using vision models
+- **PageIndex Integration**: Extracted text is automatically indexed for cross-chat retrieval
+
+### Advanced Features
+
+- **Custom Personas**: Set persistent instructions that shape every response
+- **Edit & Regenerate**: Click any previous message to edit and regenerate from that point
+- **Chat Export**: Export conversations to Markdown
+- **Session Budgets**: Set spending limits ($1/$2/$5/unlimited) with graceful degradation
+- **Cost Tracking**: Real-time per-conversation and per-model cost analytics
+- **40+ Models**: Curated registry from OpenAI, Anthropic, Google, xAI, DeepSeek, Mistral, and more
+- **Folder Organization**: Group conversations into color-coded folders
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Getting Started
 
-### Prerequisites
+### Option A: Desktop App (Recommended)
+
+The simplest way to use the AI Advisory Board — a single executable that runs everything locally.
+
+1. **Download** `AI Advisory Board.exe` from [Releases](https://github.com/HaroldZhong/ai-advisory-board/releases)
+2. **Create** a `.env` file in the same folder as the exe:
+   ```
+   OPENROUTER_API_KEY=sk-or-your-key-here
+   ```
+3. **Run** the exe — it launches a local server and opens the app in a native window
+
+> **Get an API key**: Sign up at [OpenRouter](https://openrouter.ai/) (free tier available)
+
+### Option B: Development Setup
+
+For developers who want to modify the code:
+
+#### Prerequisites
 
 - Python 3.10+
 - Node.js 18+
-- OpenRouter API key ([get one here](https://openrouter.ai/))
+- [OpenRouter API key](https://openrouter.ai/)
 
-### Installation
+#### Installation
 
-1. **Clone the repository**
+```bash
+# Clone
+git clone https://github.com/HaroldZhong/ai-advisory-board.git
+cd ai-advisory-board
 
-   ```bash
-   git clone https://github.com/HaroldZhong/ai-advisory-board.git
-   cd ai-advisory-board
-   ```
+# Backend
+pip install uv
+uv sync
 
-2. **Backend Setup**
+# Frontend
+cd frontend && npm install && cd ..
 
-   ```bash
-   # Install uv (fast Python package manager)
-   pip install uv
-   
-   # Install Python dependencies
-   uv sync
-   
-   # Create .env file
-   echo "OPENROUTER_API_KEY=your_key_here" > .env
-   ```
+# Environment
+echo "OPENROUTER_API_KEY=sk-or-your-key-here" > .env
+```
 
-3. **Frontend Setup**
+#### Running
 
-   ```bash
-   cd frontend
-   npm install
-   cd ..
-   ```
+```bash
+# Option 1: Start script (recommended)
+./start.ps1     # Windows
+./start.sh       # Linux/Mac
 
-4. **Start the Application**
+# Option 2: Manual
+# Terminal 1 — Backend
+uv run uvicorn backend.main:app --reload --port 8001
 
-   ```bash
-   # Option 1: Use the start script (recommended)
-   ./start.ps1  # Windows
-   ./start.sh   # Linux/Mac
-   
-   # Option 2: Start manually
-   # Terminal 1 - Backend
-   uv run uvicorn backend.main:app --reload --port 8001
-   
-   # Terminal 2 - Frontend  
-   cd frontend && npm run dev
-   ```
+# Terminal 2 — Frontend
+cd frontend && npm run dev
+```
 
-5. **Open in Browser**
+Then open **http://localhost:5173** in your browser.
 
-   ```
-   http://localhost:5173
-   ```
+#### Building the Desktop App
+
+```bash
+# 1. Build the frontend
+cd frontend && npm run build && cd ..
+
+# 2. Build the exe (requires pyinstaller + pywebview)
+pip install pyinstaller pywebview
+python build_exe.py
+
+# Output: dist/AI Advisory Board.exe
+```
 
 ---
 
 ## 📖 How It Works
 
-### The 3-Stage Council Process
-
-When you ask a question in **Council Mode**:
-
-1. **Stage 1: Independent Responses**
-   - 5+ council models each provide their own answer
-   - No knowledge of what others are saying
-   - Responses shown side-by-side for comparison
-
-2. **Stage 2: Anonymous Ranking**
-   - Each model ranks ALL responses (including their own)
-   - Responses are anonymized during ranking
-   - Creates aggregate rankings showing consensus
-
-3. **Stage 3: Final Synthesis**
-   - Chairman model reviews all responses and rankings
-   - Creates authoritative final answer
-   - **NEW**: Includes confidence score (HIGH/MEDIUM/LOW)
-
-### Advanced RAG Architecture
-
-**Before Phase 1:**
-
-- Simple dense-only retrieval
-- No query preprocessing
-- Basic metadata
-
-**After Phase 1:**
-
-- **Hybrid Retrieval**: Combines BM25 (keyword matching) + Dense (semantic understanding)
-- **Query Rewriting**: Resolves pronouns like "it", "its", "that" in follow-ups
-- **Rich Metadata**: Topics, quality scores, consensus metrics for every turn
-- **Confidence Scoring**: Trust indicators based on model agreement
-
-**Example:**
+### Data Flow
 
 ```
-You: "Explain RAG systems"
-Council: [Detailed explanation with HIGH confidence]
-
-You: "What are its limitations?"
-↓ Rewritten to: "What are the limitations of RAG systems?"
-↓ Hybrid search finds relevant context
-↓ Chairman answers using retrieved context
+User Query
+    ↓
+[Optional] Web Search (Perplexity Sonar)
+    ↓
+Query Rewriting (resolve coreferences)
+    ↓
+PageIndex RAG Retrieval (persistent memory)
+    ↓
+Custom Instructions (persona prefix)
+    ↓
+Stage 1: Council responses (5+ models)
+    ↓
+Stage 2: Anonymous peer ranking
+    ↓
+Stage 3: Chairman synthesis + confidence
+    ↓
+Index session into PageIndex
+    ↓
+Display to user
 ```
+
+### Conversation Modes
+
+| Mode | When | What Happens |
+|------|------|--------------|
+| **Council** | First message | Full 3-stage deliberation with all council models |
+| **Chat** | Follow-ups | Quick response from Chairman with RAG context |
 
 ---
 
-## 📊 Phase 1 RAG Features
+## 🔧 Configuration
 
-### 1. Query Rewriting
+### Environment Variables
 
-Automatically expands abbreviated follow-up questions:
+```bash
+OPENROUTER_API_KEY=sk-or-...  # Required — get at openrouter.ai
+```
 
-- **Original**: "What about its limitations?"
-- **Rewritten**: "What are the limitations of RAG systems?"
-- **Config**: `ENABLE_QUERY_REWRITE = True` in `backend/config.py`
+### Model Configuration (`backend/config.py`)
 
-### 2. Hybrid Retrieval
+```python
+# Default council members (sent in Stage 1)
+COUNCIL_MODELS = [
+    "openai/gpt-5.1",
+    "google/gemini-3.1-pro-preview",
+    "anthropic/claude-sonnet-4.6",
+    "x-ai/grok-4-fast",
+    "moonshotai/kimi-k2.5",
+    "deepseek/deepseek-v3.2-exp",
+]
 
-Combines keyword and semantic search:
+# Chairman (synthesizes in Stage 3)
+CHAIRMAN_MODEL = "google/gemini-2.5-flash"
+```
 
-- **BM25**: Exact keyword matching (e.g., "BM25", "ChromaDB")
-- **Dense**: Semantic similarity (understands concepts)
-- **Fusion**: Reciprocal Rank Fusion merges results
-- **Filtering**: Conversation-scoped to prevent cross-talk
+Models can be changed at runtime via the Model Selector in the UI. The curated registry (`CURATED_MODELS` in `config.py`) includes 40+ models across tiers:
 
-### 3. Confidence Scoring
+- **Chairman Tier**: GPT-5.2, Gemini 3.1 Pro, Claude Opus 4.6, Kimi K2.5
+- **Workhorse Tier**: GPT-5.1, GPT-5.3 Chat, Claude Sonnet 4.6, DeepSeek V3.2
+- **Free Tier**: GPT-OSS 120B/20B, Devstral 2512
 
-Trust indicators based on council agreement:
+### In-App Settings
 
-- **HIGH** (>0.75): Strong consensus, factual questions
-- **MEDIUM** (>0.5): Some disagreement, nuanced topics  
-- **LOW** (≤0.5): Significant disagreement, subjective questions
-
-### 4. Enhanced Metadata
-
-Every council turn stores:
-
-- **Topics**: Extracted keywords (e.g., "RAG", "ChromaDB")
-- **Quality Metrics**: Per-model average rank and consensus score
-- **Timestamps**: For temporal queries and analysis
+| Setting | Description |
+|---------|-------------|
+| **Session Budget** | Spending limit per conversation ($1/$2/$5/unlimited) |
+| **Web Search** | Enable Perplexity web search (fast/deep) |
+| **Custom Instructions** | Persistent persona/system prompt |
+| **RAG Preset** | Memory retrieval depth (auto/low/medium/high/max) |
+| **Zero Data Retention** | ZDR mode for privacy-sensitive queries |
 
 ---
 
@@ -188,263 +206,92 @@ Every council turn stores:
 
 ```
 backend/
-├── main.py                  # API endpoints and routing
+├── main.py                  # API endpoints, streaming, routing
 ├── council.py               # 3-stage council orchestration
-├── rag.py                   # RAG system with ChromaDB
-├── hybrid_retrieval.py      # BM25 + Dense fusion
-├── rag_utils.py             # Query rewriting utilities
 ├── openrouter.py            # OpenRouter API client
-├── openrouter_client.py     # Enhanced API client
+├── rag.py                   # PageIndex RAG system
 ├── storage.py               # JSON-based conversation storage
-├── config.py                # Model and system configuration
-├── analytics.py             # Usage analytics
-├── file_processing.py       # File upload handling
-├── attachment_storage.py    # Attachment management
-├── budget_policy.py         # Session budget policies
-├── budget_router.py         # Budget-aware routing
-├── cost_predictor.py        # Cost estimation
-├── execution_modes.py       # Task-aware execution
-└── logger.py                # Logging configuration
+├── config.py                # Models, RAG, and budget configuration
+├── web_search.py            # Perplexity web search integration
+├── file_processing.py       # PDF/DOCX/PPTX/XLSX/image extraction
+├── attachment_storage.py    # Attachment lifecycle management
+├── analytics.py             # Usage and cost analytics
+├── rag_utils.py             # Query rewriting utilities
+├── budget_policy.py         # Budget-aware routing
+├── logger.py                # Structured logging
+├── pageindex/               # PageIndex reasoning RAG engine
+└── tools/                   # Tool calling infrastructure
 ```
 
-### Frontend (React + Vite + Tailwind)
+### Frontend (React + Vite + Tailwind + shadcn/ui)
 
 ```
 frontend/src/
-├── App.jsx                  # Main application
+├── App.jsx                  # Main app + streaming handler
 ├── api.js                   # Backend API client
 ├── components/
-│   ├── ChatInterface.jsx    # Chat UI with council stages
-│   ├── MarkdownRenderer.jsx # LaTeX/Markdown rendering
-│   ├── ModelSelector.jsx    # Dynamic model selection
-│   ├── SessionBudgetSelector.jsx # Budget controls
-│   ├── AnalyticsDashboard.jsx   # Stats and metrics
-│   ├── Sidebar.jsx          # Conversation management
-│   └── ui/                  # shadcn/ui components
-├── contexts/                # React context providers
-├── hooks/                   # Custom React hooks
-├── utils/                   # Utility functions
-└── lib/                     # Shared libraries
+│   ├── ChatInterface.jsx    # Chat UI, drag-drop, edit & regenerate
+│   ├── Sidebar.jsx          # Conversation list + folder management
+│   ├── ModelSelector.jsx    # Dynamic model picker
+│   ├── AdvancedSettingsPanel.jsx  # Settings dialog
+│   ├── AnalyticsDashboard.jsx    # Usage stats
+│   ├── MarkdownRenderer.jsx      # LaTeX + Markdown rendering
+│   └── ui/                  # shadcn/ui primitives
+├── contexts/
+│   └── SettingsContext.jsx  # Global settings state
+└── landing/
+    └── LandingPage.jsx      # Landing page
 ```
 
-### Data Flow
+### Desktop Wrapper
 
 ```
-User Query
-    ↓
-Query Rewriting (resolve coreferences)
-    ↓
-RAG Retrieval (hybrid BM25 + dense)
-    ↓
-Stage 1: Council responses
-    ↓
-Stage 2: Peer ranking
-    ↓
-Stage 3: Chairman synthesis + confidence
-    ↓
-Index session (topics, quality, consensus)
-    ↓
-Display to user
-```
-
----
-
-## 🔧 Configuration
-
-### Environment Variables (.env)
-
-```bash
-OPENROUTER_API_KEY=sk-or-...  # Required
-```
-
-### Model Configuration (backend/config.py)
-
-```python
-# Council members (5-7 recommended)
-COUNCIL_MODELS = [
-    "openai/gpt-5.2",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    # ... add more
-]
-
-# Chairman (usually most capable model)
-CHAIRMAN_MODEL = "google/gemini-2.5-pro"
-
-# Phase 1 features
-ENABLE_QUERY_REWRITE = True  # Enable/disable query rewriting
-```
-
-### RAG Tuning (backend/rag.py, backend/hybrid_retrieval.py)
-
-```python
-# Retrieval settings
-RAG_MAX_TOKENS = 3000        # Max context size
-threshold = 0.01             # RRF score threshold
-
-# Hybrid weights
-bm25_weight = 0.5           # Keyword importance
-dense_weight = 0.5          # Semantic importance
-```
-
----
-
-## 💡 Usage Examples
-
-### Council Mode (Full Deliberation)
-
-Best for: Complex questions, important decisions, diverse perspectives
-
-```
-Ask: "Should I use microservices or monolithic architecture?"
-→ 5 models debate
-→ See rankings and reasoning
-→ Get synthesized answer with MEDIUM confidence
-```
-
-### Chat Mode (Quick Responses)
-
-Best for: Follow-ups, clarifications, quick answers
-
-```
-Ask: "What did you say about databases?"
-→ Query rewritten automatically
-→ Retrieves relevant past context
-→ Quick answer from Chairman
-```
-
----
-
-## 📈 Analytics
-
-Access the analytics dashboard to view:
-
-- **Total Conversations**: Count and cost
-- **Model Usage**: Which models are used most
-- **Average Costs**: Per conversation and per model
-- **Confidence Distribution**: HIGH/MEDIUM/LOW breakdown
-
----
-
-## 💰 Cost Governance (NEW - Dec 2025)
-
-### Session Budget
-
-Set a spending limit per conversation:
-
-- **Presets**: $1 / $2 / $5 / No Limit
-- **Warnings**: Inline alerts at 70%, 85%, 100% of budget
-- **Graceful degradation**: No hard stops, just reduced context
-
-### Automatic Budget-Aware Routing
-
-The system automatically adjusts based on your budget status:
-
-| Spent | RAG Context | Mode |
-|-------|-------------|------|
-| ≤70% | Auto (from task) | From task signal |
-| 70-85% | Medium (8k) | Standard |
-| 85-100% | Low (4k) | Quick |
-| >100% | Low (minimal) | Quick |
-
-### Task Awareness
-
-Query analysis detects intent:
-
-- **Quick**: Short queries, "briefly", "quick"
-- **Research**: Long queries, "cite", "compare", "analyze"
-- **Standard**: Default balanced mode
-
-### Quality Floor
-
-Budget constraints never break the experience:
-
-- Always responds (no "budget exceeded" errors)
-- Always includes ≥1 RAG chunk when available
-
-### Configuration (backend/config.py)
-
-```python
-RAG_SETTINGS = {
-    "presets": {
-        "low": {"tokens": 4000},
-        "medium": {"tokens": 8000},
-        "high": {"tokens": 16000},
-    },
-    "absolute_max_tokens": 32000,
-}
-
-SESSION_POLICY_DEFAULTS = {
-    "budget_usd": None,  # None = no limit
-    "notify_thresholds": [0.70, 0.85, 1.00],
-}
+desktop.py        # PyWebView window + FastAPI server launcher
+build_exe.py      # PyInstaller build script
 ```
 
 ---
 
 ## 📁 Data Storage
 
-### Conversations
-
-- **Location**: `data/conversations/`
-- **Format**: JSON files per conversation
-- **Content**: All messages, council stages, costs, metadata
-
-### RAG Index
-
-- **Location**: `data/chroma_db/`
-- **Engine**: ChromaDB vector database
-- **Embedding Model**: `all-MiniLM-L6-v2`
-- **Metadata**: Topics, quality scores, timestamps
+| What | Where | Format |
+|------|-------|--------|
+| Conversations | `data/conversations/` | JSON per conversation |
+| PageIndex Memory | `data/pageindex/` | JSON reasoning index |
+| Attachments | `data/attachments/` | Binary files + metadata |
+| Logs | `logs/app.log` | Rotating log file |
 
 ---
 
-## 🚦 Roadmap
+## 💰 Cost Governance
 
-### Phase 1 ✅ COMPLETE (Dec 2025)
+### Session Budget
 
-- [x] Query rewriting
-- [x] Hybrid retrieval (BM25 + Dense)
-- [x] Confidence scoring
-- [x] Enhanced metadata
+Set a spending limit per conversation. The system automatically adjusts:
 
-### Phase 1.5 ✅ COMPLETE (Dec 2025)
+| Budget Spent | RAG Context | Behavior |
+|-------------|-------------|----------|
+| ≤70% | Auto | Full quality |
+| 70–85% | Medium (8k) | Standard |
+| 85–100% | Low (4k) | Quick mode |
+| >100% | Minimal | Quick mode |
 
-- [x] Session budget system with presets ($1/$2/$5/unlimited)
-- [x] Budget-aware routing and graceful degradation
-- [x] Cost tracking and real-time estimates
-- [x] File attachments (PDF, images, text)
-- [x] Tailwind CSS migration with shadcn/ui
-- [x] LaTeX/math rendering support
-- [x] Tool calling infrastructure (Steward + Router + Registry)
-- [ ] Reranker for improved precision
-- [ ] Contradiction detection
-
-> **Note**: Tool calling infrastructure is complete with the Tool Steward phase, Router, and Registry. Web search currently uses a mock implementation—real API integration coming in next update.
-
-### Phase 2 (Planned)
-
-- [ ] Web search integration (real API)
-- [ ] Multi-modal support (images, audio)
-- [ ] Custom embedding models
-- [x] Advanced analytics and insights
-- [ ] Storage migration (JSON → SQLite)
+**Quality floor**: Always responds, always includes ≥1 RAG chunk — no hard budget stops.
 
 ---
 
 ## 📝 License
 
-MIT License - See LICENSE file for details
+MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
 ## 🙏 Acknowledgments
 
 - **Original Concept**: [llm-council](https://github.com/karpathy/llm-council) by Andrej Karpathy
-- **Enhancements**: RAG integration, hybrid retrieval, confidence scoring
 - **APIs**: [OpenRouter](https://openrouter.ai/) for unified LLM access
-- **Vector DB**: [ChromaDB](https://www.trychroma.com/)
-- **Retrieval**: [rank-bm25](https://github.com/dorianbrown/rank_bm25)
+- **RAG**: [PageIndex](https://github.com/VectifyAI/PageIndex) reasoning-based retrieval
+- **UI**: [shadcn/ui](https://ui.shadcn.com/) + [Tailwind CSS](https://tailwindcss.com/)
 
 ---
 

@@ -8,7 +8,8 @@ import {
     DialogFooter,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import { Settings, Zap, Brain, Sparkles, ChevronDown, ChevronUp, Shield, ShieldOff } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import { Settings, Zap, Brain, Sparkles, ChevronDown, ChevronUp, Shield, ShieldOff, UserCog } from 'lucide-react';
 
 /**
  * Advanced Settings Panel
@@ -74,6 +75,7 @@ export default function AdvancedSettingsPanel({
         ragPreset: settings?.ragPreset || 'auto',
         modelTier: settings?.modelTier || 'auto',
         zdrEnabled: settings?.zdrEnabled ?? false,
+        customInstructions: settings?.customInstructions || '',
     });
 
     const handleSave = () => {
@@ -87,6 +89,7 @@ export default function AdvancedSettingsPanel({
             ragPreset: 'auto',
             modelTier: 'auto',
             zdrEnabled: false,
+            customInstructions: '',
         });
     };
 
@@ -236,6 +239,24 @@ export default function AdvancedSettingsPanel({
                                 <strong>Privacy protected:</strong> Your data will only be routed to providers with Zero Data Retention policies.
                             </div>
                         )}
+                    </div>
+
+                    {/* Custom Personas / Instructions */}
+                    <div>
+                        <label className="text-sm font-medium mb-2 flex items-center gap-2">
+                            <UserCog className="h-4 w-4 text-muted-foreground" />
+                            Custom Instructions
+                        </label>
+                        <Textarea
+                            value={localSettings.customInstructions}
+                            onChange={(e) => setLocalSettings(s => ({ ...s, customInstructions: e.target.value }))}
+                            placeholder="Example: Always respond in bullet points. Focus on practical advice. Use a formal tone."
+                            className="min-h-[80px] max-h-[200px] resize-y text-sm"
+                            rows={3}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                            These instructions are prepended to every council prompt as a system persona.
+                        </p>
                     </div>
 
                     {/* Info box */}

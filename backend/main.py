@@ -2,9 +2,11 @@
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Optional
 import uuid
 import json
 import asyncio
@@ -108,6 +110,10 @@ class SendMessageRequest(BaseModel):
     content: str
     mode: str = "auto"  # "auto", "council", or "chat"
     attachment_ids: List[str] = []  # List of attachment IDs to include
+    web_search_enabled: bool = False  # Enable Stage 0 web search
+    web_search_depth: str = "fast"  # "fast" (sonar) or "deep" (sonar-pro)
+    custom_instructions: str = ""  # Custom persona/instructions from user
+    edit_index: int = -1  # If >= 0, truncate conversation to this message index before sending
 
 
 class ConversationMetadata(BaseModel):
@@ -126,8 +132,22 @@ class Conversation(BaseModel):
     messages: List[Dict[str, Any]]
 
 
-@app.get("/")
-async def root():
+# Phase 5: Folder Management Models
+class FolderCreate(BaseModel):
+    name: str
+    color: Optional[str] = None
+
+class FolderUpdate(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    folder_id: Optional[str] = None
+
+
+@app.get("/api/health")
+async def health_check():
     """Health check endpoint."""
     return {"status": "ok", "service": "AI Advisory Board API"}
 
@@ -142,6 +162,54 @@ async def get_models():
     return {"models": enriched}
 
 
+@app.get("/api/config/status")
+async def get_config_status():
+    """Check if the system is configured (API key exists)."""
+    import os
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    return {"has_api_key": has_key}
+
+
+@app.post("/api/config/setup")
+async def setup_config(data: dict):
+    """Save the OpenRouter API key to .env file."""
+    import os
+    api_key = data.get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required")
+        
+    # Write to .env file
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    
+    # Read existing env
+    lines = []
+    key_exists = False
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+            
+    # Update or append using simple line replacement
+    new_lines = []
+    for line in lines:
+        if line.startswith("OPENROUTER_API_KEY="):
+            new_lines.append(f"OPENROUTER_API_KEY={api_key}\n")
+            key_exists = True
+        else:
+            new_lines.append(line)
+            
+    if not key_exists:
+        new_lines.append(f"OPENROUTER_API_KEY={api_key}\n")
+        
+    with open(env_path, "w") as f:
+        f.writelines(new_lines)
+        
+    # Set the environment variable immediately for the current process
+    os.environ["OPENROUTER_API_KEY"] = api_key
+    
+    return {"success": True}
+
+
+
 @app.get("/api/analytics")
 async def get_analytics_data():
     """Get model performance analytics."""
@@ -150,6 +218,37 @@ async def get_analytics_data():
 
 
 
+
+
+@app.get("/api/folders")
+async def get_folders():
+    """List all folders."""
+    return storage.list_folders()
+
+
+@app.post("/api/folders")
+async def create_folder(folder: FolderCreate):
+    """Create a new folder."""
+    import uuid
+    folder_id = str(uuid.uuid4())
+    return storage.create_folder(folder_id, folder.name, folder.color)
+
+
+@app.put("/api/folders/{folder_id}")
+async def update_folder(folder_id: str, updates: FolderUpdate):
+    """Update a folder."""
+    updated = storage.update_folder(folder_id, updates.dict(exclude_unset=True))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return updated
+
+
+@app.delete("/api/folders/{folder_id}")
+async def delete_folder(folder_id: str):
+    """Delete a folder."""
+    if not storage.delete_folder(folder_id):
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return {"success": True}
 
 
 @app.get("/api/conversations")
@@ -165,6 +264,33 @@ async def get_conversation(conversation_id: str):
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation
+
+
+@app.put("/api/conversations/{conversation_id}")
+async def update_conversation(conversation_id: str, updates: ConversationUpdate):
+    """Update conversation title or folder."""
+    updates_dict = updates.dict(exclude_unset=True)
+    if "title" in updates_dict and updates.title is not None:
+        storage.update_conversation_title(conversation_id, updates.title)
+    if "folder_id" in updates_dict:
+        storage.update_conversation_folder(conversation_id, updates.folder_id)
+        # Keep PageIndex folder routing in sync
+        rag_system.update_conversation_folder(conversation_id, updates.folder_id or "root")
+        
+    conv = storage.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation entirely."""
+    if not storage.delete_conversation(conversation_id):
+         raise HTTPException(status_code=404, detail="Conversation not found")
+    # Purge PageIndex memories for this conversation
+    rag_system.delete_conversation_memories(conversation_id)
+    return {"success": True}
 
 
 @app.post("/api/conversations/{conversation_id}/message")
@@ -271,8 +397,8 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             conversation["messages"]
         )
         
-        # Retrieve context via RAG (using rewritten query)
-        rag_context = rag_system.retrieve(rewritten_query, conversation_id)
+        # Retrieve context via PageIndex reasoning RAG (using rewritten query)
+        rag_context = await rag_system.retrieve_async(rewritten_query, conversation_id)
         
         # Chat with chairman (using original query)
         response_dict = await chat_with_chairman(
@@ -317,6 +443,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             if has_attachments:
                 attachment_context = build_llm_context(request.attachment_ids)
                 logger.info(f"[ATTACH] Built context from {len(request.attachment_ids)} attachments ({len(attachment_context)} chars)")
+                # Index documents into PageIndex for cross-conversation retrieval
+                for att_id in request.attachment_ids:
+                    att_text = get_attachment_text(att_id)
+                    if att_text:
+                        rag_system.index_document(conversation_id, att_id, att_text)
             
             # Combine user content with attachment context for LLM
             # User sees only their message, LLM sees message + attachments
@@ -324,6 +455,17 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             if attachment_context:
                 llm_content = f"{request.content}\n\n{attachment_context}"
             
+            # Prepend custom instructions as a persona prefix
+            if request.custom_instructions.strip():
+                llm_content = f"[User Instructions]\n{request.custom_instructions.strip()}\n\n{llm_content}"
+            
+            # Edit & Regenerate: truncate messages if edit_index is set
+            if request.edit_index >= 0:
+                storage.truncate_messages(conversation_id, request.edit_index)
+                # Re-fetch conversation after truncation
+                conversation = storage.get_conversation(conversation_id)
+                yield f"data: {json.dumps({'type': 'edit_truncated', 'data': {'edit_index': request.edit_index}})}\n\n"
+
             # Add user message (store only original content, not attachment text)
             storage.add_user_message(conversation_id, request.content)
 
@@ -338,7 +480,18 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 if is_first_message:
                     title_task = asyncio.create_task(generate_conversation_title(request.content))
 
-                # Stage 0: Tool Steward
+                # Stage 0a: Web Search (if enabled)
+                web_context = ""
+                if request.web_search_enabled:
+                    from .web_search import web_search_stage0
+                    yield f"data: {json.dumps({'type': 'web_search_start'})}\n\n"
+                    search_result = await web_search_stage0(request.content, depth=request.web_search_depth)
+                    web_context = search_result.get("context", "")
+                    yield f"data: {json.dumps({'type': 'web_search_complete', 'data': {'context': web_context[:500], 'citations': search_result.get('citations', []), 'model': search_result.get('model', '')}})}\n\n"
+                    if web_context:
+                        llm_content = f"[Web Search Results]\n{web_context}\n\n[User Query]\n{llm_content}"
+
+                # Stage 0b: Tool Steward
                 # We need a run_id for the tool execution
                 import uuid
                 run_id = str(uuid.uuid4())
@@ -450,8 +603,17 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 )
                 logger.info(f"[CHAT] Query rewritten, now retrieving RAG context...")
                 
-                # Retrieve context via RAG using budget from Run Plan
-                rag_context = rag_system.retrieve(
+                # Web Search grounding for chat mode (if enabled)
+                chat_web_context = ""
+                if request.web_search_enabled:
+                    from .web_search import web_search_stage0
+                    yield f"data: {json.dumps({'type': 'web_search_start'})}\n\n"
+                    search_result = await web_search_stage0(request.content, depth=request.web_search_depth)
+                    chat_web_context = search_result.get("context", "")
+                    yield f"data: {json.dumps({'type': 'web_search_complete', 'data': {'context': chat_web_context[:500], 'citations': search_result.get('citations', []), 'model': search_result.get('model', '')}})}\n\n"
+
+                # Retrieve context via PageIndex reasoning RAG
+                rag_context = await rag_system.retrieve_async(
                     rewritten_query, 
                     conversation_id, 
                     max_tokens=run_plan.rag_max_tokens
@@ -462,10 +624,12 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 try:
                     logger.info(f"[CHAT] Calling chairman with query: {request.content[:50]}...")
                     
-                    # Combine RAG context with attachment context
+                    # Combine RAG context with attachment context and web search
                     combined_context = rag_context
                     if attachment_context:
                         combined_context = f"{attachment_context}\n\n{rag_context}" if rag_context else attachment_context
+                    if chat_web_context:
+                        combined_context = f"[Web Search Results]\n{chat_web_context}\n\n{combined_context}" if combined_context else f"[Web Search Results]\n{chat_web_context}"
                     
                     response_dict = await chat_with_chairman(
                         request.content,  # Original query to Chairman
@@ -757,6 +921,46 @@ async def get_extraction_recommendation(attachment_id: str):
     )
     
     return recommendation
+
+
+# =============================================================================
+# Serve Frontend Static Files
+# =============================================================================
+import sys
+def get_base_path():
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        return sys._MEIPASS
+    except Exception:
+        return os.path.dirname(os.path.dirname(__file__))
+
+frontend_dir = os.path.join(get_base_path(), "frontend", "dist")
+
+if os.path.exists(frontend_dir):
+    assets_dir = os.path.join(frontend_dir, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # Ignore API routes
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API route not found")
+            
+        # Try to serve a specific file if it exists (e.g., favicon.ico)
+        file_path = os.path.join(frontend_dir, full_path)
+        if full_path and os.path.isfile(file_path):
+            from fastapi.responses import FileResponse
+            return FileResponse(file_path)
+            
+        # Otherwise, serve index.html for React Router
+        index_path = os.path.join(frontend_dir, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
+        return {"error": "Frontend build not found"}
+else:
+    logger.warning("Frontend build directory not found. Please run 'npm run build' in the frontend folder.")
 
 
 if __name__ == "__main__":

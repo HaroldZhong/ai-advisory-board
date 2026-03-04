@@ -86,6 +86,13 @@ $RECYCLE.BIN/
 *.backup
 archive/
 
+# PyInstaller Build
+*.spec
+build/
+dist/
+app_icon.ico
+desktop.log
+
 # Security (Generic Patterns)
 *.pem
 *.key

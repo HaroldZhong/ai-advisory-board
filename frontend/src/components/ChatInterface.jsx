@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Paperclip, Send, Download, X, Loader2, Users, User, Crown, ChevronDown, Brain, Sparkles, DollarSign, Settings } from "lucide-react";
+import { Paperclip, Send, Download, X, Loader2, Users, User, Crown, ChevronDown, Brain, Sparkles, DollarSign, Settings, Globe, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -157,6 +157,9 @@ export default function ChatInterface({
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [sessionBudget, setSessionBudget] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [editingIndex, setEditingIndex] = useState(-1);
+  const [editingContent, setEditingContent] = useState('');
   const { settings, updateSettings } = useSettings();
 
   // Robust scroll logic
@@ -357,6 +360,81 @@ export default function ChatInterface({
     }
   };
 
+  // Drag and drop handlers
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only hide if leaving the container (not entering a child)
+    if (e.currentTarget.contains(e.relatedTarget)) return;
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const droppedFiles = Array.from(e.dataTransfer.files || []);
+    if (droppedFiles.length === 0) return;
+
+    const MAX_FILE_SIZE = 50 * 1024 * 1024;
+    const MAX_FILES = 10;
+
+    const oversized = droppedFiles.filter(f => f.size > MAX_FILE_SIZE);
+    if (oversized.length > 0) {
+      alert(`Some files exceed 50MB limit: ${oversized.map(f => f.name).join(', ')}`);
+      return;
+    }
+    if (attachments.length + droppedFiles.length > MAX_FILES) {
+      alert(`Maximum ${MAX_FILES} files allowed`);
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      for (const file of droppedFiles) {
+        const result = await api.uploadAttachment(file);
+        setAttachments(prev => [...prev, {
+          attachment_id: result.attachment_id,
+          filename: result.filename,
+          status: result.status,
+          warning: result.warning,
+          stats: result.stats,
+          cached: result.cached,
+          mime_type: file.type
+        }]);
+      }
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // Edit & Regenerate handlers
+  const handleEditStart = (index, content) => {
+    setEditingIndex(index);
+    setEditingContent(content);
+  };
+
+  const handleEditCancel = () => {
+    setEditingIndex(-1);
+    setEditingContent('');
+  };
+
+  const handleEditSubmit = () => {
+    if (!editingContent.trim()) return;
+    onSendMessage(editingContent, [], [], editingIndex);
+    setEditingIndex(-1);
+    setEditingContent('');
+  };
+
   const handleExport = () => {
     if (!conversation) return;
     const { title, messages, created_at, metadata, total_cost } = conversation;
@@ -510,7 +588,22 @@ export default function ChatInterface({
   const councilCount = getCouncilModelCount();
 
   return (
-    <div className="flex flex-col h-full bg-background relative">
+    <div
+      className="flex flex-col h-full bg-background relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-primary/10 backdrop-blur-sm border-2 border-dashed border-primary/50 rounded-lg flex items-center justify-center pointer-events-none">
+          <div className="text-center">
+            <Paperclip className="h-10 w-10 text-primary mx-auto mb-2" />
+            <p className="text-lg font-medium text-primary">Drop files here</p>
+            <p className="text-sm text-muted-foreground">PDF, DOCX, images, and more</p>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between p-4 border-b h-14 shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10">
         <h3 className="font-semibold truncate max-w-[60%]">{conversation.title}</h3>
         <div className="flex items-center gap-1">
@@ -552,17 +645,50 @@ export default function ChatInterface({
                 </div>
 
                 {msg.role === 'user' ? (
-                  <Card className="bg-primary text-primary-foreground p-3 max-w-[85%]">
-                    <div className="prose prose-invert max-w-none text-sm">
-                      <MarkdownRenderer>{msg.content}</MarkdownRenderer>
-                    </div>
-                    {/* Show attachment pills if present */}
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div className="mt-2 pt-2 border-t border-primary-foreground/20">
-                        <AttachmentPillList attachments={msg.attachments} />
+                  editingIndex === index ? (
+                    // Inline editor for Edit & Regenerate
+                    <Card className="bg-primary/5 border-primary/30 p-3 max-w-[85%] w-full">
+                      <Textarea
+                        value={editingContent}
+                        onChange={(e) => setEditingContent(e.target.value)}
+                        className="min-h-[60px] max-h-[200px] resize-y text-sm mb-2"
+                        autoFocus
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleEditSubmit();
+                          }
+                          if (e.key === 'Escape') handleEditCancel();
+                        }}
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <Button variant="ghost" size="sm" onClick={handleEditCancel}>Cancel</Button>
+                        <Button size="sm" onClick={handleEditSubmit} disabled={!editingContent.trim()}>Submit</Button>
                       </div>
-                    )}
-                  </Card>
+                    </Card>
+                  ) : (
+                    <div className="group/msg relative max-w-[85%]">
+                      <Card className="bg-primary text-primary-foreground p-3">
+                        <div className="prose prose-invert max-w-none text-sm">
+                          <MarkdownRenderer>{msg.content}</MarkdownRenderer>
+                        </div>
+                        {msg.attachments && msg.attachments.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-primary-foreground/20">
+                            <AttachmentPillList attachments={msg.attachments} />
+                          </div>
+                        )}
+                      </Card>
+                      {!isLoading && (
+                        <button
+                          onClick={() => handleEditStart(index, msg.content)}
+                          className="absolute -left-8 top-1/2 -translate-y-1/2 opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded hover:bg-muted"
+                          title="Edit & Regenerate"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                        </button>
+                      )}
+                    </div>
+                  )
                 ) : (
                   <Card className="bg-muted/50 p-4 max-w-[95%] w-full">
                     <div className="flex flex-col gap-4">
@@ -740,14 +866,43 @@ export default function ChatInterface({
           </div>
 
           <div className="text-xs text-muted-foreground flex justify-between items-center gap-2 px-1">
-            <button
-              onClick={() => setShowBudgetSelector(true)}
-              className="flex items-center gap-1 text-xs hover:text-primary transition-colors"
-              title="Set session budget"
-            >
-              <DollarSign className="h-3 w-3" />
-              Budget{sessionBudget ? `: $${sessionBudget}` : ''}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowBudgetSelector(true)}
+                className="flex items-center gap-1 text-xs hover:text-primary transition-colors"
+                title="Set session budget"
+              >
+                <DollarSign className="h-3 w-3" />
+                Budget{sessionBudget ? `: $${sessionBudget}` : ''}
+              </button>
+              <button
+                onClick={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+                className={cn(
+                  "flex items-center gap-1 text-xs transition-colors rounded-full px-2 py-0.5",
+                  settings.webSearchEnabled
+                    ? "bg-blue-500/15 text-blue-500 hover:bg-blue-500/25"
+                    : "hover:text-primary"
+                )}
+                title={settings.webSearchEnabled ? 'Web search enabled — click to disable' : 'Click to enable web search'}
+              >
+                <Globe className="h-3 w-3" />
+                {settings.webSearchEnabled ? (
+                  <>
+                    Web
+                    <button
+                      className="ml-1 text-[10px] font-medium uppercase opacity-70 hover:opacity-100"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' });
+                      }}
+                      title={`Currently: ${settings.webSearchDepth}. Click to toggle.`}
+                    >
+                      ({settings.webSearchDepth})
+                    </button>
+                  </>
+                ) : 'Web'}
+              </button>
+            </div>
             <div className="flex gap-2">
               {estimatedCost !== null && (
                 <span>Est. Input: <span className="font-mono">${estimatedCost.toFixed(6)}</span></span>

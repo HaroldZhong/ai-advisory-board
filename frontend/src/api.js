@@ -3,8 +3,8 @@
  */
 
 // Use environment variable for API URL, fallback to localhost for local development
-// In production with reverse proxy, set VITE_API_URL to empty string or omit it
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8001';
+// In production with reverse proxy or packaged exe, set API_BASE to empty string
+const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8001' : '');
 
 export const api = {
   /**
@@ -81,7 +81,7 @@ export const api = {
    * @param {string[]} attachmentIds - Optional list of attachment IDs to include
    * @returns {Promise<void>}
    */
-  async sendMessageStream(conversationId, content, onEvent, mode = 'auto', attachmentIds = []) {
+  async sendMessageStream(conversationId, content, onEvent, mode = 'auto', attachmentIds = [], webSearch = {}, editIndex = -1) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
@@ -89,7 +89,15 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content, mode, attachment_ids: attachmentIds }),
+        body: JSON.stringify({
+          content,
+          mode,
+          attachment_ids: attachmentIds,
+          web_search_enabled: webSearch.enabled || false,
+          web_search_depth: webSearch.depth || 'fast',
+          custom_instructions: webSearch.customInstructions || '',
+          edit_index: editIndex,
+        }),
       }
     );
 
@@ -163,6 +171,34 @@ export const api = {
     const response = await fetch(`${API_BASE}/api/models`);
     if (!response.ok) {
       throw new Error('Failed to fetch models');
+    }
+    return response.json();
+  },
+
+  /**
+   * Check if API key is configured
+   */
+  async getConfigStatus() {
+    const response = await fetch(`${API_BASE}/api/config/status`);
+    if (!response.ok) {
+      return { has_api_key: false }; // fallback
+    }
+    return response.json();
+  },
+
+  /**
+   * Save OpenRouter API Key
+   */
+  async setupConfig(apiKey) {
+    const response = await fetch(`${API_BASE}/api/config/setup`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    if (!response.ok) {
+      throw new Error('Failed to save configuration');
     }
     return response.json();
   },
@@ -262,6 +298,62 @@ export const api = {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.detail || 'Failed to enhance attachment');
     }
+    return response.json();
+  },
+
+  // ==========================================================================
+  // FOLDER API
+  // ==========================================================================
+
+  async listFolders() {
+    const response = await fetch(`${API_BASE}/api/folders`);
+    if (!response.ok) throw new Error('Failed to list folders');
+    return response.json();
+  },
+
+  async createFolder(name, color = null) {
+    const response = await fetch(`${API_BASE}/api/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, color }),
+    });
+    if (!response.ok) throw new Error('Failed to create folder');
+    return response.json();
+  },
+
+  async updateFolder(folderId, updates) {
+    const response = await fetch(`${API_BASE}/api/folders/${folderId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!response.ok) throw new Error('Failed to update folder');
+    return response.json();
+  },
+
+  async deleteFolder(folderId) {
+    const response = await fetch(`${API_BASE}/api/folders/${folderId}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Failed to delete folder');
+    return response.json();
+  },
+
+  // ==========================================================================
+  // CONVERSATION MANAGEMENT API
+  // ==========================================================================
+
+  async updateConversation(conversationId, updates) {
+    const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!response.ok) throw new Error('Failed to update conversation');
+    return response.json();
+  },
+
+  async deleteConversation(conversationId) {
+    const response = await fetch(`${API_BASE}/api/conversations/${conversationId}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error('Failed to delete conversation');
     return response.json();
   },
 };

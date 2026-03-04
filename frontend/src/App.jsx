@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
-// LandingPage import removed for isolated marketing branch
+import LandingPage from './landing/LandingPage';
 import Sidebar, { SidebarContent } from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
@@ -12,7 +12,7 @@ import { Menu } from "lucide-react";
 import ModelSelector from './components/ModelSelector';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import { calculateUsageCost, calculateStage1Cost, calculateStage2Cost, calculateStage3Cost } from './utils/cost';
-import { SettingsProvider } from './contexts/SettingsContext';
+import { SettingsProvider, useSettings } from './contexts/SettingsContext';
 
 function ConversationView({
   conversations,
@@ -20,7 +20,16 @@ function ConversationView({
   availableModels,
   onShowAnalytics,
   showAnalytics,
-  onCloseAnalytics
+  onCloseAnalytics,
+  // Folder props
+  folders,
+  onCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  // Conversation management props
+  onRenameConversation,
+  onDeleteConversation,
+  onMoveConversation,
 }) {
   const { conversationId } = useParams();
   const navigate = useNavigate();
@@ -29,6 +38,7 @@ function ConversationView({
   const [isLoading, setIsLoading] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { settings } = useSettings();
 
   // Load conversation details when URL changes
   useEffect(() => {
@@ -95,7 +105,7 @@ function ConversationView({
     }
   };
 
-  const handleSendMessage = async (content, attachmentIds = [], attachmentMetadata = []) => {
+  const handleSendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
     if (!conversationId) return;
 
     setIsLoading(true);
@@ -106,13 +116,23 @@ function ConversationView({
         attachments: attachmentMetadata
       };
 
-      const isFollowUp = currentConversation.messages.length > 0;
-      const mode = isFollowUp ? 'chat' : 'council';
+      // Edit & Regenerate: truncate local state to edit point
+      if (editIndex >= 0) {
+        setCurrentConversation((prev) => ({
+          ...prev,
+          messages: [...prev.messages.slice(0, editIndex), userMessage],
+        }));
+      } else {
+        setCurrentConversation((prev) => ({
+          ...prev,
+          messages: [...prev.messages, userMessage],
+        }));
+      }
 
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, userMessage],
-      }));
+      // Determine mode: if after truncation we're at msg index 0, it's council mode
+      const effectiveMsgCount = editIndex >= 0 ? editIndex : currentConversation.messages.length;
+      const isFollowUp = effectiveMsgCount > 0;
+      const mode = isFollowUp ? 'chat' : 'council';
 
       if (mode === 'council') {
         const assistantMessage = {
@@ -269,7 +289,11 @@ function ConversationView({
           default:
             console.warn('Unknown event type:', eventType);
         }
-      }, mode, attachmentIds);
+      }, mode, attachmentIds, {
+        enabled: settings.webSearchEnabled,
+        depth: settings.webSearchDepth,
+        customInstructions: settings.customInstructions,
+      }, editIndex);
     } catch (error) {
       console.error('Failed to send message:', error);
       alert(`Failed to send message: ${error.message || 'Unknown error'}`);
@@ -292,6 +316,13 @@ function ConversationView({
     onSelectConversation: handleSelectConversation,
     onNewConversation: handleNewConversation,
     onShowAnalytics,
+    folders,
+    onCreateFolder,
+    onRenameFolder,
+    onDeleteFolder,
+    onRenameConversation,
+    onDeleteConversation,
+    onMoveConversation,
   };
 
   return (
@@ -342,6 +373,7 @@ function ConversationView({
 
 function App() {
   const [conversations, setConversations] = useState([]);
+  const [folders, setFolders] = useState([]);
   const [availableModels, setAvailableModels] = useState([]);
   const [showAnalytics, setShowAnalytics] = useState(false);
 
@@ -350,34 +382,71 @@ function App() {
     api.getModels().then(data => setAvailableModels(data.models)).catch(console.error);
   }, []);
 
-  // Load conversations on mount
+  // Load conversations and folders on mount
   useEffect(() => {
-    const loadConversations = async () => {
+    const loadData = async () => {
       try {
-        const convs = await api.listConversations();
+        const [convs, flds] = await Promise.all([
+          api.listConversations(),
+          api.listFolders().catch(() => []),
+        ]);
         setConversations(convs);
+        setFolders(flds);
       } catch (error) {
-        console.error('Failed to load conversations:', error);
+        console.error('Failed to load data:', error);
       }
     };
-    loadConversations();
+    loadData();
   }, []);
+
+  // ─── Folder handlers ───────────────────────────────────────
+  const handleCreateFolder = async (name) => {
+    try {
+      const folder = await api.createFolder(name);
+      setFolders((prev) => [...prev, folder]);
+    } catch (e) { console.error('Failed to create folder:', e); }
+  };
+  const handleRenameFolder = async (folderId, newName) => {
+    try {
+      await api.updateFolder(folderId, { name: newName });
+      setFolders((prev) => prev.map((f) => f.id === folderId ? { ...f, name: newName } : f));
+    } catch (e) { console.error('Failed to rename folder:', e); }
+  };
+  const handleDeleteFolder = async (folderId) => {
+    try {
+      await api.deleteFolder(folderId);
+      setFolders((prev) => prev.filter((f) => f.id !== folderId));
+      // Unset folder_id on orphaned conversations
+      setConversations((prev) => prev.map((c) => c.folder_id === folderId ? { ...c, folder_id: null } : c));
+    } catch (e) { console.error('Failed to delete folder:', e); }
+  };
+
+  // ─── Conversation management handlers ──────────────────────
+  const handleRenameConversation = async (convId, newTitle) => {
+    try {
+      await api.updateConversation(convId, { title: newTitle });
+      setConversations((prev) => prev.map((c) => c.id === convId ? { ...c, title: newTitle } : c));
+    } catch (e) { console.error('Failed to rename conversation:', e); }
+  };
+  const handleDeleteConversation = async (convId) => {
+    try {
+      await api.deleteConversation(convId);
+      setConversations((prev) => prev.filter((c) => c.id !== convId));
+    } catch (e) { console.error('Failed to delete conversation:', e); }
+  };
+  const handleMoveConversation = async (convId, folderId) => {
+    try {
+      await api.updateConversation(convId, { folder_id: folderId });
+      setConversations((prev) => prev.map((c) => c.id === convId ? { ...c, folder_id: folderId } : c));
+    } catch (e) { console.error('Failed to move conversation:', e); }
+  };
 
   return (
     <SettingsProvider>
       <Routes>
         <Route
           path="/"
-          element={
-            <ConversationView
-              conversations={conversations}
-              onConversationsChange={setConversations}
-              availableModels={availableModels}
-              onShowAnalytics={() => setShowAnalytics(true)}
-              showAnalytics={showAnalytics}
-              onCloseAnalytics={() => setShowAnalytics(false)}
-            />
-          }
+          element={<LandingPage />}
         />
         <Route
           path="/app"
@@ -389,6 +458,13 @@ function App() {
               onShowAnalytics={() => setShowAnalytics(true)}
               showAnalytics={showAnalytics}
               onCloseAnalytics={() => setShowAnalytics(false)}
+              folders={folders}
+              onCreateFolder={handleCreateFolder}
+              onRenameFolder={handleRenameFolder}
+              onDeleteFolder={handleDeleteFolder}
+              onRenameConversation={handleRenameConversation}
+              onDeleteConversation={handleDeleteConversation}
+              onMoveConversation={handleMoveConversation}
             />
           }
         />
@@ -402,6 +478,13 @@ function App() {
               onShowAnalytics={() => setShowAnalytics(true)}
               showAnalytics={showAnalytics}
               onCloseAnalytics={() => setShowAnalytics(false)}
+              folders={folders}
+              onCreateFolder={handleCreateFolder}
+              onRenameFolder={handleRenameFolder}
+              onDeleteFolder={handleDeleteFolder}
+              onRenameConversation={handleRenameConversation}
+              onDeleteConversation={handleDeleteConversation}
+              onMoveConversation={handleMoveConversation}
             />
           }
         />

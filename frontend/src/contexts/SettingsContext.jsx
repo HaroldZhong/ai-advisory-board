@@ -11,6 +11,9 @@ const DEFAULT_SETTINGS = {
     ragPreset: 'auto',
     modelTier: 'auto',
     zdrEnabled: false,
+    webSearchEnabled: false,
+    webSearchDepth: 'fast',  // 'fast' or 'deep'
+    customInstructions: '',
 };
 
 const STORAGE_KEY = 'llm_council_settings';

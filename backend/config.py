@@ -18,10 +18,10 @@ if not OPENROUTER_API_KEY:
 # Council members - list of OpenRouter model identifiers
 COUNCIL_MODELS = [
     "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
+    "google/gemini-3.1-pro-preview",
+    "anthropic/claude-sonnet-4.6",
     "x-ai/grok-4-fast",
-    "moonshotai/kimi-k2-thinking",
+    "moonshotai/kimi-k2.5",
     "deepseek/deepseek-v3.2-exp",
 ]
 
@@ -31,11 +31,16 @@ COUNCIL_MODELS = [
 # - parse_tags: Look for <think> or <thinking> tags in content
 REASONING_MODELS = {
     "moonshotai/kimi-k2-thinking": {"parse_tags": True},
+    "moonshotai/kimi-k2.5": {"parse_tags": True},
+    "qwen/qwen3-max-thinking": {"parse_tags": True},
     "deepseek/deepseek-v3.2-exp": {"parse_tags": True},
     "deepseek/deepseek-chat-v3.1": {"parse_tags": True},
     "deepseek/deepseek-chat-v3-0324:free": {"parse_tags": True},
+    "anthropic/claude-sonnet-4.6": {"parse_tags": True},
     "anthropic/claude-sonnet-4.5": {"parse_tags": True},
+    "anthropic/claude-opus-4.6": {"parse_tags": True},
     "anthropic/claude-sonnet-4.0": {"parse_tags": True},
+    "google/gemini-3.1-pro-preview": {"use_field": True},
     "google/gemini-3-pro-preview": {"use_field": True},
     "google/gemini-2.5-pro": {"use_field": True},
     # Add others as needed
@@ -51,9 +56,10 @@ CURATED_MODELS = [
     # CHAIRMAN TIER (highest quality, use sparingly)
     # ============================================
     {"id": "openai/gpt-5.2", "capabilities": ["frontier", "reasoning", "agentic"], "type": "chairman", "name": "GPT-5.2", "pricing": {"input": 5.0, "output": 20.0}},
-    {"id": "openai/gpt-5.2-pro", "capabilities": ["frontier", "reasoning"], "type": "chairman", "name": "GPT-5.2 Pro", "pricing": {"input": 10.0, "output": 30.0}},
-    {"id": "anthropic/claude-opus-4.5", "capabilities": ["frontier", "reasoning", "tool-use"], "type": "chairman", "name": "Claude Opus 4.5", "pricing": {"input": 15.0, "output": 75.0}},
-    {"id": "moonshotai/kimi-k2-thinking", "capabilities": ["thinking", "long-context"], "type": "chairman", "name": "Kimi K2 Thinking", "pricing": {"input": 0.45, "output": 2.35}},
+    {"id": "openai/gpt-5.3-codex", "capabilities": ["coding", "reasoning"], "type": "chairman", "name": "GPT-5.3 Codex", "pricing": {"input": 5.0, "output": 15.0}},
+    {"id": "anthropic/claude-opus-4.6", "capabilities": ["frontier", "reasoning", "tool-use"], "type": "chairman", "name": "Claude Opus 4.6", "pricing": {"input": 15.0, "output": 75.0}},
+    {"id": "google/gemini-3.1-pro-preview", "capabilities": ["thinking", "vision", "reasoning"], "type": "chairman", "name": "Gemini 3.1 Pro Preview", "pricing": {"input": 2.0, "output": 12.0}},
+    {"id": "moonshotai/kimi-k2.5", "capabilities": ["thinking", "long-context"], "type": "chairman", "name": "Kimi K2.5", "pricing": {"input": 0.45, "output": 2.35}},
     
     # ============================================
     # COUNCIL "WORKHORSE" TIER (great quality per dollar)
@@ -61,16 +67,19 @@ CURATED_MODELS = [
     # --- OpenAI ---
     {"id": "openai/gpt-5.1", "capabilities": ["reasoning", "generalist"], "type": "both", "name": "GPT-5.1", "pricing": {"input": 3.0, "output": 15.0}},
     {"id": "openai/gpt-5.2-chat", "capabilities": ["generalist", "fast"], "type": "both", "name": "GPT-5.2 Chat", "pricing": {"input": 2.5, "output": 10.0}},
+    {"id": "openai/gpt-5.3-chat", "capabilities": ["generalist", "fast", "reasoning"], "type": "both", "name": "GPT-5.3 Chat", "pricing": {"input": 2.5, "output": 10.0}},
     {"id": "openai/gpt-5-mini", "capabilities": ["generalist"], "type": "both", "name": "GPT-5 Mini", "pricing": {"input": 0.4, "output": 1.6}},
     {"id": "openai/gpt-4.1-mini", "capabilities": ["generalist"], "type": "council", "name": "GPT-4.1 Mini", "pricing": {"input": 0.2, "output": 0.8}},
     {"id": "openai/gpt-4o-mini", "capabilities": ["vision", "fast"], "type": "council", "name": "GPT-4o Mini", "pricing": {"input": 0.15, "output": 0.6}},
     {"id": "openai/gpt-oss-120b", "capabilities": ["open-weight", "value"], "type": "council", "name": "GPT-OSS 120B", "pricing": {"input": 0.1, "output": 0.3}},
     
     # --- Anthropic (Claude) ---
-    {"id": "anthropic/claude-sonnet-4.5", "capabilities": ["vision", "reasoning", "thinking"], "type": "both", "name": "Claude Sonnet 4.5", "pricing": {"input": 3.0, "output": 15.0}},
+    {"id": "anthropic/claude-sonnet-4.6", "capabilities": ["vision", "reasoning", "thinking"], "type": "both", "name": "Claude Sonnet 4.6", "pricing": {"input": 3.0, "output": 15.0}},
+    {"id": "anthropic/claude-sonnet-4.5", "capabilities": ["vision", "reasoning", "thinking"], "type": "council", "name": "Claude Sonnet 4.5", "pricing": {"input": 3.0, "output": 15.0}},
     {"id": "anthropic/claude-haiku-4.5", "capabilities": ["fast", "value"], "type": "council", "name": "Claude Haiku 4.5", "pricing": {"input": 0.8, "output": 4.0}},
     
     # --- Google (Gemini) ---
+    {"id": "google/gemini-3.1-flash-lite-preview", "capabilities": ["fast", "vision"], "type": "council", "name": "Gemini 3.1 Flash Lite Preview", "pricing": {"input": 0.1, "output": 0.4}},
     {"id": "google/gemini-3-pro-preview", "capabilities": ["thinking", "vision", "reasoning"], "type": "both", "name": "Gemini 3 Pro Preview", "pricing": {"input": 2.0, "output": 12.0}},
     {"id": "google/gemini-2.5-pro", "capabilities": ["reasoning", "vision"], "type": "both", "name": "Gemini 2.5 Pro", "pricing": {"input": 1.25, "output": 5.0}},
     {"id": "google/gemini-2.5-flash", "capabilities": ["vision", "fast"], "type": "both", "name": "Gemini 2.5 Flash", "pricing": {"input": 0.3, "output": 2.5}},
@@ -96,15 +105,21 @@ CURATED_MODELS = [
     {"id": "perplexity/sonar-reasoning", "capabilities": ["web-search", "research"], "type": "council", "name": "Sonar Reasoning", "pricing": {"input": 1.0, "output": 5.0}},
     
     # --- Moonshot AI (Kimi) ---
+    {"id": "moonshotai/kimi-k2.5", "capabilities": ["long-context"], "type": "council", "name": "Kimi K2.5", "pricing": {"input": 0.456, "output": 1.84}},
     {"id": "moonshotai/kimi-k2", "capabilities": ["long-context"], "type": "council", "name": "Kimi K2 (Instruct)", "pricing": {"input": 0.456, "output": 1.84}},
     
     # --- MiniMax ---
+    {"id": "minimax/minimax-m2.5", "capabilities": ["roleplay"], "type": "council", "name": "MiniMax M2.5", "pricing": {"input": 0.08, "output": 0.6}},
     {"id": "minimax/minimax-m2", "capabilities": ["roleplay"], "type": "council", "name": "MiniMax M2", "pricing": {"input": 0.08, "output": 0.6}},
     
     # --- Z.AI (GLM) ---
+    {"id": "z-ai/glm-5", "capabilities": ["generalist"], "type": "council", "name": "GLM 5", "pricing": {"input": 0.2, "output": 0.8}},
+    {"id": "z-ai/glm-4.7", "capabilities": ["generalist"], "type": "council", "name": "GLM 4.7", "pricing": {"input": 0.2, "output": 0.8}},
     {"id": "z-ai/glm-4.6", "capabilities": ["generalist"], "type": "council", "name": "GLM 4.6", "pricing": {"input": 0.2, "output": 0.8}},
     
     # --- Qwen ---
+    {"id": "qwen/qwen3-max-thinking", "capabilities": ["thinking", "reasoning"], "type": "council", "name": "Qwen3 Max Thinking", "pricing": {"input": 0.5, "output": 2.0}},
+    {"id": "qwen/qwen3.5-35b-a3b", "capabilities": ["reasoning"], "type": "council", "name": "Qwen3.5 35B A3B", "pricing": {"input": 0.2, "output": 0.5}},
     {"id": "qwen/qwen3-coder-30b-a3b-instruct", "capabilities": ["coding"], "type": "council", "name": "Qwen3 Coder 30B", "pricing": {"input": 0.24, "output": 0.72}},
     
     # ============================================
@@ -114,6 +129,7 @@ CURATED_MODELS = [
     {"id": "openai/gpt-oss-20b:free", "capabilities": ["open-weight", "free"], "type": "council", "name": "GPT-OSS 20B (Free)", "pricing": {"input": 0.0, "output": 0.0}},
     {"id": "mistralai/devstral-2512:free", "capabilities": ["coding", "free"], "type": "council", "name": "Devstral 2512 (Free)", "pricing": {"input": 0.0, "output": 0.0}},
 ]
+
 
 # Legacy alias for backwards compatibility
 AVAILABLE_MODELS = CURATED_MODELS
