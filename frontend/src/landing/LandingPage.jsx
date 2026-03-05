@@ -18,10 +18,19 @@ import {
     Copy,
     Menu,
     X,
-    Play
+    Play,
+    Loader2,
+    Globe,
+    Upload,
+    Pencil,
+    FolderOpen,
+    Monitor,
+    UserCog
 } from 'lucide-react';
 import { Button } from '../components/ui/button'; // Assuming these exist, otherwise I'd use standard buttons
 import { Card, CardContent } from '../components/ui/card';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../api';
 
 // Utility for smooth scroll
 const scrollToSection = (id) => {
@@ -32,8 +41,16 @@ const scrollToSection = (id) => {
 };
 
 export default function LandingPage() {
+    const navigate = useNavigate();
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [activeStage, setActiveStage] = useState(0);
+    const [promptText, setPromptText] = useState("");
+
+    // Onboarding Configuration State
+    const [showConfigModal, setShowConfigModal] = useState(false);
+    const [apiKey, setApiKey] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+    const [configError, setConfigError] = useState('');
 
     // Auto-cycle the "How it works" or Hero animation
     useEffect(() => {
@@ -43,14 +60,46 @@ export default function LandingPage() {
         return () => clearInterval(interval);
     }, []);
 
+    const handleActionClick = async () => {
+        try {
+            const status = await api.getConfigStatus();
+            if (status.has_api_key) {
+                navigate('/app');
+            } else {
+                setShowConfigModal(true);
+            }
+        } catch (e) {
+            console.error("Failed to check config status:", e);
+            setShowConfigModal(true);
+        }
+    };
+
+    const handleSaveConfig = async () => {
+        if (!apiKey.trim()) {
+            setConfigError('API Key is required');
+            return;
+        }
+        setIsSaving(true);
+        setConfigError('');
+        try {
+            await api.setupConfig(apiKey.trim());
+            setShowConfigModal(false);
+            navigate('/app');
+        } catch (e) {
+            setConfigError(e.message || 'Failed to save configuration');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
     return (
-        <div className="dark min-h-screen h-screen overflow-y-auto overflow-x-hidden bg-slate-950 text-slate-50 font-sans selection:bg-indigo-500/30 scroll-smooth">
+        <div className="dark min-h-screen h-screen overflow-y-auto overflow-x-hidden bg-[#0A0C10] text-slate-50 font-sans selection:bg-indigo-500/30 scroll-smooth bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-900/10 via-[#0A0C10] to-[#0A0C10]">
             {/* 1) Top Navigation (Sticky) */}
-            <nav className="sticky top-0 z-50 w-full border-b border-white/10 bg-slate-950/80 backdrop-blur-md">
+            <nav className="glass-dark sticky top-0 z-50 w-full">
                 <div className="container mx-auto px-4 h-16 flex items-center justify-between">
                     <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
-                        <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                            <Brain className="w-5 h-5 text-white" />
+                        <div className="w-8 h-8 flex items-center justify-center">
+                            <img src="/favicon.png" alt="Logo" className="w-8 h-8 rounded-lg" />
                         </div>
                         <span>AI Advisory Board</span>
                     </div>
@@ -72,8 +121,8 @@ export default function LandingPage() {
                         <Button variant="outline" className="border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800" onClick={() => window.open('https://github.com/HaroldZhong/ai-advisory-board', '_blank')}>
                             <Github className="w-4 h-4 mr-2" /> GitHub
                         </Button>
-                        <Button className="bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20" onClick={() => scrollToSection('quickstart')}>
-                            <Terminal className="w-4 h-4 mr-2" /> Run locally
+                        <Button className="bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20" onClick={handleActionClick}>
+                            <Terminal className="w-4 h-4 mr-2" /> Explore App
                         </Button>
                     </div>
 
@@ -113,59 +162,60 @@ export default function LandingPage() {
             {/* 2) Above-the-fold Hero */}
             <section className="relative pt-20 pb-20 md:pt-32 md:pb-32 overflow-hidden">
                 {/* Background Gradients */}
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[600px] bg-indigo-600/20 rounded-full blur-[120px] -z-10" />
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[600px] bg-indigo-600/30 rounded-full blur-[120px] -z-10" />
+                <div className="absolute top-1/4 -left-1/4 w-[600px] h-[600px] bg-purple-600/20 rounded-full blur-[100px] -z-10" />
                 <div className="absolute bottom-0 right-0 w-[800px] h-[600px] bg-emerald-600/10 rounded-full blur-[100px] -z-10" />
 
                 <div className="container mx-auto px-4 grid lg:grid-cols-2 gap-12 items-center">
                     <div className="max-w-2xl">
                         <h1 className="text-4xl md:text-6xl font-bold tracking-tight leading-tight mb-6">
-                            Consensus answers from a <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-emerald-400">council of LLMs</span>
+                            Consensus answers from a <span className="text-gradient">council of LLMs</span>
                         </h1>
                         <p className="text-lg md:text-xl text-slate-400 mb-8 leading-relaxed">
                             Ask multiple models, let them review each other, then get a final synthesis with a confidence signal and RAG-powered multi-turn context.
                         </p>
 
-                        <ul className="space-y-3 mb-8 text-slate-300">
-                            <li className="flex items-center gap-3">
-                                <div className="w-6 h-6 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400">
-                                    <Users className="w-4 h-4" />
-                                </div>
-                                Multi-model deliberation: collect, rank, synthesize
-                            </li>
-                            <li className="flex items-center gap-3">
-                                <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400">
-                                    <MessageSquare className="w-4 h-4" />
-                                </div>
-                                Multi-turn chat with advanced RAG
-                            </li>
-                            <li className="flex items-center gap-3">
-                                <div className="w-6 h-6 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-400">
-                                    <BarChart className="w-4 h-4" />
-                                </div>
-                                Cost visibility: usage analytics per conversation
-                            </li>
-                        </ul>
+                        {/* Immediate Engagement Input */}
+                        <div className="glass-card p-2 rounded-2xl flex flex-col sm:flex-row gap-2 mb-8 items-center shadow-indigo-500/10 shadow-2xl relative overflow-hidden group border-white/10">
+                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent -translate-x-full group-hover:animate-[shimmer_2s_infinite]" />
+                            <div className="w-full flex items-center px-4">
+                                <Search className="w-5 h-5 text-indigo-400 mr-3 shrink-0 group-focus-within:text-purple-400 transition-colors" />
+                                <input
+                                    type="text"
+                                    value={promptText}
+                                    onChange={(e) => setPromptText(e.target.value)}
+                                    placeholder="Ask the council anything..."
+                                    className="w-full bg-transparent border-none outline-none text-white placeholder:text-slate-500 py-3 text-lg focus:ring-0"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') handleActionClick();
+                                    }}
+                                />
+                            </div>
+                            <Button
+                                size="lg"
+                                onClick={handleActionClick}
+                                className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl h-12 shadow-lg shadow-indigo-600/20 shrink-0 transition-transform active:scale-95"
+                            >
+                                Convene Council <Zap className="w-4 h-4 ml-2" />
+                            </Button>
+                        </div>
 
                         <div className="flex flex-wrap items-center gap-4">
-                            <Button size="lg" className="bg-indigo-600 hover:bg-indigo-500 text-white h-12 px-8 text-base shadow-xl shadow-indigo-600/20" onClick={() => scrollToSection('quickstart')}>
-                                Run locally
+                            <Button size="sm" variant="outline" className="glass hover:bg-white/10 text-slate-300 border-white/10" onClick={handleActionClick}>
+                                Open App Dashboard
                             </Button>
-                            <Button size="lg" variant="outline" className="border-slate-700 text-slate-200 hover:bg-slate-800 h-12 px-6" onClick={() => window.open('https://github.com/HaroldZhong/ai-advisory-board', '_blank')}>
-                                <Github className="w-5 h-5 mr-2" /> View on GitHub
-                            </Button>
-                            <button onClick={() => scrollToSection('how-it-works')} className="text-indigo-400 hover:text-indigo-300 font-medium text-sm flex items-center gap-1 px-4">
+                            <button onClick={() => scrollToSection('how-it-works')} className="text-indigo-400 hover:text-indigo-300 font-medium text-sm flex items-center gap-1 px-4 transition-colors">
                                 See how it works <ChevronRight className="w-4 h-4" />
                             </button>
                         </div>
-                        <p className="mt-4 text-xs text-slate-500 font-mono">Works with OpenRouter API key</p>
                     </div>
 
                     {/* Hero Visual */}
-                    <div className="relative">
-                        <div className="absolute inset-0 bg-gradient-to-tr from-indigo-500/10 to-transparent rounded-2xl -z-10" />
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl backdrop-blur-sm">
+                    <div className="relative group perspective-1000">
+                        <div className="absolute inset-0 bg-gradient-to-tr from-indigo-500/20 via-purple-500/10 to-transparent rounded-3xl -z-10 blur-xl group-hover:blur-2xl transition-all duration-500" />
+                        <div className="glass-card rounded-2xl p-6 shadow-2xl transition-transform duration-500 hover:scale-[1.02] border-white/5">
                             {/* Mock Header */}
-                            <div className="flex items-center justify-between mb-6 pb-4 border-b border-slate-800">
+                            <div className="flex items-center justify-between mb-6 pb-4 border-b border-white/10">
                                 <div className="flex items-center gap-2">
                                     <div className="w-3 h-3 rounded-full bg-red-500/50" />
                                     <div className="w-3 h-3 rounded-full bg-amber-500/50" />
@@ -274,7 +324,7 @@ export default function LandingPage() {
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
                             <div className="w-12 h-12 bg-slate-900 border border-slate-700 rounded-xl flex items-center justify-center mx-auto mb-6 text-xl font-bold text-slate-300">1</div>
                             <h3 className="text-xl font-semibold mb-3 text-center">Collect</h3>
-                            <p className="text-slate-400 text-center text-sm">Multiple LLMs (e.g., GPT-5.2, Claude Opus 4.5, Gemini 3 Pro Preview) answer your query independently.</p>
+                            <p className="text-slate-400 text-center text-sm">Multiple LLMs (e.g., GPT-5.1, Claude Sonnet 4.6, Gemini 3.1 Pro Preview) answer your query independently.</p>
                         </div>
 
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
@@ -297,17 +347,22 @@ export default function LandingPage() {
                 <div className="container mx-auto px-4 max-w-6xl">
                     <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
                         {[
-                            { icon: Shield, title: "More reliable answers", desc: "Reduces hallucinations via consensus.", sub: "Cross-model validation" },
-                            { icon: Search, title: "More transparent decisions", desc: "See exactly how models ranked each other.", sub: "Full deliberation logs" },
-                            { icon: MessageSquare, title: "Better multi-turn continuity", desc: "Never lose context in long chats.", sub: "RAG history injection" },
-                            { icon: BarChart, title: "Predictable iteration costs", desc: "Track spend per message in real-time.", sub: "Token usage tracking" },
+                            { icon: Shield, title: "More reliable answers", desc: "Reduces hallucinations via consensus.", sub: "Cross-model validation", grad: "from-blue-500/20 to-indigo-500/5" },
+                            { icon: Search, title: "More transparent", desc: "See exactly how models ranked each other.", sub: "Full deliberation logs", grad: "from-purple-500/20 to-pink-500/5" },
+                            { icon: MessageSquare, title: "Better continuity", desc: "Never lose context in long chats.", sub: "RAG history injection", grad: "from-emerald-500/20 to-teal-500/5" },
+                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message in real-time.", sub: "Token breakdown", grad: "from-amber-500/20 to-orange-500/5" },
                         ].map((b, i) => (
-                            <Card key={i} className="bg-slate-900/50 border-slate-800 hover:bg-slate-900 transition-colors">
-                                <CardContent className="p-6">
-                                    <b.icon className="w-8 h-8 text-indigo-500 mb-4" />
-                                    <h3 className="text-lg font-semibold mb-2 text-slate-100">{b.title}</h3>
-                                    <p className="text-sm text-slate-400 mb-3">{b.desc}</p>
-                                    <p className="text-xs font-mono text-indigo-400/80 uppercase tracking-wider">{b.sub}</p>
+                            <Card key={i} className={`glass-card relative overflow-hidden group border-white/5`}>
+                                <div className={`absolute inset-0 bg-gradient-to-br ${b.grad} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
+                                <CardContent className="p-6 relative z-10 pt-6">
+                                    <div className="w-12 h-12 rounded-xl bg-white/5 flex items-center justify-center mb-6 border border-white/10 group-hover:scale-110 group-hover:bg-white/10 transition-all duration-300">
+                                        <b.icon className="w-6 h-6 text-indigo-400 group-hover:text-purple-300" />
+                                    </div>
+                                    <h3 className="text-xl font-semibold mb-3 text-slate-100">{b.title}</h3>
+                                    <p className="text-sm text-slate-400 mb-6 leading-relaxed">{b.desc}</p>
+                                    <div className="inline-block px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-xs font-medium text-indigo-300">
+                                        {b.sub}
+                                    </div>
                                 </CardContent>
                             </Card>
                         ))}
@@ -321,12 +376,15 @@ export default function LandingPage() {
                     <h2 className="text-3xl font-bold mb-12 text-center">Advanced Capabilities</h2>
                     <div className="grid md:grid-cols-2 LG:grid-cols-3 gap-8">
                         {[
-                            { title: "Hybrid Retrieval", desc: "BM25 keyword + dense semantic search, fused for better recall.", icon: Search },
-                            { title: "Query Rewriting", desc: "Follow-ups rewritten to resolve pronouns and references before searching.", icon: MessageSquare },
+                            { title: "Web Search", desc: "Perplexity-powered web search with fast and deep modes, inline toggle from the chat bar.", icon: Globe },
+                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more — auto-indexed for retrieval.", icon: Upload },
+                            { title: "Edit & Regenerate", desc: "Click any previous message to edit and regenerate from that point.", icon: Pencil },
+                            { title: "Custom Personas", desc: "Set persistent instructions that shape every council response.", icon: UserCog },
+                            { title: "Folder Organization", desc: "Group conversations into color-coded folders for easy management.", icon: FolderOpen },
+                            { title: "40+ Models", desc: "Curated registry from OpenAI, Anthropic, Google, xAI, DeepSeek, Mistral, and more.", icon: Users },
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
-                            { title: "Chain-of-thought", desc: "Show reasoning steps for models that support it.", icon: Brain },
-                            { title: "Cost Tracking", desc: "Real-time usage and cost analytics per conversation.", icon: BarChart },
-                            { title: "Model Selection", desc: "Pick council members and chairman dynamically.", icon: Users },
+                            { title: "Persistent Memory", desc: "PageIndex RAG indexes conversations for cross-session retrieval with query rewriting.", icon: Brain },
+                            { title: "Cost Tracking", desc: "Session budgets ($1/$2/$5/unlimited) with real-time per-model cost analytics.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
                                 <div className="flex items-center gap-3 mb-4">
@@ -533,7 +591,7 @@ cd ai-advisory-board
                         {[
                             { q: "What is Council Mode vs Chat Mode?", a: "Council Mode activates the 3-stage deliberation (Collect, Rank, Synthesize). Chat Mode is a standard single-model turn for fast follow-ups." },
                             { q: "How is confidence calculated?", a: "We aggregate the anonymous rankings from the 'Rank' stage and the Chairman's final synthesized assessment." },
-                            { q: "What models/providers can I use?", a: "We support OpenRouter, so you can use almost any major model (GPT-5.2, Claude Opus 4.5, Gemini 3 Pro Preview, etc.)." },
+                            { q: "What models/providers can I use?", a: "We support OpenRouter with 40+ curated models across tiers — including GPT-5.1, Claude Sonnet 4.6, Gemini 3.1 Pro Preview, Grok 4, Kimi K2.5, DeepSeek V3.2, and many more. Models are selectable at runtime." },
                             { q: "Does it support multi-turn context?", a: "Yes. We use advanced RAG with query rewriting to maintain context across long conversations." },
                             { q: "How do costs work?", a: "You bring your own API key. We track token usage per call and estimate costs in real-time." },
                             { q: "Can I self-host and control data?", a: "Absolutely. The entire stack runs locally on your machine. No data is sent to our servers." }
@@ -587,6 +645,69 @@ cd ai-advisory-board
                     </div>
                 </div>
             </footer>
+
+            {/* Config / Onboarding Modal */}
+            {showConfigModal && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm transition-all">
+                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 max-w-md w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-200">
+                        <button
+                            onClick={() => setShowConfigModal(false)}
+                            className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
+
+                        <div className="w-12 h-12 bg-indigo-500/10 rounded-xl flex items-center justify-center mb-6 border border-indigo-500/20">
+                            <Lock className="w-6 h-6 text-indigo-400" />
+                        </div>
+
+                        <h2 className="text-2xl font-bold text-white mb-2">Welcome to the Board</h2>
+                        <p className="text-slate-400 text-sm mb-6 leading-relaxed">
+                            To convene the council, you'll need an <a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">OpenRouter API Key</a>.
+                            This key stays locally on your machine and gives you access to dozens of models.
+                        </p>
+
+                        <div className="space-y-4">
+                            <div className="space-y-2">
+                                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                                    OpenRouter API Key
+                                </label>
+                                <input
+                                    type="password"
+                                    value={apiKey}
+                                    onChange={(e) => setApiKey(e.target.value)}
+                                    placeholder="sk-or-v1-..."
+                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-3 text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono text-sm"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') handleSaveConfig();
+                                    }}
+                                />
+                                {configError && (
+                                    <p className="text-red-400 text-xs mt-1">{configError}</p>
+                                )}
+                            </div>
+
+                            <Button
+                                onClick={handleSaveConfig}
+                                disabled={isSaving || !apiKey.trim()}
+                                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white h-12 text-base font-medium transition-all"
+                            >
+                                {isSaving ? (
+                                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving & Connecting...</>
+                                ) : (
+                                    'Connect & Continue'
+                                )}
+                            </Button>
+                        </div>
+
+                        <div className="mt-6 pt-6 border-t border-slate-800/50 text-center">
+                            <p className="text-xs text-slate-500">
+                                Don't have a key? <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">Get one for free</a>.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
