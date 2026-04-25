@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR, SESSION_POLICY_DEFAULTS
+from .logger import logger
 
 
 class ConversationLock:

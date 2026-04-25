@@ -343,6 +343,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             metadata  # Contains label_to_model for analytics
         )
 
+        # Calculate turn_index before logging or indexing this turn.
+        updated_conversation = storage.get_conversation(conversation_id)
+        turn_index = get_turn_index(updated_conversation) - 1
+
         # Index the session for RAG with enhanced metadata
         logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
         
@@ -356,10 +360,6 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             stage2_results=stage2_results,
             label_to_model=metadata["label_to_model"],
         )
-        
-        # Index session with enhanced metadata
-        updated_conversation = storage.get_conversation(conversation_id)
-        turn_index = get_turn_index(updated_conversation) - 1
         
         rag_system.index_session(
             conversation_id,
