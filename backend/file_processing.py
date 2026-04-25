@@ -17,7 +17,6 @@ import pypdf
 import docx
 
 from .openrouter import query_model
-from .config import OPENROUTER_API_KEY
 from .logger import logger
 
 # Limits

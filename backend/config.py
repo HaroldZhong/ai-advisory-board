@@ -1,19 +1,60 @@
 """Configuration for the AI Advisory Board."""
 
 import os
+from pathlib import Path
+from typing import Optional
+
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = PROJECT_ROOT / ".env"
 
-# OpenRouter API key
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+load_dotenv(ENV_PATH)
 
-if not OPENROUTER_API_KEY:
-    raise ValueError(
-        "OPENROUTER_API_KEY environment variable is not set. "
-        "Please add it to your .env file. "
-        "Get your API key at https://openrouter.ai/"
-    )
+
+def get_openrouter_api_key() -> Optional[str]:
+    """Return the current OpenRouter API key, if configured."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    return api_key or None
+
+
+def has_openrouter_api_key() -> bool:
+    """Check whether an OpenRouter API key is configured for this process."""
+    return get_openrouter_api_key() is not None
+
+
+def save_openrouter_api_key(api_key: str) -> None:
+    """Persist an OpenRouter API key and apply it to the current process."""
+    global OPENROUTER_API_KEY
+
+    cleaned = api_key.strip()
+    if not cleaned:
+        raise ValueError("API key is required")
+
+    lines = []
+    key_exists = False
+    if ENV_PATH.exists():
+        lines = ENV_PATH.read_text().splitlines(keepends=True)
+
+    new_lines = []
+    for line in lines:
+        if line.startswith("OPENROUTER_API_KEY="):
+            new_lines.append(f"OPENROUTER_API_KEY={cleaned}\n")
+            key_exists = True
+        else:
+            new_lines.append(line)
+
+    if not key_exists:
+        new_lines.append(f"OPENROUTER_API_KEY={cleaned}\n")
+
+    ENV_PATH.write_text("".join(new_lines))
+    os.environ["OPENROUTER_API_KEY"] = cleaned
+    OPENROUTER_API_KEY = cleaned
+
+
+# Legacy alias for modules that still inspect this value at import time.
+# Request code should call get_openrouter_api_key() instead.
+OPENROUTER_API_KEY = get_openrouter_api_key()
 
 # Council members - list of OpenRouter model identifiers
 COUNCIL_MODELS = [
