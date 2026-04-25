@@ -1,6 +1,6 @@
 """FastAPI backend for AI Advisory Board."""
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,7 +11,7 @@ import uuid
 import json
 import asyncio
 
-from . import storage
+from . import config, storage
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, chat_with_chairman, run_tool_steward_phase
 from .rag import CouncilRAG
 from .file_processing import extract_text_from_file, process_file, get_mime_type
@@ -165,46 +165,34 @@ async def get_models():
 @app.get("/api/config/status")
 async def get_config_status():
     """Check if the system is configured (API key exists)."""
-    import os
-    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    return {"has_api_key": has_key}
+    return {"has_api_key": config.has_openrouter_api_key()}
+
+
+LOCAL_CLIENT_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def ensure_local_setup_request(request: Request) -> None:
+    """Limit setup writes to local clients in the local-first app."""
+    if request.client is None:
+        return
+
+    if request.client.host not in LOCAL_CLIENT_HOSTS:
+        raise HTTPException(status_code=403, detail="Setup is only available from localhost")
 
 
 @app.post("/api/config/setup")
-async def setup_config(data: dict):
+async def setup_config(data: dict, request: Request):
     """Save the OpenRouter API key to .env file."""
-    import os
+    ensure_local_setup_request(request)
+
     api_key = data.get("api_key", "").strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="API key is required")
-        
-    # Write to .env file
-    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-    
-    # Read existing env
-    lines = []
-    key_exists = False
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            lines = f.readlines()
-            
-    # Update or append using simple line replacement
-    new_lines = []
-    for line in lines:
-        if line.startswith("OPENROUTER_API_KEY="):
-            new_lines.append(f"OPENROUTER_API_KEY={api_key}\n")
-            key_exists = True
-        else:
-            new_lines.append(line)
-            
-    if not key_exists:
-        new_lines.append(f"OPENROUTER_API_KEY={api_key}\n")
-        
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
-        
-    # Set the environment variable immediately for the current process
-    os.environ["OPENROUTER_API_KEY"] = api_key
+
+    try:
+        config.save_openrouter_api_key(api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     
     return {"success": True}
 
@@ -965,4 +953,4 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="127.0.0.1", port=8001)

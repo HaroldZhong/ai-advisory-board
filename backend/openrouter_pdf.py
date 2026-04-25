@@ -11,7 +11,7 @@ Reference: https://openrouter.ai/docs/guides/overview/multimodal/pdfs
 import base64
 import httpx
 from typing import Dict, Any, Optional, Literal
-from .config import OPENROUTER_API_KEY
+from .config import get_openrouter_api_key
 from .logger import logger
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -66,7 +66,8 @@ async def extract_pdf_with_openrouter(
         - cost: Estimated cost
         - annotations: File annotations for caching
     """
-    if not OPENROUTER_API_KEY:
+    api_key = get_openrouter_api_key()
+    if not api_key:
         return {
             "status": "failed",
             "text": "",
@@ -117,7 +118,7 @@ async def extract_pdf_with_openrouter(
         payload["provider"] = {"zdr": True}
     
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://llm-council.local",
         "X-Title": "AI Advisory Board"
