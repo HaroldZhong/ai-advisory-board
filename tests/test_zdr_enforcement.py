@@ -179,6 +179,42 @@ async def test_sync_chat_passes_zdr_to_chairman(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sync_chat_uses_conversation_zdr_metadata(monkeypatch, tmp_path):
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-sync-metadata-zdr"
+    captured_kwargs = {}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini", "zdr_enabled": True},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return ""
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"content": "ZDR response", "usage": {}}
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat", zdr_enabled=False),
+    )
+
+    assert captured_kwargs["zdr_enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_passes_zdr_to_chairman(monkeypatch, tmp_path):
     main = import_module_with_api_key(monkeypatch, "backend.main")
     conversation_id = "conv-stream-zdr"
@@ -209,6 +245,45 @@ async def test_stream_chat_passes_zdr_to_chairman(monkeypatch, tmp_path):
     response = await main.send_message_stream(
         conversation_id,
         main.SendMessageRequest(content="Follow up", mode="chat", zdr_enabled=True),
+    )
+
+    async for _chunk in response.body_iterator:
+        pass
+
+    assert captured_kwargs["zdr_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_uses_conversation_zdr_metadata(monkeypatch, tmp_path):
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-stream-metadata-zdr"
+    captured_kwargs = {}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini", "zdr_enabled": True},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return ""
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"content": "ZDR response", "usage": {}}
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat", zdr_enabled=False),
     )
 
     async for _chunk in response.body_iterator:

@@ -98,8 +98,12 @@ app.add_middleware(
 class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
     topic: str = "New Conversation"
-    council_members: List[str] = None
-    chairman_model: str = None
+    council_members: Optional[List[str]] = None
+    chairman_model: Optional[str] = None
+    preset_id: Optional[str] = None
+    zdr_enabled: Optional[bool] = None
+    budget_usd: Optional[float] = None
+    budget_allow_overage: bool = False
 
 
 @app.post("/api/conversations")
@@ -107,31 +111,67 @@ async def create_conversation(request: CreateConversationRequest):
     """Create a new conversation."""
     conversation_id = str(uuid.uuid4())
     metadata = {}
-    
+    preset = None
+    session_policy = None
+
+    if request.preset_id:
+        preset = next(
+            (candidate for candidate in config.MODEL_PRESETS if candidate["id"] == request.preset_id),
+            None,
+        )
+        if preset is None:
+            raise HTTPException(status_code=400, detail=f"Invalid model preset: {request.preset_id}")
+        if preset.get("requires_zdr") and request.zdr_enabled is False:
+            raise HTTPException(status_code=400, detail=f"Preset {request.preset_id} requires ZDR")
+        metadata["preset_id"] = request.preset_id
+
+    council_members = request.council_members
+    if council_members is None and preset is not None:
+        council_members = preset["council_models"]
+
+    chairman_model = request.chairman_model
+    if chairman_model is None and preset is not None:
+        chairman_model = preset["chairman_model"]
+
+    if request.zdr_enabled is not None:
+        metadata["zdr_enabled"] = bool(request.zdr_enabled)
+    elif preset is not None and preset.get("requires_zdr"):
+        metadata["zdr_enabled"] = True
+
+    if request.budget_usd is not None:
+        session_policy = normalize_session_policy(SessionPolicyUpdate(
+            budget_usd=request.budget_usd,
+            allow_overage=request.budget_allow_overage,
+        ))
+
+    valid_models = {m['id'] for m in config.AVAILABLE_MODELS}
+
     # Validate council members
-    if request.council_members:
-        from .config import AVAILABLE_MODELS
-        valid_models = {m['id'] for m in AVAILABLE_MODELS}
-        invalid = [m for m in request.council_members if m not in valid_models]
+    if council_members:
+        invalid = [m for m in council_members if m not in valid_models]
         if invalid:
             raise HTTPException(
                 status_code=400, 
                 detail=f"Invalid council models: {invalid}"
             )
-        metadata["council_models"] = request.council_members
+        metadata["council_models"] = council_members
         
     # Validate chairman model
-    if request.chairman_model:
-        from .config import AVAILABLE_MODELS
-        valid_models = {m['id'] for m in AVAILABLE_MODELS}
-        if request.chairman_model not in valid_models:
+    if chairman_model:
+        if chairman_model not in valid_models:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Invalid chairman model: {request.chairman_model}"
+                detail=f"Invalid chairman model: {chairman_model}"
             )
-        metadata["chairman_model"] = request.chairman_model
+        metadata["chairman_model"] = chairman_model
+
+    if metadata.get("zdr_enabled") is True:
+        ensure_zdr_compatible_models(chairman_model, council_members)
         
     conversation = storage.create_conversation(conversation_id, metadata)
+    if session_policy is not None:
+        storage.set_session_policy(conversation_id, session_policy)
+        conversation = storage.get_conversation(conversation_id) or conversation
     return conversation
 
 
@@ -143,7 +183,7 @@ class SendMessageRequest(BaseModel):
     web_search_enabled: bool = False  # Enable Stage 0 web search
     web_search_depth: str = "fast"  # "fast" (sonar) or "deep" (sonar-pro)
     custom_instructions: str = ""  # Custom persona/instructions from user
-    zdr_enabled: bool = False  # Restrict OpenRouter calls to Zero Data Retention endpoints
+    zdr_enabled: Optional[bool] = None  # Restrict OpenRouter calls to Zero Data Retention endpoints
     execution_mode: str = "auto"  # "auto", "quick", "standard", or "research"
     rag_preset: str = "auto"  # "auto", "low", "medium", "high", or "max"
     model_tier: str = "auto"  # "auto", "budget", "mid", or "premium"
@@ -153,6 +193,40 @@ class SendMessageRequest(BaseModel):
 VALID_EXECUTION_MODES = {"auto", "quick", "standard", "research"}
 VALID_RAG_PRESETS = {"auto", "low", "medium", "high", "max"}
 VALID_MODEL_TIERS = {"auto", "budget", "mid", "premium"}
+
+
+def get_model_by_id(model_id: str) -> Optional[Dict[str, Any]]:
+    """Return curated model metadata for a registry id."""
+    return next((model for model in config.CURATED_MODELS if model["id"] == model_id), None)
+
+
+def ensure_zdr_compatible_models(
+    chairman_model: Optional[str],
+    council_models: Optional[List[str]],
+) -> None:
+    """Reject model selections that cannot satisfy conversation-level ZDR."""
+    selected_chairman = chairman_model or config.CHAIRMAN_MODEL
+    selected_council = council_models or config.COUNCIL_MODELS
+    incompatible = []
+
+    for model_id in [selected_chairman, *selected_council]:
+        model = get_model_by_id(model_id)
+        if model is None or model.get("supports_zdr") is not True:
+            incompatible.append(model_id)
+
+    if incompatible:
+        raise HTTPException(
+            status_code=400,
+            detail=f"ZDR-enabled conversations require ZDR-capable models: {incompatible}",
+        )
+
+
+def resolve_effective_zdr(conversation: Dict[str, Any], request: SendMessageRequest) -> bool:
+    """Resolve ZDR for a turn. Stored conversation privacy cannot be downgraded per message."""
+    metadata = conversation.get("metadata", {})
+    # Privacy-sticky: once a conversation stores ZDR=True, individual sends cannot
+    # downgrade it. A future metadata update endpoint must make that change explicit.
+    return metadata.get("zdr_enabled") is True or request.zdr_enabled is True
 
 
 def validate_advanced_message_settings(request: SendMessageRequest) -> None:
@@ -343,7 +417,7 @@ async def health_check():
 @app.get("/api/models")
 async def get_models():
     """Get list of available models with live pricing from OpenRouter."""
-    from .config import CHAIRMAN_MODEL, COUNCIL_MODELS, CURATED_MODELS
+    from .config import CHAIRMAN_MODEL, COUNCIL_MODELS, CURATED_MODELS, MODEL_PRESETS
     from .openrouter_client import get_enriched_models
     
     enriched = await get_enriched_models(CURATED_MODELS)
@@ -353,6 +427,7 @@ async def get_models():
             "chairman": CHAIRMAN_MODEL,
             "council": COUNCIL_MODELS,
         },
+        "presets": MODEL_PRESETS,
     }
 
 
@@ -507,6 +582,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    zdr_enabled = resolve_effective_zdr(conversation, request)
 
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
@@ -530,7 +606,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     if is_first_message:
         title = await generate_conversation_title(
             request.content,
-            zdr_enabled=request.zdr_enabled,
+            zdr_enabled=zdr_enabled,
         )
         storage.update_conversation_title(conversation_id, title)
 
@@ -551,7 +627,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             request.content,
             council_models=council_models,
             chairman_model=chairman_model,
-            zdr_enabled=request.zdr_enabled,
+            zdr_enabled=zdr_enabled,
         )
         extra_usage_records = []
         if metadata.get("steward_usage"):
@@ -592,7 +668,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         topics = await extract_topics(
             combined_text,
             max_topics=3,
-            zdr_enabled=request.zdr_enabled,
+            zdr_enabled=zdr_enabled,
         )
         
         # Calculate quality metrics from Stage 2 rankings
@@ -638,7 +714,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         rewritten_query = await rewrite_query(
             request.content,
             conversation["messages"],
-            zdr_enabled=request.zdr_enabled,
+            zdr_enabled=zdr_enabled,
         )
         
         # Retrieve context via PageIndex reasoning RAG (using rewritten query)
@@ -657,7 +733,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             rewritten_query,
             conversation_id,
             max_tokens=run_plan.rag_max_tokens,
-            zdr_enabled=request.zdr_enabled,
+            zdr_enabled=zdr_enabled,
         )
         
         # Chat with chairman (using original query)
@@ -666,7 +742,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             conversation["messages"],
             rag_context,
             chairman_model=run_plan.chairman_model or chairman_model,
-            zdr_enabled=request.zdr_enabled,
+            zdr_enabled=zdr_enabled,
         )
         
         # Add simple chat message
@@ -703,6 +779,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
+    zdr_enabled = resolve_effective_zdr(conversation, request)
 
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
@@ -776,7 +853,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     title_task = asyncio.create_task(
                         generate_conversation_title(
                             request.content,
-                            zdr_enabled=request.zdr_enabled,
+                            zdr_enabled=zdr_enabled,
                         )
                     )
 
@@ -788,7 +865,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     search_result = await web_search_stage0(
                         request.content,
                         depth=request.web_search_depth,
-                        zdr_enabled=request.zdr_enabled,
+                        zdr_enabled=zdr_enabled,
                     )
                     web_context = search_result.get("context", "")
                     if search_result.get("usage"):
@@ -810,7 +887,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     request.content,
                     run_id,
                     chairman_model=chairman_model,
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 if steward_usage:
                     extra_usage_records.append({
@@ -825,7 +902,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     llm_content,
                     models=council_models,
                     evidence_pack=evidence_pack,
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
@@ -835,7 +912,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     request.content,
                     stage1_results,
                     models=council_models,
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
                 yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
@@ -853,7 +930,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     label_to_model,
                     quality_metrics,
                     chairman_model=chairman_model,
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
@@ -899,7 +976,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 topics = await extract_topics(
                     combined_text,
                     max_topics=3,
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 logger.info("[PHASE1] Topics extracted: %s", topics)
                 
@@ -954,7 +1031,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 rewritten_query = await rewrite_query(
                     request.content,
                     updated_conversation["messages"],
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 logger.info(f"[CHAT] Query rewritten, now retrieving RAG context...")
                 
@@ -966,7 +1043,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     search_result = await web_search_stage0(
                         request.content,
                         depth=request.web_search_depth,
-                        zdr_enabled=request.zdr_enabled,
+                        zdr_enabled=zdr_enabled,
                     )
                     chat_web_context = search_result.get("context", "")
                     if search_result.get("usage"):
@@ -981,7 +1058,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     rewritten_query, 
                     conversation_id, 
                     max_tokens=run_plan.rag_max_tokens,
-                    zdr_enabled=request.zdr_enabled,
+                    zdr_enabled=zdr_enabled,
                 )
                 logger.info(f"[CHAT] RAG context retrieved ({len(rag_context)} chars), calling chairman...")
                 
@@ -1001,7 +1078,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         updated_conversation["messages"],
                         combined_context,
                         chairman_model=run_plan.chairman_model or chairman_model,
-                        zdr_enabled=request.zdr_enabled,
+                        zdr_enabled=zdr_enabled,
                     )
                     logger.info(f"[CHAT] Chairman response received")
                 except Exception as e:

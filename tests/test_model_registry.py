@@ -14,6 +14,7 @@ def test_model_registry_loads_from_json_and_has_required_sections(monkeypatch):
     assert registry["chairman_model"] in {model["id"] for model in registry["models"]}
     assert len(registry["council_models"]) >= 5
     assert len(registry["models"]) >= 20
+    assert len(registry["presets"]) >= 4
 
 
 def test_curated_models_are_unique_and_schema_valid(monkeypatch):
@@ -46,6 +47,35 @@ def test_default_models_are_registry_available_and_not_search(monkeypatch):
         assert by_id[model_id]["type"] in {"council", "both"}
         assert by_id[model_id].get("default_council") is True
         assert by_id[model_id].get("available") is True
+
+
+def test_model_presets_reference_registry_models(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    registry_ids = {model["id"] for model in config.CURATED_MODELS}
+    preset_ids = set()
+
+    assert config.MODEL_PRESETS
+    assert [preset["sort_order"] for preset in config.MODEL_PRESETS] == sorted(
+        preset["sort_order"] for preset in config.MODEL_PRESETS
+    )
+    for preset in config.MODEL_PRESETS:
+        assert preset["id"] not in preset_ids
+        preset_ids.add(preset["id"])
+        assert preset["chairman_model"] in registry_ids
+        assert 3 <= len(preset["council_models"]) <= 8
+        for model_id in preset["council_models"]:
+            assert model_id in registry_ids
+
+
+def test_private_preset_only_uses_zdr_models(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    by_id = {model["id"]: model for model in config.CURATED_MODELS}
+    private = next(preset for preset in config.MODEL_PRESETS if preset["id"] == "private")
+
+    assert private["requires_zdr"] is True
+    assert by_id[private["chairman_model"]]["supports_zdr"] is True
+    for model_id in private["council_models"]:
+        assert by_id[model_id]["supports_zdr"] is True
 
 
 def test_search_models_are_in_registry_for_cost_accounting(monkeypatch):
@@ -140,6 +170,7 @@ def test_models_endpoint_returns_registry_defaults(monkeypatch):
 
     assert result["defaults"]["chairman"] == main.config.CHAIRMAN_MODEL
     assert result["defaults"]["council"] == main.config.COUNCIL_MODELS
+    assert result["presets"] == main.config.MODEL_PRESETS
     assert result["models"]
 
 
