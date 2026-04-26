@@ -419,7 +419,7 @@ async def create_folder(folder: FolderCreate):
 @app.put("/api/folders/{folder_id}")
 async def update_folder(folder_id: str, updates: FolderUpdate):
     """Update a folder."""
-    updated = storage.update_folder(folder_id, updates.dict(exclude_unset=True))
+    updated = storage.update_folder(folder_id, updates.model_dump(exclude_unset=True))
     if not updated:
         raise HTTPException(status_code=404, detail="Folder not found")
     return updated
@@ -467,7 +467,7 @@ async def update_session_policy_endpoint(conversation_id: str, update: SessionPo
 @app.put("/api/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, updates: ConversationUpdate):
     """Update conversation title or folder."""
-    updates_dict = updates.dict(exclude_unset=True)
+    updates_dict = updates.model_dump(exclude_unset=True)
     if "title" in updates_dict and updates.title is not None:
         storage.update_conversation_title(conversation_id, updates.title)
     if "folder_id" in updates_dict:

@@ -102,6 +102,14 @@ function ConversationView({
     navigate(`/c/${id}`);
   };
 
+  const handleDeleteConversationFromSidebar = async (id) => {
+    await onDeleteConversation(id);
+    if (id === conversationId) {
+      setCurrentConversation(null);
+      navigate('/app', { replace: true });
+    }
+  };
+
   const loadConversations = async () => {
     try {
       const convs = await api.listConversations();
@@ -362,7 +370,7 @@ function ConversationView({
     onRenameFolder,
     onDeleteFolder,
     onRenameConversation,
-    onDeleteConversation,
+    onDeleteConversation: handleDeleteConversationFromSidebar,
     onMoveConversation,
   };
 
