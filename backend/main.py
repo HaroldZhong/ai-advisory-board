@@ -125,11 +125,11 @@ async def create_conversation(request: CreateConversationRequest):
             raise HTTPException(status_code=400, detail=f"Preset {request.preset_id} requires ZDR")
         metadata["preset_id"] = request.preset_id
 
-    council_members = request.council_members
+    council_members = request.council_members or None
     if council_members is None and preset is not None:
         council_members = preset["council_models"]
 
-    chairman_model = request.chairman_model
+    chairman_model = (request.chairman_model or "").strip() or None
     if chairman_model is None and preset is not None:
         chairman_model = preset["chairman_model"]
 

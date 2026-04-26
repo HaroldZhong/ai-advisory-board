@@ -21,7 +21,7 @@ export const api = {
   /**
    * Create a new conversation.
    */
-  async createConversation(topic, councilMembers = null, chairmanModel = null) {
+  async createConversation(topic, councilMembers = null, chairmanModel = null, options = {}) {
     const response = await fetch(`${API_BASE}/api/conversations`, {
       method: 'POST',
       headers: {
@@ -30,7 +30,11 @@ export const api = {
       body: JSON.stringify({
         topic,
         council_members: councilMembers,
-        chairman_model: chairmanModel
+        chairman_model: chairmanModel,
+        preset_id: options.presetId || null,
+        zdr_enabled: options.zdrEnabled ?? null,
+        budget_usd: options.budgetUsd ?? null,
+        budget_allow_overage: options.budgetAllowOverage ?? false,
       }),
     });
     if (!response.ok) {

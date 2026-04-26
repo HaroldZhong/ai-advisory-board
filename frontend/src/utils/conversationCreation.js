@@ -3,20 +3,14 @@ export async function createConversationWithDefaults({
   topic,
   councilMembers,
   chairmanModel,
+  presetId,
+  zdrEnabled,
   defaultSessionBudgetUsd,
-  onBudgetError,
 }) {
-  const conversation = await apiClient.createConversation(topic, councilMembers, chairmanModel);
-
-  if (defaultSessionBudgetUsd != null) {
-    try {
-      await apiClient.updateSessionPolicy(conversation.id, {
-        budget_usd: defaultSessionBudgetUsd,
-      });
-    } catch (error) {
-      onBudgetError?.(error, conversation);
-    }
-  }
-
-  return conversation;
+  return apiClient.createConversation(topic, councilMembers, chairmanModel, {
+    presetId,
+    zdrEnabled,
+    budgetUsd: defaultSessionBudgetUsd,
+    budgetAllowOverage: false,
+  });
 }

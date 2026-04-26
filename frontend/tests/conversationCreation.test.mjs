@@ -3,54 +3,35 @@ import assert from 'node:assert/strict';
 
 import { createConversationWithDefaults } from '../src/utils/conversationCreation.js';
 
-test('returns the created conversation when applying the default budget fails', async () => {
+test('creates a conversation with preset trust defaults atomically', async () => {
   const expectedConversation = { id: 'conv-1', title: 'New Conversation' };
-  const budgetErrors = [];
+  const calls = [];
 
   const result = await createConversationWithDefaults({
     apiClient: {
-      async createConversation() {
+      async createConversation(topic, councilMembers, chairmanModel, options) {
+        calls.push({ topic, councilMembers, chairmanModel, options });
         return expectedConversation;
-      },
-      async updateSessionPolicy() {
-        throw new Error('budget policy unavailable');
       },
     },
     topic: 'New Conversation',
-    councilMembers: ['model-a'],
-    chairmanModel: 'model-b',
+    councilMembers: null,
+    chairmanModel: null,
+    presetId: 'private',
+    zdrEnabled: true,
     defaultSessionBudgetUsd: 2,
-    onBudgetError: (error, conversation) => {
-      budgetErrors.push({ error, conversation });
-    },
   });
 
   assert.equal(result, expectedConversation);
-  assert.equal(budgetErrors.length, 1);
-  assert.equal(budgetErrors[0].conversation, expectedConversation);
-  assert.equal(budgetErrors[0].error.message, 'budget policy unavailable');
-});
-
-test('applies the default session budget after conversation creation', async () => {
-  const policyUpdates = [];
-
-  const result = await createConversationWithDefaults({
-    apiClient: {
-      async createConversation(topic, councilMembers, chairmanModel) {
-        return { id: 'conv-2', topic, councilMembers, chairmanModel };
-      },
-      async updateSessionPolicy(conversationId, policy) {
-        policyUpdates.push({ conversationId, policy });
-      },
-    },
+  assert.deepEqual(calls, [{
     topic: 'New Conversation',
-    councilMembers: ['model-a'],
-    chairmanModel: 'model-b',
-    defaultSessionBudgetUsd: 5,
-  });
-
-  assert.equal(result.id, 'conv-2');
-  assert.deepEqual(policyUpdates, [
-    { conversationId: 'conv-2', policy: { budget_usd: 5 } },
-  ]);
+    councilMembers: null,
+    chairmanModel: null,
+    options: {
+      presetId: 'private',
+      zdrEnabled: true,
+      budgetUsd: 2,
+      budgetAllowOverage: false,
+    },
+  }]);
 });
