@@ -178,6 +178,25 @@ def validate_advanced_message_settings(request: SendMessageRequest) -> None:
         )
 
 
+def validate_advanced_settings_for_mode(mode: str, request: SendMessageRequest) -> None:
+    """Reject chat-routing controls for council mode instead of silently ignoring them."""
+    if mode != "council":
+        return
+
+    unsupported = []
+    if request.execution_mode != "auto":
+        unsupported.append("execution_mode")
+    if request.rag_preset != "auto":
+        unsupported.append("rag_preset")
+
+    if unsupported:
+        fields = ", ".join(unsupported)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{fields} only apply to chat mode; council mode always runs the full council pipeline.",
+        )
+
+
 def resolve_chairman_model_for_request(
     chairman_model: Optional[str],
     request: SendMessageRequest,
@@ -447,9 +466,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
     mode = request.mode
-    
+
     if mode == "auto":
         mode = "council" if is_first_message else "chat"
+    validate_advanced_settings_for_mode(mode, request)
 
     # Add user message
     storage.add_user_message(conversation_id, request.content)
@@ -635,9 +655,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
     mode = request.mode
-    
+
     if mode == "auto":
         mode = "council" if is_first_message else "chat"
+    validate_advanced_settings_for_mode(mode, request)
 
     async def event_generator():
         try:
