@@ -25,6 +25,12 @@ from .logger import logger
 # Initialize RAG system
 rag_system = CouncilRAG()
 
+EXTRA_MODEL_PRICING = {
+    # Web search models used by backend.web_search but not present in the curated registry.
+    "perplexity/sonar": {"input": 1.0, "output": 1.0},
+    "perplexity/sonar-pro": {"input": 3.0, "output": 15.0},
+}
+
 def get_turn_index(conversation: Dict[str, Any]) -> int:
     """Count the number of completed Council turns (messages with stage3)."""
     count = 0
@@ -35,15 +41,15 @@ def get_turn_index(conversation: Dict[str, Any]) -> int:
 
 def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
     """Calculate cost based on usage and model pricing."""
-    if not usage:
+    if not usage or not model_id:
         return 0.0
     
     from .config import AVAILABLE_MODELS
     model_config = next((m for m in AVAILABLE_MODELS if m['id'] == model_id), None)
-    if not model_config:
+    pricing = model_config.get('pricing', {}) if model_config else EXTRA_MODEL_PRICING.get(model_id)
+    if not pricing:
         return 0.0
-    
-    pricing = model_config.get('pricing', {})
+
     input_price = pricing.get('input', 0.0)
     output_price = pricing.get('output', 0.0)
     
@@ -52,6 +58,34 @@ def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
     
     cost = (prompt_tokens / 1_000_000) * input_price + (completion_tokens / 1_000_000) * output_price
     return cost
+
+
+def calculate_turn_cost(
+    mode: str,
+    stage1_results: List[Dict[str, Any]] = None,
+    stage2_results: List[Dict[str, Any]] = None,
+    stage3_result: Dict[str, Any] = None,
+    response_dict: Dict[str, Any] = None,
+    chairman_model: str = None,
+    extra_usage_records: List[Dict[str, Any]] = None,
+) -> float:
+    """Calculate authoritative backend cost for a full turn."""
+    turn_cost = 0.0
+
+    for record in extra_usage_records or []:
+        turn_cost += calculate_cost(record.get("usage", {}), record.get("model"))
+
+    if mode == "council":
+        for res in stage1_results or []:
+            turn_cost += calculate_cost(res.get("usage", {}), res.get("model"))
+        for res in stage2_results or []:
+            turn_cost += calculate_cost(res.get("usage", {}), res.get("model"))
+        if stage3_result:
+            turn_cost += calculate_cost(stage3_result.get("usage", {}), stage3_result.get("model"))
+    else:
+        turn_cost += calculate_cost((response_dict or {}).get("usage", {}), chairman_model)
+
+    return turn_cost
 
 app = FastAPI(title="AI Advisory Board API")
 
@@ -114,6 +148,66 @@ class SendMessageRequest(BaseModel):
     web_search_depth: str = "fast"  # "fast" (sonar) or "deep" (sonar-pro)
     custom_instructions: str = ""  # Custom persona/instructions from user
     edit_index: int = -1  # If >= 0, truncate conversation to this message index before sending
+
+
+class SessionPolicyUpdate(BaseModel):
+    """Request to update a conversation's session budget policy."""
+    budget_usd: Optional[float] = None
+    notify_thresholds: Optional[List[float]] = None
+    mode: str = "auto"
+    allow_overage: bool = True
+
+
+def normalize_session_policy(update: SessionPolicyUpdate) -> Dict[str, Any]:
+    """Validate and normalize user-provided session policy settings."""
+    update_dict = update.model_dump(exclude_unset=True)
+    policy = {**config.SESSION_POLICY_DEFAULTS, **update_dict}
+
+    budget = policy.get("budget_usd")
+    if budget is not None:
+        try:
+            budget = float(budget)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="budget_usd must be a number or null")
+        if budget <= 0:
+            raise HTTPException(status_code=400, detail="budget_usd must be greater than 0")
+        policy["budget_usd"] = budget
+
+    thresholds = policy.get("notify_thresholds")
+    if not isinstance(thresholds, list) or not thresholds:
+        raise HTTPException(status_code=400, detail="notify_thresholds must be a non-empty list")
+
+    normalized_thresholds = []
+    for threshold in thresholds:
+        try:
+            normalized_threshold = float(threshold)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="notify_thresholds must be numeric")
+        if normalized_threshold <= 0:
+            raise HTTPException(status_code=400, detail="notify_thresholds must be greater than 0")
+        normalized_thresholds.append(normalized_threshold)
+    if normalized_thresholds != sorted(normalized_thresholds):
+        raise HTTPException(status_code=400, detail="notify_thresholds must be sorted ascending")
+    policy["notify_thresholds"] = normalized_thresholds
+
+    if policy.get("mode") != "auto":
+        raise HTTPException(status_code=400, detail="Only auto session policy mode is supported")
+
+    policy["allow_overage"] = bool(policy.get("allow_overage", True))
+    return policy
+
+
+def build_session_budget_state(conversation_id: str) -> Dict[str, Any]:
+    """Return persisted policy, usage, and derived budget percentage."""
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    return {
+        "policy": storage.get_session_policy(conversation_id),
+        "usage": storage.get_session_usage(conversation_id),
+        "budget_spent_pct": storage.get_budget_spent_percentage(conversation_id),
+    }
 
 
 class ConversationMetadata(BaseModel):
@@ -254,6 +348,22 @@ async def get_conversation(conversation_id: str):
     return conversation
 
 
+@app.get("/api/conversations/{conversation_id}/session-policy")
+async def get_session_policy_endpoint(conversation_id: str):
+    """Get a conversation's persisted session budget policy and usage state."""
+    return build_session_budget_state(conversation_id)
+
+
+@app.put("/api/conversations/{conversation_id}/session-policy")
+async def update_session_policy_endpoint(conversation_id: str, update: SessionPolicyUpdate):
+    """Persist a conversation's session budget policy."""
+    if storage.get_conversation(conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    storage.set_session_policy(conversation_id, normalize_session_policy(update))
+    return build_session_budget_state(conversation_id)
+
+
 @app.put("/api/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, updates: ConversationUpdate):
     """Update conversation title or folder."""
@@ -321,6 +431,19 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             council_models=council_models,
             chairman_model=chairman_model
         )
+        extra_usage_records = []
+        if metadata.get("steward_usage"):
+            extra_usage_records.append({
+                "model": metadata.get("steward_model") or chairman_model,
+                "usage": metadata["steward_usage"],
+            })
+        turn_cost = calculate_turn_cost(
+            mode="council",
+            stage1_results=stage1_results,
+            stage2_results=stage2_results,
+            stage3_result=stage3_result,
+            extra_usage_records=extra_usage_records,
+        )
 
         # Add assistant message with all stages and metadata
         storage.add_assistant_message(
@@ -328,8 +451,11 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             stage1_results,
             stage2_results,
             stage3_result,
-            metadata  # Contains label_to_model for analytics
+            metadata,  # Contains label_to_model for analytics
+            running_cost=turn_cost,
         )
+        storage.update_conversation_cost(conversation_id, turn_cost)
+        budget_state = storage.record_session_usage(conversation_id, turn_cost)
 
         # Calculate turn_index before logging or indexing this turn.
         updated_conversation = storage.get_conversation(conversation_id)
@@ -368,10 +494,13 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             "type": "council",
             "stage1": stage1_results,
             "stage2": stage2_results,
-            "stage2": stage2_results,
             "stage3": stage3_result,
             "metadata": metadata,
-            "evidence": evidence_pack.model_dump() if evidence_pack else None
+            "evidence": evidence_pack.model_dump() if evidence_pack else None,
+            "turn_cost": turn_cost,
+            "total_cost": updated_conversation.get("total_cost", 0.0),
+            "session_usage": budget_state["usage"],
+            "budget_spent_pct": budget_state["budget_spent_pct"],
         }
     else:
         # Chat with Chairman
@@ -397,12 +526,24 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         )
         
         # Add simple chat message
-        storage.add_chat_message(conversation_id, response_dict["content"])
+        turn_cost = calculate_turn_cost(
+            mode="chat",
+            response_dict=response_dict,
+            chairman_model=chairman_model,
+        )
+        storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)
+        storage.update_conversation_cost(conversation_id, turn_cost)
+        budget_state = storage.record_session_usage(conversation_id, turn_cost)
+        updated_conversation = storage.get_conversation(conversation_id)
         
         return {
             "type": "chat",
             "content": response_dict["content"],
-            "reasoning": response_dict.get("reasoning")
+            "reasoning": response_dict.get("reasoning"),
+            "turn_cost": turn_cost,
+            "total_cost": updated_conversation.get("total_cost", 0.0),
+            "session_usage": budget_state["usage"],
+            "budget_spent_pct": budget_state["budget_spent_pct"],
         }
 
 
@@ -446,6 +587,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             # Prepend custom instructions as a persona prefix
             if request.custom_instructions.strip():
                 llm_content = f"[User Instructions]\n{request.custom_instructions.strip()}\n\n{llm_content}"
+
+            extra_usage_records = []
             
             # Edit & Regenerate: truncate messages if edit_index is set
             if request.edit_index >= 0:
@@ -475,6 +618,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     yield f"data: {json.dumps({'type': 'web_search_start'})}\n\n"
                     search_result = await web_search_stage0(request.content, depth=request.web_search_depth)
                     web_context = search_result.get("context", "")
+                    if search_result.get("usage"):
+                        extra_usage_records.append({
+                            "model": search_result.get("model"),
+                            "usage": search_result.get("usage", {}),
+                        })
                     yield f"data: {json.dumps({'type': 'web_search_complete', 'data': {'context': web_context[:500], 'citations': search_result.get('citations', []), 'model': search_result.get('model', '')}})}\n\n"
                     if web_context:
                         llm_content = f"[Web Search Results]\n{web_context}\n\n[User Query]\n{llm_content}"
@@ -486,6 +634,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 
                 yield f"data: {json.dumps({'type': 'steward_start'})}\n\n"
                 evidence_pack, steward_usage = await run_tool_steward_phase(request.content, run_id, chairman_model=chairman_model)
+                if steward_usage:
+                    extra_usage_records.append({
+                        "model": chairman_model or config.CHAIRMAN_MODEL,
+                        "usage": steward_usage,
+                    })
                 yield f"data: {json.dumps({'type': 'steward_complete', 'data': evidence_pack.model_dump(), 'usage': steward_usage})}\n\n"
 
                 # Stage 1: Collect responses (use llm_content with attachments)
@@ -517,14 +670,24 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 # Save complete assistant message with metadata for analytics
                 council_metadata = {
                     "label_to_model": label_to_model,
-                    "aggregate_rankings": aggregate_rankings
+                    "aggregate_rankings": aggregate_rankings,
+                    "steward_usage": steward_usage,
+                    "steward_model": chairman_model or config.CHAIRMAN_MODEL,
                 }
+                turn_cost = calculate_turn_cost(
+                    mode="council",
+                    stage1_results=stage1_results,
+                    stage2_results=stage2_results,
+                    stage3_result=stage3_result,
+                    extra_usage_records=extra_usage_records,
+                )
                 storage.add_assistant_message(
                     conversation_id,
                     stage1_results,
                     stage2_results,
                     stage3_result,
-                    council_metadata  # For analytics tracking
+                    council_metadata,  # For analytics tracking
+                    running_cost=turn_cost,
                 )
 
                 # Calculate turn_index BEFORE using it
@@ -598,6 +761,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     yield f"data: {json.dumps({'type': 'web_search_start'})}\n\n"
                     search_result = await web_search_stage0(request.content, depth=request.web_search_depth)
                     chat_web_context = search_result.get("context", "")
+                    if search_result.get("usage"):
+                        extra_usage_records.append({
+                            "model": search_result.get("model"),
+                            "usage": search_result.get("usage", {}),
+                        })
                     yield f"data: {json.dumps({'type': 'web_search_complete', 'data': {'context': chat_web_context[:500], 'citations': search_result.get('citations', []), 'model': search_result.get('model', '')}})}\n\n"
 
                 # Retrieve context via PageIndex reasoning RAG
@@ -635,36 +803,23 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 
                 # Save chat message
                 logger.info(f"[CHAT] Saving chat message...")
-                storage.add_chat_message(conversation_id, response_dict["content"])
+                turn_cost = calculate_turn_cost(
+                    mode="chat",
+                    response_dict=response_dict,
+                    chairman_model=chairman_model,
+                    extra_usage_records=extra_usage_records,
+                )
+                storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)
                 
                 yield f"data: {json.dumps({'type': 'chat_response', 'data': response_dict})}\n\n"
                 logger.info(f"[CHAT] Chat response sent to client")
 
-            # Calculate total cost for this turn
-            turn_cost = 0.0
-            
-            if mode == "council":
-                # Stage 1 costs
-                for res in stage1_results:
-                    turn_cost += calculate_cost(res.get('usage', {}), res['model'])
-                
-                # Stage 2 costs
-                for res in stage2_results:
-                    turn_cost += calculate_cost(res.get('usage', {}), res['model'])
-                
-                # Stage 3 cost
-                turn_cost += calculate_cost(stage3_result.get('usage', {}), stage3_result['model'])
-                
-            else:
-                # Chat cost
-                turn_cost += calculate_cost(response_dict.get('usage', {}), chairman_model)
-
             # Update conversation cost
             storage.update_conversation_cost(conversation_id, turn_cost)
             
-            # Update session usage for budget tracking
-            warning_level = storage.check_budget_warning(conversation_id)
-            storage.update_session_usage(conversation_id, turn_cost, emit_warning=warning_level)
+            # Update session usage after current turn cost before checking warnings.
+            budget_state = storage.record_session_usage(conversation_id, turn_cost)
+            warning_level = budget_state["warning_level"]
             
             # Send budget warning if threshold crossed
             if warning_level is not None:
@@ -677,10 +832,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             total_cost = updated_conv.get('total_cost', 0.0)
             
             # Get budget spent percentage for completion event
-            spent_pct = storage.get_budget_spent_percentage(conversation_id)
+            spent_pct = budget_state["budget_spent_pct"]
 
             # Send completion event with cost info and budget status
-            yield f"data: {json.dumps({'type': 'complete', 'data': {'turn_cost': turn_cost, 'total_cost': total_cost, 'budget_spent_pct': spent_pct}})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'data': {'turn_cost': turn_cost, 'total_cost': total_cost, 'session_usage': budget_state['usage'], 'budget_spent_pct': spent_pct}})}\n\n"
 
         except Exception as e:
             # Send error event

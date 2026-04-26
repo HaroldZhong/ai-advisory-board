@@ -53,6 +53,40 @@ export const api = {
   },
 
   /**
+   * Get session budget policy and usage for a conversation.
+   */
+  async getSessionPolicy(conversationId) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/session-policy`
+    );
+    if (!response.ok) {
+      throw new Error('Failed to get session policy');
+    }
+    return response.json();
+  },
+
+  /**
+   * Update session budget policy for a conversation.
+   */
+  async updateSessionPolicy(conversationId, policy) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/session-policy`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(policy),
+      }
+    );
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to update session policy');
+    }
+    return response.json();
+  },
+
+  /**
    * Send a message in a conversation.
    */
   async sendMessage(conversationId, content, mode = 'auto') {

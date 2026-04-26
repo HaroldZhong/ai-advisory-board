@@ -187,7 +187,8 @@ def add_assistant_message(
     stage1: List[Dict[str, Any]],
     stage2: List[Dict[str, Any]],
     stage3: Dict[str, Any],
-    metadata: Dict[str, Any] = None
+    metadata: Dict[str, Any] = None,
+    running_cost: float = None,
 ):
     """
     Add an assistant message with all 3 stages to a conversation.
@@ -204,18 +205,22 @@ def add_assistant_message(
         if conversation is None:
             raise ValueError(f"Conversation {conversation_id} not found")
 
-        conversation["messages"].append({
+        message = {
             "role": "assistant",
             "stage1": stage1,
             "stage2": stage2,
             "stage3": stage3,
-            "metadata": metadata or {}
-        })
+            "metadata": metadata or {},
+        }
+        if running_cost is not None:
+            message["running_cost"] = running_cost
+
+        conversation["messages"].append(message)
 
         save_conversation(conversation)
 
 
-def add_chat_message(conversation_id: str, content: str):
+def add_chat_message(conversation_id: str, content: str, running_cost: float = None):
     """
     Add a simple chat message (from assistant) to a conversation.
 
@@ -228,10 +233,14 @@ def add_chat_message(conversation_id: str, content: str):
         if conversation is None:
             raise ValueError(f"Conversation {conversation_id} not found")
 
-        conversation["messages"].append({
+        message = {
             "role": "assistant",
-            "content": content
-        })
+            "content": content,
+        }
+        if running_cost is not None:
+            message["running_cost"] = running_cost
+
+        conversation["messages"].append(message)
 
         save_conversation(conversation)
 
@@ -301,7 +310,7 @@ def set_session_policy(conversation_id: str, policy: Dict[str, Any]):
         if conversation is None:
             raise ValueError(f"Conversation {conversation_id} not found")
         
-        conversation["session_policy"] = policy
+        conversation["session_policy"] = {**SESSION_POLICY_DEFAULTS, **policy}
         save_conversation(conversation)
 
 
@@ -351,6 +360,64 @@ def update_session_usage(conversation_id: str, cost_delta: float, emit_warning: 
         save_conversation(conversation)
 
 
+def _get_new_warning_level(policy: Dict[str, Any], usage: Dict[str, Any]) -> Optional[float]:
+    budget = policy.get("budget_usd")
+    if budget is None or budget <= 0:
+        return None
+
+    spent_pct = usage.get("spent_usd", 0.0) / budget
+    last_warning = usage.get("last_warning_level")
+    thresholds = sorted(policy.get("notify_thresholds", [0.70, 0.85, 1.00]))
+
+    crossed = [
+        threshold
+        for threshold in thresholds
+        if spent_pct >= threshold and (last_warning is None or threshold > last_warning)
+    ]
+    if not crossed:
+        return None
+    return max(crossed)
+
+
+def record_session_usage(conversation_id: str, cost_delta: float) -> Dict[str, Any]:
+    """
+    Add a turn's cost to session usage and return the updated budget state.
+    Warning calculation happens after the current turn cost is included.
+    """
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        policy = {**SESSION_POLICY_DEFAULTS, **conversation.get("session_policy", {})}
+        usage = conversation.get("session_usage", {
+            "spent_usd": 0.0,
+            "messages": 0,
+            "last_warning_level": None,
+        })
+
+        usage["spent_usd"] = usage.get("spent_usd", 0.0) + cost_delta
+        usage["messages"] = usage.get("messages", 0) + 1
+
+        warning_level = _get_new_warning_level(policy, usage)
+        if warning_level is not None:
+            usage["last_warning_level"] = warning_level
+
+        conversation["session_usage"] = usage
+        save_conversation(conversation)
+
+    budget = policy.get("budget_usd")
+    budget_spent_pct = None
+    if budget is not None and budget > 0:
+        budget_spent_pct = usage.get("spent_usd", 0.0) / budget
+
+    return {
+        "usage": usage.copy(),
+        "warning_level": warning_level,
+        "budget_spent_pct": budget_spent_pct,
+    }
+
+
 def check_budget_warning(conversation_id: str) -> Optional[float]:
     """
     Check if a budget warning should be emitted.
@@ -362,23 +429,7 @@ def check_budget_warning(conversation_id: str) -> Optional[float]:
     policy = get_session_policy(conversation_id)
     usage = get_session_usage(conversation_id)
     
-    budget = policy.get("budget_usd")
-    if budget is None or budget <= 0:
-        return None  # No budget set
-    
-    spent = usage.get("spent_usd", 0.0)
-    spent_pct = spent / budget
-    last_warning = usage.get("last_warning_level")
-    
-    thresholds = policy.get("notify_thresholds", [0.70, 0.85, 1.00])
-    
-    for threshold in thresholds:
-        if spent_pct >= threshold:
-            # Check if already warned at this level
-            if last_warning is None or threshold > last_warning:
-                return threshold
-    
-    return None
+    return _get_new_warning_level(policy, usage)
 
 
 def get_budget_spent_percentage(conversation_id: str) -> Optional[float]:

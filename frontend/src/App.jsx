@@ -38,6 +38,7 @@ function ConversationView({
   const [isLoading, setIsLoading] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [budgetWarning, setBudgetWarning] = useState(null);
   const { settings } = useSettings();
 
   // Load conversation details when URL changes
@@ -71,6 +72,10 @@ function ConversationView({
     };
   }, [conversationId, navigate]);
 
+  useEffect(() => {
+    setBudgetWarning(null);
+  }, [conversationId]);
+
   const handleNewConversation = () => {
     setIsModelSelectorOpen(true);
   };
@@ -103,6 +108,19 @@ function ConversationView({
     } catch (error) {
       console.error('Failed to load conversations:', error);
     }
+  };
+
+  const handleUpdateSessionPolicy = async (policyUpdate) => {
+    if (!conversationId) return null;
+
+    const state = await api.updateSessionPolicy(conversationId, policyUpdate);
+    setCurrentConversation((prev) => prev ? ({
+      ...prev,
+      session_policy: state.policy,
+      session_usage: state.usage,
+      budget_spent_pct: state.budget_spent_pct,
+    }) : prev);
+    return state;
   };
 
   const handleSendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
@@ -270,12 +288,29 @@ function ConversationView({
             loadConversations();
             break;
 
+          case 'budget_warning':
+            setBudgetWarning(event.data);
+            break;
+
           case 'complete':
             if (event.data) {
-              setCurrentConversation((prev) => ({
-                ...prev,
-                total_cost: event.data.total_cost,
-              }));
+              setCurrentConversation((prev) => {
+                if (!prev) return prev;
+
+                const messages = [...prev.messages];
+                const lastMsg = messages[messages.length - 1];
+                if (lastMsg?.role === 'assistant' && event.data.turn_cost != null) {
+                  lastMsg.running_cost = event.data.turn_cost;
+                }
+
+                return {
+                  ...prev,
+                  messages,
+                  total_cost: event.data.total_cost,
+                  session_usage: event.data.session_usage,
+                  budget_spent_pct: event.data.budget_spent_pct,
+                };
+              });
             }
             loadConversations();
             setIsLoading(false);
@@ -354,6 +389,9 @@ function ConversationView({
         <ChatInterface
           conversation={currentConversation}
           onSendMessage={handleSendMessage}
+          onUpdateSessionPolicy={handleUpdateSessionPolicy}
+          budgetWarning={budgetWarning}
+          onDismissBudgetWarning={() => setBudgetWarning(null)}
           isLoading={isLoading}
         />
       </main>

@@ -36,6 +36,12 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
     monkeypatch.setattr(main.storage, "add_user_message", Mock())
     monkeypatch.setattr(main.storage, "update_conversation_title", Mock())
     monkeypatch.setattr(main.storage, "add_assistant_message", Mock())
+    monkeypatch.setattr(main.storage, "update_conversation_cost", Mock())
+    monkeypatch.setattr(
+        main.storage,
+        "record_session_usage",
+        Mock(return_value={"usage": {}, "warning_level": None, "budget_spent_pct": None}),
+    )
 
     async def fake_generate_conversation_title(*args, **kwargs):
         return "Test title"
