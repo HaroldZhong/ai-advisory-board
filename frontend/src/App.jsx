@@ -100,26 +100,33 @@ function ConversationView({
     setIsModelSelectorOpen(true);
   };
 
-  const handleModelConfirm = async (councilMembers, chairmanModel) => {
+  const handleModelConfirm = async ({
+    councilMembers,
+    chairmanModel,
+    presetId,
+    zdrEnabled,
+    budgetUsd,
+  }) => {
     try {
       const newConv = await createConversationWithDefaults({
         apiClient: api,
         topic: "New Conversation",
         councilMembers,
         chairmanModel,
-        defaultSessionBudgetUsd: settings.defaultSessionBudgetUsd,
-        onBudgetError: (error) => {
-          console.error('Failed to apply default session budget:', error);
-          toast({
-            title: 'Conversation created without budget',
-            description: 'Set the session budget from the composer when ready.',
-          });
-        },
+        presetId,
+        zdrEnabled,
+        defaultSessionBudgetUsd: budgetUsd ?? settings.defaultSessionBudgetUsd,
       });
 
       // Update conversations list
       onConversationsChange([
-        { id: newConv.id, title: "New Conversation", created_at: newConv.created_at, message_count: 0 },
+        {
+          id: newConv.id,
+          title: newConv.title || "New Conversation",
+          created_at: newConv.created_at,
+          message_count: 0,
+          folder_id: newConv.metadata?.folder_id,
+        },
         ...conversations,
       ]);
 
@@ -446,6 +453,7 @@ function ConversationView({
         isOpen={isModelSelectorOpen}
         onClose={() => setIsModelSelectorOpen(false)}
         onConfirm={handleModelConfirm}
+        defaultBudgetUsd={settings.defaultSessionBudgetUsd}
       />
       {showAnalytics && (
         <AnalyticsDashboard onClose={onCloseAnalytics} />

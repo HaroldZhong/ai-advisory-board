@@ -82,3 +82,21 @@ async def test_create_conversation_does_not_store_implicit_zdr_false(monkeypatch
 
     assert "zdr_enabled" not in conversation["metadata"]
     assert main.storage.get_session_policy(conversation["id"])["allow_overage"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chairman_override", ["", "   "])
+async def test_create_conversation_applies_preset_when_overrides_are_blank(monkeypatch, tmp_path, chairman_override):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+    balanced = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "balanced")
+
+    conversation = await main.create_conversation(main.CreateConversationRequest(
+        preset_id="balanced",
+        council_members=[],
+        chairman_model=chairman_override,
+    ))
+
+    assert conversation["metadata"]["preset_id"] == "balanced"
+    assert conversation["metadata"]["council_models"] == balanced["council_models"]
+    assert conversation["metadata"]["chairman_model"] == balanced["chairman_model"]
