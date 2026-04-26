@@ -412,7 +412,10 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
     });
-    if (!response.ok) throw new Error('Failed to update conversation');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to update conversation');
+    }
     return response.json();
   },
 

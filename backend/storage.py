@@ -273,6 +273,24 @@ def update_conversation_title(conversation_id: str, title: str):
         save_conversation(conversation)
 
 
+def update_conversation_metadata(conversation_id: str, metadata_updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge metadata updates into a conversation and return the saved conversation."""
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        metadata = conversation.setdefault("metadata", {})
+        for key, value in metadata_updates.items():
+            if value is None:
+                metadata.pop(key, None)
+            else:
+                metadata[key] = value
+
+        save_conversation(conversation)
+        return conversation
+
+
 def update_conversation_cost(conversation_id: str, cost: float):
     """
     Update the total cost of a conversation.
@@ -348,7 +366,7 @@ def _get_new_warning_level(policy: Dict[str, Any], usage: Dict[str, Any]) -> Opt
 
     spent_pct = usage.get("spent_usd", 0.0) / budget
     last_warning = usage.get("last_warning_level")
-    thresholds = sorted(policy.get("notify_thresholds", [0.70, 0.85, 1.00]))
+    thresholds = sorted(policy.get("notify_thresholds", [0.75, 0.85, 1.00]))
 
     crossed = [
         threshold
@@ -404,7 +422,7 @@ def check_budget_warning(conversation_id: str) -> Optional[float]:
     Check if a budget warning should be emitted.
     
     Returns:
-        Warning threshold (0.70, 0.85, 1.00) to emit, or None if no warning needed.
+        Warning threshold (0.75, 0.85, 1.00) to emit, or None if no warning needed.
         Only returns a threshold that hasn't been warned about yet.
     """
     policy = get_session_policy(conversation_id)

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from fastapi import HTTPException
 
 
 def import_main(monkeypatch):
@@ -77,3 +78,77 @@ async def test_conversation_update_removes_folder_route(monkeypatch, tmp_path):
 
     assert "folder_id" not in updated["metadata"]
     fake_rag.update_conversation_folder.assert_called_once_with(conversation_id, "root")
+
+
+@pytest.mark.asyncio
+async def test_conversation_update_can_enable_zdr_for_compatible_models(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    conversation_id = "conv-zdr-compatible"
+    private_preset = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "chairman_model": private_preset["chairman_model"],
+            "council_models": private_preset["council_models"],
+        },
+    )
+
+    updated = await main.update_conversation(
+        conversation_id,
+        main.ConversationUpdate(zdr_enabled=True),
+    )
+
+    assert updated["metadata"]["zdr_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_conversation_update_rejects_zdr_for_incompatible_models(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    conversation_id = "conv-zdr-incompatible"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "chairman_model": "openai/gpt-5.5",
+            "council_models": ["x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro", "qwen/qwen3-max-thinking"],
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await main.update_conversation(
+            conversation_id,
+            main.ConversationUpdate(zdr_enabled=True),
+        )
+
+    assert exc.value.status_code == 400
+    assert "ZDR-capable models" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_conversation_update_cannot_disable_required_zdr_preset(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    conversation_id = "conv-private"
+    private_preset = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "preset_id": "private",
+            "zdr_enabled": True,
+            "chairman_model": private_preset["chairman_model"],
+            "council_models": private_preset["council_models"],
+        },
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await main.update_conversation(
+            conversation_id,
+            main.ConversationUpdate(zdr_enabled=False),
+        )
+
+    assert exc.value.status_code == 400
+    assert "requires ZDR" in exc.value.detail
