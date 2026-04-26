@@ -133,7 +133,12 @@ def list_conversations() -> List[Dict[str, Any]]:
     return conversations
 
 
-def add_user_message(conversation_id: str, content: str):
+def add_user_message(
+    conversation_id: str,
+    content: str,
+    attachment_ids: Optional[List[str]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+):
     """
     Add a user message to a conversation.
 
@@ -146,10 +151,16 @@ def add_user_message(conversation_id: str, content: str):
         if conversation is None:
             raise ValueError(f"Conversation {conversation_id} not found")
 
-        conversation["messages"].append({
+        message = {
             "role": "user",
             "content": content
-        })
+        }
+        if attachment_ids:
+            message["attachment_ids"] = attachment_ids
+        if attachments:
+            message["attachments"] = attachments
+
+        conversation["messages"].append(message)
 
         save_conversation(conversation)
 
