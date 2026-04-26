@@ -95,8 +95,8 @@ MODEL_TIERS = {
         "max_input_price": 0.5,  # $/M tokens
         "preferred_models": [
             "google/gemini-2.5-flash-lite",
-            "openai/gpt-4.1-mini",
-            "x-ai/grok-4-fast",
+            "deepseek/deepseek-v4-flash",
+            "qwen/qwen3.5-9b",
         ],
     },
     "mid": {
@@ -104,9 +104,9 @@ MODEL_TIERS = {
         "description": "Good balance of quality and cost",
         "max_input_price": 3.0,
         "preferred_models": [
-            "google/gemini-2.5-flash",
-            "openai/gpt-5.1",
-            "anthropic/claude-sonnet-4.5",
+            "google/gemini-3.1-pro-preview",
+            "openai/gpt-5.4-mini",
+            "deepseek/deepseek-v4-pro",
         ],
     },
     "premium": {
@@ -114,9 +114,9 @@ MODEL_TIERS = {
         "description": "Highest quality, higher cost",
         "max_input_price": 20.0,
         "preferred_models": [
-            "openai/gpt-5.2",
-            "anthropic/claude-opus-4.5",
-            "google/gemini-3-pro-preview",
+            "anthropic/claude-opus-4.7",
+            "openai/gpt-5.5",
+            "google/gemini-3.1-pro-preview",
         ],
     },
 }
@@ -155,7 +155,7 @@ def select_chairman_for_tier(tier: str, current_chairman: str = None) -> str:
         return preferred[0]
     
     # Fallback
-    return "google/gemini-2.5-flash"
+    return "google/gemini-3.1-pro-preview"
 
 
 def get_execution_summary(mode: ExecutionMode) -> Dict[str, Any]:

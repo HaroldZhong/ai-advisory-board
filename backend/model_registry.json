@@ -1,0 +1,282 @@
+{
+  "updated_at": "2026-04-26",
+  "source": "https://openrouter.ai/api/v1/models",
+  "zdr_source": "https://openrouter.ai/api/v1/endpoints/zdr",
+  "chairman_model": "anthropic/claude-opus-4.7",
+  "council_models": [
+    "google/gemini-3.1-pro-preview",
+    "anthropic/claude-sonnet-4.6",
+    "deepseek/deepseek-v4-pro",
+    "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.1",
+    "qwen/qwen3.5-35b-a3b"
+  ],
+  "models": [
+    {
+      "id": "anthropic/claude-opus-4.7",
+      "name": "Anthropic: Claude Opus 4.7",
+      "capabilities": ["frontier", "reasoning", "agentic", "vision"],
+      "type": "chairman",
+      "pricing": {"input": 5.0, "output": 25.0},
+      "context_length": 1000000,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "openai/gpt-5.5",
+      "name": "OpenAI: GPT-5.5",
+      "capabilities": ["frontier", "reasoning", "agentic", "tool-use"],
+      "type": "chairman",
+      "pricing": {"input": 5.0, "output": 30.0},
+      "context_length": 1050000,
+      "supports_zdr": false,
+      "available": true
+    },
+    {
+      "id": "openai/gpt-5.5-pro",
+      "name": "OpenAI: GPT-5.5 Pro",
+      "capabilities": ["frontier", "deep-reasoning", "high-accuracy"],
+      "type": "chairman",
+      "pricing": {"input": 30.0, "output": 180.0},
+      "context_length": 1050000,
+      "supports_zdr": false,
+      "available": true
+    },
+    {
+      "id": "google/gemini-3.1-pro-preview",
+      "name": "Google: Gemini 3.1 Pro Preview",
+      "capabilities": ["thinking", "vision", "reasoning", "long-context"],
+      "type": "both",
+      "pricing": {"input": 2.0, "output": 12.0},
+      "context_length": 1048576,
+      "supports_zdr": true,
+      "available": true,
+      "default_council": true
+    },
+    {
+      "id": "anthropic/claude-sonnet-4.6",
+      "name": "Anthropic: Claude Sonnet 4.6",
+      "capabilities": ["reasoning", "agentic", "vision", "tool-use"],
+      "type": "both",
+      "pricing": {"input": 3.0, "output": 15.0},
+      "context_length": 1000000,
+      "supports_zdr": true,
+      "available": true,
+      "default_council": true
+    },
+    {
+      "id": "deepseek/deepseek-v4-pro",
+      "name": "DeepSeek: DeepSeek V4 Pro",
+      "capabilities": ["reasoning", "coding", "long-context", "value"],
+      "type": "both",
+      "pricing": {"input": 0.435, "output": 0.87},
+      "context_length": 1048576,
+      "supports_zdr": true,
+      "available": true,
+      "default_council": true
+    },
+    {
+      "id": "moonshotai/kimi-k2.6",
+      "name": "MoonshotAI: Kimi K2.6",
+      "capabilities": ["long-context", "coding", "agentic", "vision"],
+      "type": "both",
+      "pricing": {"input": 0.7448, "output": 4.655},
+      "context_length": 256000,
+      "supports_zdr": true,
+      "available": true,
+      "default_council": true
+    },
+    {
+      "id": "z-ai/glm-5.1",
+      "name": "Z.ai: GLM 5.1",
+      "capabilities": ["coding", "reasoning", "agentic"],
+      "type": "both",
+      "pricing": {"input": 1.05, "output": 3.5},
+      "context_length": 202752,
+      "supports_zdr": true,
+      "available": true,
+      "default_council": true
+    },
+    {
+      "id": "qwen/qwen3.5-35b-a3b",
+      "name": "Qwen: Qwen3.5-35B-A3B",
+      "capabilities": ["reasoning", "value", "multilingual"],
+      "type": "council",
+      "pricing": {"input": 0.1625, "output": 1.3},
+      "context_length": 262144,
+      "supports_zdr": true,
+      "available": true,
+      "default_council": true
+    },
+    {
+      "id": "openai/gpt-5.4",
+      "name": "OpenAI: GPT-5.4",
+      "capabilities": ["frontier", "reasoning", "generalist"],
+      "type": "both",
+      "pricing": {"input": 2.5, "output": 15.0},
+      "context_length": 1050000,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "openai/gpt-5.4-mini",
+      "name": "OpenAI: GPT-5.4 Mini",
+      "capabilities": ["reasoning", "fast", "generalist"],
+      "type": "both",
+      "pricing": {"input": 0.75, "output": 4.5},
+      "context_length": 400000,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "openai/gpt-5.3-chat",
+      "name": "OpenAI: GPT-5.3 Chat",
+      "capabilities": ["generalist", "fast", "reasoning"],
+      "type": "both",
+      "pricing": {"input": 1.75, "output": 14.0},
+      "context_length": 128000,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "openai/gpt-5.2",
+      "name": "OpenAI: GPT-5.2",
+      "capabilities": ["reasoning", "agentic", "generalist"],
+      "type": "both",
+      "pricing": {"input": 1.75, "output": 14.0},
+      "context_length": 400000,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "openai/gpt-4o-mini",
+      "name": "OpenAI: GPT-4o-mini",
+      "capabilities": ["legacy", "fast", "vision", "value"],
+      "type": "council",
+      "pricing": {"input": 0.15, "output": 0.6},
+      "context_length": 128000,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "deepseek/deepseek-v4-flash",
+      "name": "DeepSeek: DeepSeek V4 Flash",
+      "capabilities": ["fast", "coding", "long-context", "value"],
+      "type": "council",
+      "pricing": {"input": 0.14, "output": 0.28},
+      "context_length": 1048576,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "google/gemini-2.5-flash-lite",
+      "name": "Google: Gemini 2.5 Flash Lite",
+      "capabilities": ["fast", "budget", "long-context"],
+      "type": "both",
+      "pricing": {"input": 0.1, "output": 0.4},
+      "context_length": 1048576,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "minimax/minimax-m2.7",
+      "name": "MiniMax: MiniMax M2.7",
+      "capabilities": ["agentic", "value", "roleplay"],
+      "type": "council",
+      "pricing": {"input": 0.3, "output": 1.2},
+      "context_length": 196608,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "minimax/minimax-m2.5",
+      "name": "MiniMax: MiniMax M2.5",
+      "capabilities": ["agentic", "value", "roleplay"],
+      "type": "council",
+      "pricing": {"input": 0.15, "output": 1.15},
+      "context_length": 196608,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "mistralai/mistral-small-2603",
+      "name": "Mistral: Mistral Small 4",
+      "capabilities": ["fast", "value", "multilingual"],
+      "type": "council",
+      "pricing": {"input": 0.15, "output": 0.6},
+      "context_length": 262144,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "mistralai/mistral-large-2512",
+      "name": "Mistral: Mistral Large 3 2512",
+      "capabilities": ["reasoning", "generalist", "multilingual"],
+      "type": "council",
+      "pricing": {"input": 0.5, "output": 1.5},
+      "context_length": 262144,
+      "supports_zdr": false,
+      "available": true
+    },
+    {
+      "id": "qwen/qwen3-coder-next",
+      "name": "Qwen: Qwen3 Coder Next",
+      "capabilities": ["coding", "agentic", "value"],
+      "type": "council",
+      "pricing": {"input": 0.14, "output": 0.8},
+      "context_length": 262144,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "qwen/qwen3.5-9b",
+      "name": "Qwen: Qwen3.5-9B",
+      "capabilities": ["fast", "budget", "value"],
+      "type": "council",
+      "pricing": {"input": 0.1, "output": 0.15},
+      "context_length": 262144,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "x-ai/grok-4.20",
+      "name": "xAI: Grok 4.20",
+      "capabilities": ["reasoning", "long-context", "generalist"],
+      "type": "both",
+      "pricing": {"input": 2.0, "output": 6.0},
+      "context_length": 2000000,
+      "supports_zdr": false,
+      "available": true
+    },
+    {
+      "id": "x-ai/grok-4.1-fast",
+      "name": "xAI: Grok 4.1 Fast",
+      "capabilities": ["fast", "long-context", "value"],
+      "type": "council",
+      "pricing": {"input": 0.2, "output": 0.5},
+      "context_length": 2000000,
+      "supports_zdr": false,
+      "available": true
+    },
+    {
+      "id": "perplexity/sonar",
+      "name": "Perplexity: Sonar",
+      "capabilities": ["web-search", "fast", "research"],
+      "type": "search",
+      "pricing": {"input": 1.0, "output": 1.0},
+      "context_length": 127072,
+      "supports_zdr": true,
+      "available": true
+    },
+    {
+      "id": "perplexity/sonar-pro",
+      "name": "Perplexity: Sonar Pro",
+      "capabilities": ["web-search", "deep-research"],
+      "type": "search",
+      "pricing": {"input": 3.0, "output": 15.0},
+      "context_length": 200000,
+      "supports_zdr": true,
+      "available": true
+    }
+  ]
+}

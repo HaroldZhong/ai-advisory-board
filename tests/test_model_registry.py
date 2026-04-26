@@ -1,0 +1,143 @@
+import importlib
+
+
+def import_module_with_api_key(monkeypatch, module_name):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    return importlib.import_module(module_name)
+
+
+def test_model_registry_loads_from_json_and_has_required_sections(monkeypatch):
+    model_registry = import_module_with_api_key(monkeypatch, "backend.model_registry")
+
+    registry = model_registry.load_model_registry()
+
+    assert registry["chairman_model"] in {model["id"] for model in registry["models"]}
+    assert len(registry["council_models"]) >= 5
+    assert len(registry["models"]) >= 20
+
+
+def test_curated_models_are_unique_and_schema_valid(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    valid_types = {"chairman", "council", "both", "search"}
+    seen = set()
+
+    for model in config.CURATED_MODELS:
+        assert model["id"] not in seen, f"duplicate model id: {model['id']}"
+        seen.add(model["id"])
+        assert model["type"] in valid_types
+        assert isinstance(model.get("capabilities"), list)
+        assert isinstance(model.get("supports_zdr"), bool)
+        assert isinstance(model.get("default_council", False), bool)
+        assert isinstance(model.get("pricing", {}).get("input"), (int, float))
+        assert isinstance(model.get("pricing", {}).get("output"), (int, float))
+        assert model["pricing"]["input"] >= 0
+        assert model["pricing"]["output"] >= 0
+
+
+def test_default_models_are_registry_available_and_not_search(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    by_id = {model["id"]: model for model in config.CURATED_MODELS}
+
+    assert config.CHAIRMAN_MODEL in by_id
+    assert by_id[config.CHAIRMAN_MODEL]["type"] in {"chairman", "both"}
+
+    for model_id in config.COUNCIL_MODELS:
+        assert model_id in by_id
+        assert by_id[model_id]["type"] in {"council", "both"}
+        assert by_id[model_id].get("default_council") is True
+        assert by_id[model_id].get("available") is True
+
+
+def test_search_models_are_in_registry_for_cost_accounting(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    web_search = import_module_with_api_key(monkeypatch, "backend.web_search")
+    by_id = {model["id"]: model for model in config.CURATED_MODELS}
+
+    for model_id in web_search.SEARCH_MODELS.values():
+        assert model_id in by_id
+        assert by_id[model_id]["type"] == "search"
+
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    assert main.calculate_cost(
+        {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000},
+        "perplexity/sonar",
+    ) == 2.0
+    assert main.calculate_cost(
+        {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000},
+        "perplexity/sonar-pro",
+    ) == 18.0
+
+
+def test_enriched_models_expose_zdr_and_availability_metadata(monkeypatch):
+    openrouter_client = import_module_with_api_key(monkeypatch, "backend.openrouter_client")
+
+    async def fake_cached_models():
+        return {
+            "model/a": {
+                "id": "model/a",
+                "name": "Provider: Model A",
+                "pricing": {"input": 1.0, "output": 2.0},
+                "context_length": 1000,
+                "supports_zdr": True,
+            },
+            "model/c": {
+                "id": "model/c",
+                "name": "Provider: Model C",
+                "pricing": {"input": 3.0, "output": 4.0},
+                "context_length": 2000,
+                "supports_zdr": None,
+            }
+        }
+
+    monkeypatch.setattr(openrouter_client, "get_openrouter_models_cached", fake_cached_models)
+
+    import asyncio
+
+    enriched = asyncio.run(openrouter_client.get_enriched_models([
+        {
+            "id": "model/a",
+            "name": "Fallback A",
+            "capabilities": ["test"],
+            "type": "both",
+            "supports_zdr": False,
+        },
+        {
+            "id": "model/b",
+            "name": "Fallback B",
+            "capabilities": ["test"],
+            "type": "council",
+            "supports_zdr": True,
+        },
+        {
+            "id": "model/c",
+            "name": "Fallback C",
+            "capabilities": ["test"],
+            "type": "council",
+            "supports_zdr": True,
+        },
+    ]))
+
+    assert enriched[0]["available"] is True
+    assert enriched[0]["supports_zdr"] is True
+    assert enriched[0]["default_council"] is False
+    assert enriched[1]["available"] is False
+    assert enriched[1]["supports_zdr"] is True
+    assert enriched[2]["available"] is True
+    assert enriched[2]["supports_zdr"] is True
+
+
+def test_models_endpoint_returns_registry_defaults(monkeypatch):
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+
+    async def fake_enriched_models(models):
+        return models
+
+    monkeypatch.setattr("backend.openrouter_client.get_enriched_models", fake_enriched_models)
+
+    import asyncio
+
+    result = asyncio.run(main.get_models())
+
+    assert result["defaults"]["chairman"] == main.config.CHAIRMAN_MODEL
+    assert result["defaults"]["council"] == main.config.COUNCIL_MODELS
+    assert result["models"]

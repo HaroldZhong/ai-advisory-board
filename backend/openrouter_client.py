@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional
 from .logger import logger
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+OPENROUTER_ZDR_ENDPOINTS_URL = "https://openrouter.ai/api/v1/endpoints/zdr"
 CACHE_TTL_SECONDS = 3600  # 1 hour cache
 
 # In-memory cache
@@ -41,7 +42,29 @@ async def fetch_openrouter_models() -> Optional[List[Dict[str, Any]]]:
         return None
 
 
-def parse_openrouter_model(raw: Dict[str, Any]) -> Dict[str, Any]:
+async def fetch_openrouter_zdr_model_ids() -> Optional[set[str]]:
+    """Fetch model IDs with at least one ZDR-compatible OpenRouter endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(OPENROUTER_ZDR_ENDPOINTS_URL)
+            response.raise_for_status()
+            data = response.json()
+            endpoints = data.get("data", [])
+            model_ids = {endpoint.get("model_id") for endpoint in endpoints if endpoint.get("model_id")}
+            logger.info(f"[OpenRouter] Fetched {len(model_ids)} ZDR-compatible model IDs")
+            return model_ids
+    except httpx.TimeoutException:
+        logger.warning("[OpenRouter] ZDR endpoint request timed out")
+        return None
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"[OpenRouter] ZDR endpoint returned status {e.response.status_code}")
+        return None
+    except Exception as e:
+        logger.error(f"[OpenRouter] Error fetching ZDR endpoints: {e}")
+        return None
+
+
+def parse_openrouter_model(raw: Dict[str, Any], supports_zdr: Optional[bool] = None) -> Dict[str, Any]:
     """
     Parse a raw OpenRouter model into our format.
     
@@ -65,6 +88,7 @@ def parse_openrouter_model(raw: Dict[str, Any]) -> Dict[str, Any]:
             "input": round(prompt_price, 4),
             "output": round(completion_price, 4)
         },
+        "supports_zdr": supports_zdr,
         "architecture": raw.get("architecture", {}),
         "top_provider": raw.get("top_provider", {})
     }
@@ -97,12 +121,15 @@ async def get_openrouter_models_cached() -> Optional[Dict[str, Dict[str, Any]]]:
             return _cache["models"]
         return None
     
+    zdr_model_ids = await fetch_openrouter_zdr_model_ids()
+
     # Parse and cache
     parsed = {}
     for raw in raw_models:
         model_id = raw.get("id", "")
         if model_id:
-            parsed[model_id] = parse_openrouter_model(raw)
+            supports_zdr = model_id in zdr_model_ids if zdr_model_ids is not None else None
+            parsed[model_id] = parse_openrouter_model(raw, supports_zdr=supports_zdr)
     
     _cache["models"] = parsed
     _cache["last_fetched"] = now
@@ -141,7 +168,8 @@ async def get_enriched_models(curated_models: List[Dict[str, Any]]) -> List[Dict
         enriched_model = {
             "id": model_id,
             "capabilities": curated.get("capabilities", []),
-            "type": curated.get("type", "council")
+            "type": curated.get("type", "council"),
+            "default_council": curated.get("default_council", False),
         }
         
         # Merge live data if available
@@ -150,12 +178,15 @@ async def get_enriched_models(curated_models: List[Dict[str, Any]]) -> List[Dict
             enriched_model["name"] = live.get("name", curated.get("name", model_id))
             enriched_model["pricing"] = live.get("pricing", curated.get("pricing", {"input": 0, "output": 0}))
             enriched_model["context_length"] = live.get("context_length", 0)
+            supports_zdr = live.get("supports_zdr")
+            enriched_model["supports_zdr"] = curated.get("supports_zdr", False) if supports_zdr is None else supports_zdr
             enriched_model["available"] = True
         else:
             # Fallback to curated data
             enriched_model["name"] = curated.get("name", model_id)
             enriched_model["pricing"] = curated.get("pricing", {"input": 0, "output": 0})
             enriched_model["context_length"] = curated.get("context_length", 0)
+            enriched_model["supports_zdr"] = curated.get("supports_zdr", False)
             enriched_model["available"] = openrouter_data is None  # Unknown if API failed
             
             if openrouter_data is not None:
