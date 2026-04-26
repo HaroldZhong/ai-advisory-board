@@ -85,6 +85,9 @@ REASONING_MODELS = {
 # Curated Models Registry (for UI selection)
 CURATED_MODELS = MODEL_REGISTRY["models"]
 
+# Conversation creation presets returned by /api/models
+MODEL_PRESETS = MODEL_REGISTRY["presets"]
+
 
 # Legacy alias for backwards compatibility
 AVAILABLE_MODELS = CURATED_MODELS

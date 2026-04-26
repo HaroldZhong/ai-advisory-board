@@ -1,0 +1,84 @@
+import importlib
+
+import pytest
+from fastapi import HTTPException
+
+
+def import_main(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    return importlib.import_module("backend.main")
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_persists_preset_zdr_and_budget(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+    private_preset = next(
+        preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private"
+    )
+
+    request = main.CreateConversationRequest(
+        topic="Private research",
+        preset_id="private",
+        zdr_enabled=True,
+        budget_usd=2,
+        budget_allow_overage=False,
+    )
+
+    conversation = await main.create_conversation(request)
+
+    assert conversation["metadata"]["preset_id"] == "private"
+    assert conversation["metadata"]["zdr_enabled"] is True
+    assert conversation["metadata"]["chairman_model"] == private_preset["chairman_model"]
+    assert conversation["metadata"]["council_models"] == private_preset["council_models"]
+    policy = main.storage.get_session_policy(conversation["id"])
+    assert policy["budget_usd"] == 2
+    assert policy["allow_overage"] is False
+
+
+@pytest.mark.asyncio
+async def test_private_preset_rejects_disabled_zdr(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(main.CreateConversationRequest(
+            preset_id="private",
+            zdr_enabled=False,
+        ))
+
+    assert exc.value.status_code == 400
+    assert "requires ZDR" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_private_preset_rejects_non_zdr_model_overrides(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    for request in [
+        main.CreateConversationRequest(
+            preset_id="private",
+            chairman_model="openai/gpt-5.5",
+        ),
+        main.CreateConversationRequest(
+            preset_id="private",
+            council_members=["openai/gpt-5.4", "x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro"],
+        ),
+    ]:
+        with pytest.raises(HTTPException) as exc:
+            await main.create_conversation(request)
+
+        assert exc.value.status_code == 400
+        assert "ZDR-capable models" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_does_not_store_implicit_zdr_false(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    conversation = await main.create_conversation(main.CreateConversationRequest())
+
+    assert "zdr_enabled" not in conversation["metadata"]
+    assert main.storage.get_session_policy(conversation["id"])["allow_overage"] is True
