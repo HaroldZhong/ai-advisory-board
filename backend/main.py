@@ -147,6 +147,7 @@ class SendMessageRequest(BaseModel):
     web_search_enabled: bool = False  # Enable Stage 0 web search
     web_search_depth: str = "fast"  # "fast" (sonar) or "deep" (sonar-pro)
     custom_instructions: str = ""  # Custom persona/instructions from user
+    zdr_enabled: bool = False  # Restrict OpenRouter calls to Zero Data Retention endpoints
     edit_index: int = -1  # If >= 0, truncate conversation to this message index before sending
 
 
@@ -413,7 +414,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
 
     # If this is the first message, generate a title
     if is_first_message:
-        title = await generate_conversation_title(request.content)
+        title = await generate_conversation_title(
+            request.content,
+            zdr_enabled=request.zdr_enabled,
+        )
         storage.update_conversation_title(conversation_id, title)
 
     # Get model configuration from conversation metadata
@@ -429,7 +433,8 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         stage1_results, stage2_results, stage3_result, metadata, evidence_pack = await run_full_council(
             request.content,
             council_models=council_models,
-            chairman_model=chairman_model
+            chairman_model=chairman_model,
+            zdr_enabled=request.zdr_enabled,
         )
         extra_usage_records = []
         if metadata.get("steward_usage"):
@@ -467,7 +472,11 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         # Extract topics from question + final answer
         from .council import extract_topics, calculate_quality_metrics
         combined_text = request.content + " " + stage3_result.get('response', '')
-        topics = await extract_topics(combined_text, max_topics=3)
+        topics = await extract_topics(
+            combined_text,
+            max_topics=3,
+            zdr_enabled=request.zdr_enabled,
+        )
         
         # Calculate quality metrics from Stage 2 rankings
         quality_metrics = calculate_quality_metrics(
@@ -511,18 +520,24 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         from .council import rewrite_query
         rewritten_query = await rewrite_query(
             request.content,
-            conversation["messages"]
+            conversation["messages"],
+            zdr_enabled=request.zdr_enabled,
         )
         
         # Retrieve context via PageIndex reasoning RAG (using rewritten query)
-        rag_context = await rag_system.retrieve_async(rewritten_query, conversation_id)
+        rag_context = await rag_system.retrieve_async(
+            rewritten_query,
+            conversation_id,
+            zdr_enabled=request.zdr_enabled,
+        )
         
         # Chat with chairman (using original query)
         response_dict = await chat_with_chairman(
             request.content,  # Original query
             conversation["messages"],
             rag_context,
-            chairman_model=chairman_model
+            chairman_model=chairman_model,
+            zdr_enabled=request.zdr_enabled,
         )
         
         # Add simple chat message
@@ -566,6 +581,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
     async def event_generator():
         try:
+            current_conversation = conversation
+
             # Build attachment context if attachment_ids provided
             attachment_context = ""
             has_attachments = bool(request.attachment_ids)
@@ -594,14 +611,14 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             if request.edit_index >= 0:
                 storage.truncate_messages(conversation_id, request.edit_index)
                 # Re-fetch conversation after truncation
-                conversation = storage.get_conversation(conversation_id)
+                current_conversation = storage.get_conversation(conversation_id)
                 yield f"data: {json.dumps({'type': 'edit_truncated', 'data': {'edit_index': request.edit_index}})}\n\n"
 
             # Add user message (store only original content, not attachment text)
             storage.add_user_message(conversation_id, request.content)
 
             # Get model configuration from conversation metadata
-            metadata = conversation.get("metadata", {})
+            metadata = current_conversation.get("metadata", {})
             council_models = metadata.get("council_models")
             chairman_model = metadata.get("chairman_model")
 
@@ -609,14 +626,23 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 # Start title generation in parallel (don't await yet)
                 title_task = None
                 if is_first_message:
-                    title_task = asyncio.create_task(generate_conversation_title(request.content))
+                    title_task = asyncio.create_task(
+                        generate_conversation_title(
+                            request.content,
+                            zdr_enabled=request.zdr_enabled,
+                        )
+                    )
 
                 # Stage 0a: Web Search (if enabled)
                 web_context = ""
                 if request.web_search_enabled:
                     from .web_search import web_search_stage0
                     yield f"data: {json.dumps({'type': 'web_search_start'})}\n\n"
-                    search_result = await web_search_stage0(request.content, depth=request.web_search_depth)
+                    search_result = await web_search_stage0(
+                        request.content,
+                        depth=request.web_search_depth,
+                        zdr_enabled=request.zdr_enabled,
+                    )
                     web_context = search_result.get("context", "")
                     if search_result.get("usage"):
                         extra_usage_records.append({
@@ -633,7 +659,12 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 run_id = str(uuid.uuid4())
                 
                 yield f"data: {json.dumps({'type': 'steward_start'})}\n\n"
-                evidence_pack, steward_usage = await run_tool_steward_phase(request.content, run_id, chairman_model=chairman_model)
+                evidence_pack, steward_usage = await run_tool_steward_phase(
+                    request.content,
+                    run_id,
+                    chairman_model=chairman_model,
+                    zdr_enabled=request.zdr_enabled,
+                )
                 if steward_usage:
                     extra_usage_records.append({
                         "model": chairman_model or config.CHAIRMAN_MODEL,
@@ -643,12 +674,22 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
                 # Stage 1: Collect responses (use llm_content with attachments)
                 yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-                stage1_results = await stage1_collect_responses(llm_content, models=council_models, evidence_pack=evidence_pack)
+                stage1_results = await stage1_collect_responses(
+                    llm_content,
+                    models=council_models,
+                    evidence_pack=evidence_pack,
+                    zdr_enabled=request.zdr_enabled,
+                )
                 yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
                 # Stage 2: Collect rankings
                 yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-                stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results, models=council_models)
+                stage2_results, label_to_model = await stage2_collect_rankings(
+                    request.content,
+                    stage1_results,
+                    models=council_models,
+                    zdr_enabled=request.zdr_enabled,
+                )
                 aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
                 yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
@@ -658,7 +699,15 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
                 # Stage 3: Synthesize final answer with confidence
                 yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-                stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results, label_to_model, quality_metrics, chairman_model=chairman_model)
+                stage3_result = await stage3_synthesize_final(
+                    request.content,
+                    stage1_results,
+                    stage2_results,
+                    label_to_model,
+                    quality_metrics,
+                    chairman_model=chairman_model,
+                    zdr_enabled=request.zdr_enabled,
+                )
                 yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
                 # Wait for title generation if it was started
@@ -700,7 +749,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 # Extract topics from question + final answer
                 from .council import extract_topics
                 combined_text = request.content + " " + stage3_result.get('response', '')
-                topics = await extract_topics(combined_text, max_topics=3)
+                topics = await extract_topics(
+                    combined_text,
+                    max_topics=3,
+                    zdr_enabled=request.zdr_enabled,
+                )
                 logger.info("[PHASE1] Topics extracted: %s", topics)
                 
                 # quality_metrics already calculated on line 327, reuse it
@@ -750,7 +803,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 logger.info(f"[CHAT] About to rewrite query...")
                 rewritten_query = await rewrite_query(
                     request.content,
-                    updated_conversation["messages"]
+                    updated_conversation["messages"],
+                    zdr_enabled=request.zdr_enabled,
                 )
                 logger.info(f"[CHAT] Query rewritten, now retrieving RAG context...")
                 
@@ -759,7 +813,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 if request.web_search_enabled:
                     from .web_search import web_search_stage0
                     yield f"data: {json.dumps({'type': 'web_search_start'})}\n\n"
-                    search_result = await web_search_stage0(request.content, depth=request.web_search_depth)
+                    search_result = await web_search_stage0(
+                        request.content,
+                        depth=request.web_search_depth,
+                        zdr_enabled=request.zdr_enabled,
+                    )
                     chat_web_context = search_result.get("context", "")
                     if search_result.get("usage"):
                         extra_usage_records.append({
@@ -772,7 +830,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 rag_context = await rag_system.retrieve_async(
                     rewritten_query, 
                     conversation_id, 
-                    max_tokens=run_plan.rag_max_tokens
+                    max_tokens=run_plan.rag_max_tokens,
+                    zdr_enabled=request.zdr_enabled,
                 )
                 logger.info(f"[CHAT] RAG context retrieved ({len(rag_context)} chars), calling chairman...")
                 
@@ -791,7 +850,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         request.content,  # Original query to Chairman
                         updated_conversation["messages"],
                         combined_context,
-                        chairman_model=chairman_model
+                        chairman_model=chairman_model,
+                        zdr_enabled=request.zdr_enabled,
                     )
                     logger.info(f"[CHAT] Chairman response received")
                 except Exception as e:
@@ -853,12 +913,15 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(
+    file: UploadFile = File(...),
+    use_zdr: bool = False,
+):
     """
     Legacy: Upload a file, extract text (or describe image), and return the content.
     Use /api/attachments for new implementation.
     """
-    result = await extract_text_from_file(file)
+    result = await extract_text_from_file(file, zdr_enabled=use_zdr)
     
     if result["error"]:
         raise HTTPException(status_code=400, detail=result["error"])
@@ -875,7 +938,10 @@ async def upload_file(file: UploadFile = File(...)):
 # =============================================================================
 
 @app.post("/api/attachments")
-async def create_attachment_endpoint(file: UploadFile = File(...)):
+async def create_attachment_endpoint(
+    file: UploadFile = File(...),
+    use_zdr: bool = False,
+):
     """
     Upload a file and create an attachment.
     Returns attachment_id and status. Extraction happens async.
@@ -897,7 +963,12 @@ async def create_attachment_endpoint(file: UploadFile = File(...)):
         }
     
     # Process the file (extraction)
-    result = await process_file(content, file.filename, mime_type)
+    result = await process_file(
+        content,
+        file.filename,
+        mime_type,
+        zdr_enabled=use_zdr,
+    )
     
     # Update attachment with extraction result
     update_attachment_status(

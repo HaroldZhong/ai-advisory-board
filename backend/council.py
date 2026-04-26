@@ -12,7 +12,12 @@ import uuid
 import json
 
 
-async def stage1_collect_responses(user_query: str, models: List[str] = None, evidence_pack: EvidencePack = None) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(
+    user_query: str,
+    models: List[str] = None,
+    evidence_pack: EvidencePack = None,
+    zdr_enabled: bool = False,
+) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -20,6 +25,7 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ev
         user_query: The user's question
         models: Optional list of models to query (defaults to COUNCIL_MODELS)
         evidence_pack: Optional evidence gathered by the Steward
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         List of dicts with 'model' and 'response' keys
@@ -59,7 +65,11 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ev
     messages = [{"role": "user", "content": prompt}]
 
     # Query all models in parallel
-    responses = await query_models_parallel(target_models, messages)
+    responses = await query_models_parallel(
+        target_models,
+        messages,
+        zdr_enabled=zdr_enabled,
+    )
 
     # Format results
     stage1_results = []
@@ -77,7 +87,8 @@ async def stage1_collect_responses(user_query: str, models: List[str] = None, ev
 async def stage2_collect_rankings(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    models: List[str] = None
+    models: List[str] = None,
+    zdr_enabled: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -86,6 +97,7 @@ async def stage2_collect_rankings(
         user_query: The original user query
         stage1_results: Results from Stage 1
         models: Optional list of models to query (defaults to COUNCIL_MODELS)
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         Tuple of (rankings list, label_to_model mapping)
@@ -141,7 +153,11 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(target_models, messages)
+    responses = await query_models_parallel(
+        target_models,
+        messages,
+        zdr_enabled=zdr_enabled,
+    )
 
     # Format results
     stage2_results = []
@@ -165,7 +181,8 @@ async def stage3_synthesize_final(
     stage2_results: List[Dict[str, Any]],
     label_to_model: Dict[str, str],
     quality_metrics: Dict[str, Dict[str, Any]],
-    chairman_model: str = None
+    chairman_model: str = None,
+    zdr_enabled: bool = False,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final answer with confidence scoring.
@@ -177,6 +194,7 @@ async def stage3_synthesize_final(
         label_to_model: Mapping from anonymous labels to model names
         quality_metrics: Per-model quality metrics from Stage 2 rankings
         chairman_model: Optional chairman model ID
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
         
     Returns:
         Dict with 'response', 'model', 'usage', 'confidence', 'avg_consensus', 'quality_metrics'
@@ -233,7 +251,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     # Query the chairman model
     logger.info(f"[STAGE3] Requesting synthesis from {target_chairman}...")
-    response = await query_model(target_chairman, messages)
+    response = await query_model(target_chairman, messages, zdr_enabled=zdr_enabled)
 
     if response is None:
         logger.error(f"[STAGE3] ERROR: query_model returned None")
@@ -298,7 +316,11 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
     return matches
 
 
-async def extract_topics(text: str, max_topics: int = 3) -> List[str]:
+async def extract_topics(
+    text: str,
+    max_topics: int = 3,
+    zdr_enabled: bool = False,
+) -> List[str]:
     """
     Extract main topics using a fast LLM.
     Text is truncated for cost and latency.
@@ -306,6 +328,7 @@ async def extract_topics(text: str, max_topics: int = 3) -> List[str]:
     Args:
         text: Combined user question + response text
         max_topics: Maximum number of topics to extract
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
         
     Returns:
         List of topic strings (1-3 words each)
@@ -327,6 +350,7 @@ Topics:"""
             "google/gemini-2.5-flash",
             [{"role": "user", "content": prompt}],
             timeout=10.0,
+            zdr_enabled=zdr_enabled,
         )
     except Exception as e:
         logger.exception("[PHASE1] extract_topics failed: %s", e)
@@ -497,12 +521,16 @@ def calculate_aggregate_rankings(
     return aggregate
 
 
-async def generate_conversation_title(user_query: str) -> str:
+async def generate_conversation_title(
+    user_query: str,
+    zdr_enabled: bool = False,
+) -> str:
     """
     Generate a short title for a conversation based on the first user message.
 
     Args:
         user_query: The first user message
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         A short title (3-5 words)
@@ -517,7 +545,12 @@ Title:"""
     messages = [{"role": "user", "content": title_prompt}]
 
     # Use gemini-2.5-flash for title generation (fast and cheap)
-    response = await query_model("google/gemini-2.5-flash", messages, timeout=30.0)
+    response = await query_model(
+        "google/gemini-2.5-flash",
+        messages,
+        timeout=30.0,
+        zdr_enabled=zdr_enabled,
+    )
 
     if response is None:
         # Fallback to a generic title
@@ -535,7 +568,12 @@ Title:"""
     return title
 
 
-async def run_tool_steward_phase(user_query: str, run_id: str, chairman_model: str = None) -> Tuple[EvidencePack, Dict[str, Any]]:
+async def run_tool_steward_phase(
+    user_query: str,
+    run_id: str,
+    chairman_model: str = None,
+    zdr_enabled: bool = False,
+) -> Tuple[EvidencePack, Dict[str, Any]]:
     """
     Stage 0: Tool Steward decides and executes tools.
     Returns: (EvidencePack, usage_dict)
@@ -578,7 +616,12 @@ If no tools are needed (e.g., for general chit-chat or pure logic questions), re
     messages = [{"role": "user", "content": steward_prompt}]
     
     # 2. Query Model
-    response = await query_model(target_model, messages, timeout=60.0)
+    response = await query_model(
+        target_model,
+        messages,
+        timeout=60.0,
+        zdr_enabled=zdr_enabled,
+    )
     usage = response.get("usage", {}) if response else {}
     
     # 3. Parse & Router
@@ -631,7 +674,8 @@ If no tools are needed (e.g., for general chit-chat or pure logic questions), re
 async def run_full_council(
     user_query: str, 
     council_models: List[str] = None, 
-    chairman_model: str = None
+    chairman_model: str = None,
+    zdr_enabled: bool = False,
 ) -> Tuple[List, List, Dict, Dict, EvidencePack]:
     """
     Run the complete 3-stage council process (now with Stage 0 Steward).
@@ -640,6 +684,7 @@ async def run_full_council(
         user_query: The user's question
         council_models: Optional list of council models (defaults to COUNCIL_MODELS)
         chairman_model: Optional chairman model (defaults to CHAIRMAN_MODEL)
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata, evidence_pack)
@@ -648,10 +693,20 @@ async def run_full_council(
     logger.info(f"[COUNCIL] Starting run {run_id}")
 
     # Stage 0: Tool Steward
-    evidence_pack, steward_usage = await run_tool_steward_phase(user_query, run_id, chairman_model)
+    evidence_pack, steward_usage = await run_tool_steward_phase(
+        user_query,
+        run_id,
+        chairman_model,
+        zdr_enabled=zdr_enabled,
+    )
 
     # Stage 1: Collect individual responses (with evidence)
-    stage1_results = await stage1_collect_responses(user_query, council_models, evidence_pack)
+    stage1_results = await stage1_collect_responses(
+        user_query,
+        council_models,
+        evidence_pack,
+        zdr_enabled=zdr_enabled,
+    )
 
     # If no models responded successfully, return error
     if not stage1_results:
@@ -661,7 +716,12 @@ async def run_full_council(
         }, {}
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results, council_models)
+    stage2_results, label_to_model = await stage2_collect_rankings(
+        user_query,
+        stage1_results,
+        council_models,
+        zdr_enabled=zdr_enabled,
+    )
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
@@ -676,7 +736,8 @@ async def run_full_council(
         stage2_results,
         label_to_model,
         quality_metrics,
-        chairman_model
+        chairman_model,
+        zdr_enabled=zdr_enabled,
     )
 
     # Prepare metadata
@@ -690,7 +751,11 @@ async def run_full_council(
     return stage1_results, stage2_results, stage3_result, metadata, evidence_pack
 
 
-async def rewrite_query(query: str, conversation_history: List[Dict[str, str]]) -> str:
+async def rewrite_query(
+    query: str,
+    conversation_history: List[Dict[str, str]],
+    zdr_enabled: bool = False,
+) -> str:
     """
     Rewrite a query to be self-contained by resolving coreferences.
     Uses conversation history to expand pronouns and references.
@@ -698,6 +763,7 @@ async def rewrite_query(query: str, conversation_history: List[Dict[str, str]]) 
     Args:
         query: The user's query (may contain pronouns like "it", "its", "that")
         conversation_history: List of previous messages
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
         
     Returns:
         Rewritten self-contained query, or original if rewriting fails
@@ -748,6 +814,7 @@ Rewritten question (ONE sentence, no explanations):"""
             "google/gemini-2.5-flash",
             [{"role": "user", "content": prompt}],
             timeout=10.0,
+            zdr_enabled=zdr_enabled,
         )
         
         if response and response.get("content"):
@@ -788,7 +855,8 @@ async def chat_with_chairman(
     user_query: str,
     conversation_history: List[Dict[str, Any]],
     rag_context: str = "",
-    chairman_model: str = None
+    chairman_model: str = None,
+    zdr_enabled: bool = False,
 ) -> Dict[str, Any]:
     """
     Chat directly with the Chairman, using RAG-retrieved context.
@@ -798,6 +866,7 @@ async def chat_with_chairman(
         conversation_history: Full history of the conversation
         rag_context: Relevant context retrieved from ChromaDB
         chairman_model: Optional chairman model ID (defaults to CHAIRMAN_MODEL)
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         Dict with 'content' and optional 'reasoning' (chain of thought)
@@ -856,7 +925,7 @@ Guidance on context labels:
     logger.info(f"[CHAIRMAN] Calling {target_chairman} with {len(messages)} messages...")
     import time
     start_time = time.time()
-    response = await query_model(target_chairman, messages)
+    response = await query_model(target_chairman, messages, zdr_enabled=zdr_enabled)
     elapsed = time.time() - start_time
     logger.info(f"[CHAIRMAN] Response received in {elapsed:.2f}s")
     

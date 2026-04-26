@@ -89,7 +89,7 @@ export const api = {
   /**
    * Send a message in a conversation.
    */
-  async sendMessage(conversationId, content, mode = 'auto') {
+  async sendMessage(conversationId, content, mode = 'auto', options = {}) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message`,
       {
@@ -97,7 +97,11 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ content, mode }),
+        body: JSON.stringify({
+          content,
+          mode,
+          zdr_enabled: options.zdrEnabled || false,
+        }),
       }
     );
     if (!response.ok) {
@@ -130,6 +134,7 @@ export const api = {
           web_search_enabled: webSearch.enabled || false,
           web_search_depth: webSearch.depth || 'fast',
           custom_instructions: webSearch.customInstructions || '',
+          zdr_enabled: webSearch.zdrEnabled || false,
           edit_index: editIndex,
         }),
       }
@@ -183,11 +188,11 @@ export const api = {
    * @param {File} file - The file to upload
    * @returns {Promise<{text: string, filename: string, truncated: boolean}>}
    */
-  async uploadFile(file) {
+  async uploadFile(file, useZdr = false) {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE}/api/upload`, {
+    const response = await fetch(`${API_BASE}/api/upload?use_zdr=${useZdr}`, {
       method: 'POST',
       body: formData,
     });
@@ -258,11 +263,11 @@ export const api = {
    * @param {File} file - The file to upload
    * @returns {Promise<{attachment_id, status, filename, cached, method, warning, error, stats}>}
    */
-  async uploadAttachment(file) {
+  async uploadAttachment(file, useZdr = false) {
     const formData = new FormData();
     formData.append('file', file);
 
-    const response = await fetch(`${API_BASE}/api/attachments`, {
+    const response = await fetch(`${API_BASE}/api/attachments?use_zdr=${useZdr}`, {
       method: 'POST',
       body: formData,
     });

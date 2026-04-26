@@ -87,7 +87,12 @@ def get_mime_type(filename: str, content_type: Optional[str]) -> str:
     return mime_map.get(ext, content_type or 'application/octet-stream')
 
 
-async def process_file(content: bytes, filename: str, mime_type: str) -> ExtractionResult:
+async def process_file(
+    content: bytes,
+    filename: str,
+    mime_type: str,
+    zdr_enabled: bool = False,
+) -> ExtractionResult:
     """
     Process file content and extract text.
     
@@ -95,6 +100,7 @@ async def process_file(content: bytes, filename: str, mime_type: str) -> Extract
         content: Raw file bytes
         filename: Original filename
         mime_type: MIME type of file
+        zdr_enabled: Restrict OpenRouter vision extraction to ZDR endpoints
     
     Returns:
         ExtractionResult with status, text, and metadata
@@ -138,7 +144,7 @@ async def process_file(content: bytes, filename: str, mime_type: str) -> Extract
             return _extract_json(content)
         
         elif mime_type.startswith('image/'):
-            return await _extract_image(content, mime_type)
+            return await _extract_image(content, mime_type, zdr_enabled=zdr_enabled)
         
         else:
             return ExtractionResult(
@@ -445,7 +451,11 @@ def _extract_json(content: bytes) -> ExtractionResult:
         )
 
 
-async def _extract_image(content: bytes, mime_type: str) -> ExtractionResult:
+async def _extract_image(
+    content: bytes,
+    mime_type: str,
+    zdr_enabled: bool = False,
+) -> ExtractionResult:
     """Describe image using vision model."""
     import base64
     
@@ -469,7 +479,12 @@ async def _extract_image(content: bytes, mime_type: str) -> ExtractionResult:
     ]
     
     try:
-        response = await query_model("google/gemini-2.5-flash", messages, timeout=30.0)
+        response = await query_model(
+            "google/gemini-2.5-flash",
+            messages,
+            timeout=30.0,
+            zdr_enabled=zdr_enabled,
+        )
         
         if response and response.get("content"):
             description = response["content"]
@@ -489,7 +504,10 @@ async def _extract_image(content: bytes, mime_type: str) -> ExtractionResult:
 
 
 # Legacy function for backwards compatibility
-async def extract_text_from_file(file: UploadFile) -> Dict[str, Any]:
+async def extract_text_from_file(
+    file: UploadFile,
+    zdr_enabled: bool = False,
+) -> Dict[str, Any]:
     """
     Legacy wrapper for backwards compatibility.
     Use process_file() for new code.
@@ -497,7 +515,12 @@ async def extract_text_from_file(file: UploadFile) -> Dict[str, Any]:
     content = await file.read()
     mime_type = get_mime_type(file.filename, file.content_type)
     
-    result = await process_file(content, file.filename, mime_type)
+    result = await process_file(
+        content,
+        file.filename,
+        mime_type,
+        zdr_enabled=zdr_enabled,
+    )
     
     # Convert to legacy format
     return {
