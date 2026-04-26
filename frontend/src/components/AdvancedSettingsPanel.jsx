@@ -10,6 +10,11 @@ import {
 import { cn } from '@/lib/utils';
 import { Textarea } from '@/components/ui/textarea';
 import { Settings, Zap, Brain, Sparkles, ChevronDown, ChevronUp, Shield, ShieldOff, UserCog } from 'lucide-react';
+import {
+    getAdvancedSettingAvailability,
+    isChatOnlyAdvancedOptionDisabled,
+    normalizeAdvancedSettingsForMode,
+} from '@/utils/advancedSettingsAvailability';
 
 /**
  * Advanced Settings Panel
@@ -69,6 +74,7 @@ export default function AdvancedSettingsPanel({
     onClose,
     settings,
     onSave,
+    nextMessageMode = 'chat',
 }) {
     const [localSettings, setLocalSettings] = useState({
         executionMode: settings?.executionMode || 'auto',
@@ -78,8 +84,11 @@ export default function AdvancedSettingsPanel({
         customInstructions: settings?.customInstructions || '',
     });
 
+    const availability = getAdvancedSettingAvailability(nextMessageMode);
+    const effectiveSettings = normalizeAdvancedSettingsForMode(localSettings, nextMessageMode);
+
     const handleSave = () => {
-        onSave(localSettings);
+        onSave(effectiveSettings);
         onClose();
     };
 
@@ -109,19 +118,27 @@ export default function AdvancedSettingsPanel({
                         <label className="text-sm font-medium mb-2 block">
                             Execution Mode
                         </label>
+                        {availability.notice && (
+                            <div className="mb-2 rounded bg-muted/60 border px-2 py-1.5 text-xs text-muted-foreground">
+                                {availability.notice}
+                            </div>
+                        )}
                         <div className="grid grid-cols-2 gap-2">
                             {EXECUTION_MODES.map((mode) => {
                                 const Icon = mode.icon;
-                                const isSelected = localSettings.executionMode === mode.id;
+                                const isSelected = effectiveSettings.executionMode === mode.id;
+                                const isDisabled = isChatOnlyAdvancedOptionDisabled('executionMode', mode.id, nextMessageMode);
                                 return (
                                     <button
                                         key={mode.id}
+                                        disabled={isDisabled}
                                         onClick={() => setLocalSettings(s => ({ ...s, executionMode: mode.id }))}
                                         className={cn(
                                             "flex items-center gap-2 p-3 rounded-lg border text-left transition-all",
                                             isSelected
                                                 ? "border-primary bg-primary/5"
-                                                : "border-muted hover:border-primary/50"
+                                                : "border-muted hover:border-primary/50",
+                                            isDisabled && "opacity-50 cursor-not-allowed hover:border-muted"
                                         )}
                                     >
                                         <Icon className="h-4 w-4 text-muted-foreground" />
@@ -142,16 +159,19 @@ export default function AdvancedSettingsPanel({
                         </label>
                         <div className="flex flex-wrap gap-2">
                             {RAG_PRESETS.map((preset) => {
-                                const isSelected = localSettings.ragPreset === preset.id;
+                                const isSelected = effectiveSettings.ragPreset === preset.id;
+                                const isDisabled = isChatOnlyAdvancedOptionDisabled('ragPreset', preset.id, nextMessageMode);
                                 return (
                                     <button
                                         key={preset.id}
+                                        disabled={isDisabled}
                                         onClick={() => setLocalSettings(s => ({ ...s, ragPreset: preset.id }))}
                                         className={cn(
                                             "px-3 py-2 rounded-lg border text-sm transition-all",
                                             isSelected
                                                 ? "border-primary bg-primary/5"
-                                                : "border-muted hover:border-primary/50"
+                                                : "border-muted hover:border-primary/50",
+                                            isDisabled && "opacity-50 cursor-not-allowed hover:border-muted"
                                         )}
                                     >
                                         {preset.label}

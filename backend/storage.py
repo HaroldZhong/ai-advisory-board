@@ -341,36 +341,6 @@ def get_session_usage(conversation_id: str) -> Dict[str, Any]:
     })
 
 
-def update_session_usage(conversation_id: str, cost_delta: float, emit_warning: float = None):
-    """
-    Update session usage after a message.
-    
-    Args:
-        conversation_id: Conversation identifier
-        cost_delta: Cost to add to spent_usd
-        emit_warning: Warning threshold level to record (0.70, 0.85, 1.00), or None
-    """
-    with ConversationLock.get_lock(conversation_id):
-        conversation = get_conversation(conversation_id)
-        if conversation is None:
-            raise ValueError(f"Conversation {conversation_id} not found")
-        
-        usage = conversation.get("session_usage", {
-            "spent_usd": 0.0,
-            "messages": 0,
-            "last_warning_level": None
-        })
-        
-        usage["spent_usd"] = usage.get("spent_usd", 0.0) + cost_delta
-        usage["messages"] = usage.get("messages", 0) + 1
-        
-        if emit_warning is not None:
-            usage["last_warning_level"] = emit_warning
-        
-        conversation["session_usage"] = usage
-        save_conversation(conversation)
-
-
 def _get_new_warning_level(policy: Dict[str, Any], usage: Dict[str, Any]) -> Optional[float]:
     budget = policy.get("budget_usd")
     if budget is None or budget <= 0:

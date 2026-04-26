@@ -171,6 +171,7 @@ export default function ChatInterface({
   const budgetSpentPct = conversation?.budget_spent_pct ?? (
     sessionBudget ? spentUsd / sessionBudget : null
   );
+  const nextMessageMode = conversation?.messages?.length > 0 ? 'chat' : 'council';
 
   const handleBudgetConfirm = async (budgetUsd) => {
     try {
@@ -965,6 +966,7 @@ export default function ChatInterface({
             onClose={() => setShowAdvancedSettings(false)}
             settings={settings}
             onSave={updateSettings}
+            nextMessageMode={nextMessageMode}
           />
         </div>
       </div>

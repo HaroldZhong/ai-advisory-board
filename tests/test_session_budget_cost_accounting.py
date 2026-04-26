@@ -148,3 +148,55 @@ async def test_sync_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(0.75)
     assert usage["spent_usd"] == pytest.approx(0.75)
     assert usage["messages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    conversation_id = "conv-stream-cost"
+    million_token_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {
+            "content": "Streaming budget-aware response",
+            "usage": million_token_usage,
+        }
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return ""
+
+    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(main, "rag_system", fake_rag)
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk)
+
+    conversation = main.storage.get_conversation(conversation_id)
+    usage = main.storage.get_session_usage(conversation_id)
+    complete_events = [chunk for chunk in chunks if '"type": "complete"' in chunk]
+
+    assert complete_events
+    assert conversation["total_cost"] == pytest.approx(0.75)
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(0.75)
+    assert usage["spent_usd"] == pytest.approx(0.75)
+    assert usage["messages"] == 1

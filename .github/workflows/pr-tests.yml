@@ -40,3 +40,19 @@ jobs:
           tests/test_metadata_smoke.py
           tests/test_reasoning.py
           -q
+
+  frontend-deterministic-tests:
+    name: Deterministic frontend tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run deterministic frontend tests
+        run: node --test frontend/tests/advancedSettingsAvailability.test.mjs
