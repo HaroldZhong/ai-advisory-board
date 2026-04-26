@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { Routes, Route, useParams, useNavigate, useLocation } from 'react-router-dom';
 import LandingPage from './landing/LandingPage';
 import Sidebar, { SidebarContent } from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
@@ -9,11 +9,20 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Menu } from "lucide-react";
 
+import FirstRunSetup from './components/FirstRunSetup';
 import ModelSelector from './components/ModelSelector';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import { calculateUsageCost, calculateStage1Cost, calculateStage2Cost, calculateStage3Cost } from './utils/cost';
 import { SettingsProvider, useSettings } from './contexts/SettingsContext';
 import { normalizeAdvancedSettingsForMode } from './utils/advancedSettingsAvailability';
+import {
+  buildConfigStatusFailureState,
+  buildConfigStatusSuccessState,
+  getConfigStatusRetryDelayMs,
+} from './utils/configStatus';
+import { createConversationWithDefaults } from './utils/conversationCreation';
+import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
+import { toast } from './hooks/use-toast';
 
 function ConversationView({
   conversations,
@@ -31,6 +40,9 @@ function ConversationView({
   onRenameConversation,
   onDeleteConversation,
   onMoveConversation,
+  openModelPickerSignal = 0,
+  lastConsumedModelPickerSignal = 0,
+  onConsumeModelPickerSignal,
 }) {
   const { conversationId } = useParams();
   const navigate = useNavigate();
@@ -41,6 +53,13 @@ function ConversationView({
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [budgetWarning, setBudgetWarning] = useState(null);
   const { settings } = useSettings();
+
+  useEffect(() => {
+    if (shouldConsumeOneShotSignal(openModelPickerSignal, lastConsumedModelPickerSignal)) {
+      onConsumeModelPickerSignal?.(openModelPickerSignal);
+      setIsModelSelectorOpen(true);
+    }
+  }, [openModelPickerSignal, lastConsumedModelPickerSignal, onConsumeModelPickerSignal]);
 
   // Load conversation details when URL changes
   useEffect(() => {
@@ -83,7 +102,20 @@ function ConversationView({
 
   const handleModelConfirm = async (councilMembers, chairmanModel) => {
     try {
-      const newConv = await api.createConversation("New Conversation", councilMembers, chairmanModel);
+      const newConv = await createConversationWithDefaults({
+        apiClient: api,
+        topic: "New Conversation",
+        councilMembers,
+        chairmanModel,
+        defaultSessionBudgetUsd: settings.defaultSessionBudgetUsd,
+        onBudgetError: (error) => {
+          console.error('Failed to apply default session budget:', error);
+          toast({
+            title: 'Conversation created without budget',
+            description: 'Set the session budget from the composer when ready.',
+          });
+        },
+      });
 
       // Update conversations list
       onConversationsChange([
@@ -423,16 +455,69 @@ function ConversationView({
   );
 }
 
-function App() {
+function AppContent() {
   const [conversations, setConversations] = useState([]);
   const [folders, setFolders] = useState([]);
   const [availableModels, setAvailableModels] = useState([]);
   const [showAnalytics, setShowAnalytics] = useState(false);
+  const [configStatus, setConfigStatus] = useState({ loading: true, hasApiKey: null, error: null });
+  const [showFirstRunSetup, setShowFirstRunSetup] = useState(false);
+  const [openModelPickerSignal, setOpenModelPickerSignal] = useState(0);
+  const [lastConsumedModelPickerSignal, setLastConsumedModelPickerSignal] = useState(0);
+  const [configStatusRetryTick, setConfigStatusRetryTick] = useState(0);
+  const configStatusRetryAttempt = useRef(0);
+  const hasShownConfigStatusError = useRef(false);
+  const location = useLocation();
+  const { updateSettings } = useSettings();
+  const isAppRoute = location.pathname === '/app' || location.pathname.startsWith('/c/');
 
   // Load models on mount for pricing
   useEffect(() => {
     api.getModels().then(data => setAvailableModels(data.models)).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (!isAppRoute) return undefined;
+
+    let cancelled = false;
+    let retryTimer = null;
+
+    api.getConfigStatus()
+      .then((status) => {
+        if (cancelled) return;
+        const nextState = buildConfigStatusSuccessState(status);
+        setConfigStatus(nextState.configStatus);
+        setShowFirstRunSetup(nextState.showFirstRunSetup);
+        configStatusRetryAttempt.current = 0;
+        hasShownConfigStatusError.current = false;
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Failed to check configuration status:', error);
+        const nextState = buildConfigStatusFailureState();
+        setConfigStatus(nextState.configStatus);
+        setShowFirstRunSetup(nextState.showFirstRunSetup);
+        if (!hasShownConfigStatusError.current) {
+          toast({
+            title: 'Configuration status unavailable',
+            description: 'The app will keep running and retry automatically.',
+          });
+          hasShownConfigStatusError.current = true;
+        }
+        const retryDelayMs = getConfigStatusRetryDelayMs(configStatusRetryAttempt.current);
+        configStatusRetryAttempt.current += 1;
+        retryTimer = window.setTimeout(() => {
+          setConfigStatusRetryTick((tick) => tick + 1);
+        }, retryDelayMs);
+      });
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [isAppRoute, configStatusRetryTick]);
 
   // Load conversations and folders on mount
   useEffect(() => {
@@ -493,8 +578,15 @@ function App() {
     } catch (e) { console.error('Failed to move conversation:', e); }
   };
 
+  const handleFirstRunComplete = (settingsUpdate) => {
+    updateSettings(settingsUpdate);
+    setConfigStatus({ loading: false, hasApiKey: true });
+    setShowFirstRunSetup(false);
+    setOpenModelPickerSignal((value) => value + 1);
+  };
+
   return (
-    <SettingsProvider>
+    <>
       <Routes>
         <Route
           path="/"
@@ -517,6 +609,9 @@ function App() {
               onRenameConversation={handleRenameConversation}
               onDeleteConversation={handleDeleteConversation}
               onMoveConversation={handleMoveConversation}
+              openModelPickerSignal={openModelPickerSignal}
+              lastConsumedModelPickerSignal={lastConsumedModelPickerSignal}
+              onConsumeModelPickerSignal={setLastConsumedModelPickerSignal}
             />
           }
         />
@@ -537,10 +632,24 @@ function App() {
               onRenameConversation={handleRenameConversation}
               onDeleteConversation={handleDeleteConversation}
               onMoveConversation={handleMoveConversation}
+              openModelPickerSignal={openModelPickerSignal}
+              lastConsumedModelPickerSignal={lastConsumedModelPickerSignal}
+              onConsumeModelPickerSignal={setLastConsumedModelPickerSignal}
             />
           }
         />
       </Routes>
+      {isAppRoute && !configStatus.loading && showFirstRunSetup && (
+        <FirstRunSetup isOpen={showFirstRunSetup} onComplete={handleFirstRunComplete} />
+      )}
+    </>
+  );
+}
+
+function App() {
+  return (
+    <SettingsProvider>
+      <AppContent />
     </SettingsProvider>
   );
 }

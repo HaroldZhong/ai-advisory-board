@@ -226,7 +226,7 @@ export const api = {
   async getConfigStatus() {
     const response = await fetch(`${API_BASE}/api/config/status`);
     if (!response.ok) {
-      return { has_api_key: false }; // fallback
+      throw new Error('Failed to check configuration');
     }
     return response.json();
   },
