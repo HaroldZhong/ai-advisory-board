@@ -121,7 +121,13 @@ class CouncilRAG:
         self._save_store()
         logger.info("[RAG] Indexed document '%s' (%d chars) for conv=%s", filename, len(truncated), conversation_id)
 
-    def retrieve(self, query: str, conversation_id: str, max_tokens: int = None) -> str:
+    def retrieve(
+        self,
+        query: str,
+        conversation_id: str,
+        max_tokens: int = None,
+        zdr_enabled: bool = False,
+    ) -> str:
         """Backward compatibility wrapper. Should ideally use retrieve_async."""
         logger.warning("Synchronous retrieve called on PageIndex. May block.")
         # We can't easily wait async in potentially sync contexts without event loops,
@@ -132,14 +138,32 @@ class CouncilRAG:
             if loop.is_running():
                 return "" # Can't use sync retrieve in running loop easily
             else:
-                result = loop.run_until_complete(self.retrieve_with_stats_async(query, conversation_id, max_tokens))
+                result = loop.run_until_complete(
+                    self.retrieve_with_stats_async(
+                        query,
+                        conversation_id,
+                        max_tokens,
+                        zdr_enabled=zdr_enabled,
+                    )
+                )
                 return result["context"]
         except Exception:
             return ""
 
-    async def retrieve_async(self, query: str, conversation_id: str, max_tokens: int = None) -> str:
+    async def retrieve_async(
+        self,
+        query: str,
+        conversation_id: str,
+        max_tokens: int = None,
+        zdr_enabled: bool = False,
+    ) -> str:
         """Async version of retrieve to support the litellm calls properly."""
-        result = await self.retrieve_with_stats_async(query, conversation_id, max_tokens)
+        result = await self.retrieve_with_stats_async(
+            query,
+            conversation_id,
+            max_tokens,
+            zdr_enabled=zdr_enabled,
+        )
         return result["context"]
         
     def retrieve_with_stats(self, query: str, conversation_id: str, max_tokens: int = None) -> Dict[str, Any]:
@@ -147,7 +171,13 @@ class CouncilRAG:
         logger.warning("[RAG] Synch retrieve_with_stats called on PageIndex.")
         return {"context": "", "used_tokens": 0, "pieces": 0}
 
-    async def retrieve_with_stats_async(self, query: str, conversation_id: str, max_tokens: int = None) -> Dict[str, Any]:
+    async def retrieve_with_stats_async(
+        self,
+        query: str,
+        conversation_id: str,
+        max_tokens: int = None,
+        zdr_enabled: bool = False,
+    ) -> Dict[str, Any]:
         """
         Reasoning-based RAG Retrieval.
         Instead of chunk similarity, we pass the memory logs of OTHER conversations to a fast LLM 
@@ -196,7 +226,8 @@ class CouncilRAG:
             response = await query_model(
                 "google/gemini-2.5-flash",
                 [{"role": "user", "content": extract_prompt}],
-                timeout=15.0
+                timeout=15.0,
+                zdr_enabled=zdr_enabled,
             )
             
             extracted_context = response.get("content", "").strip() if response else "NO_RELEVANT_CONTEXT"

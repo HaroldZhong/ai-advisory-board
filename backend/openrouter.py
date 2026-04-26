@@ -9,7 +9,8 @@ from .logger import logger
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    zdr_enabled: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single model via OpenRouter API.
@@ -18,6 +19,7 @@ async def query_model(
         model: OpenRouter model identifier (e.g., "openai/gpt-4o")
         messages: List of message dicts with 'role' and 'content'
         timeout: Request timeout in seconds
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
@@ -36,6 +38,8 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
+    if zdr_enabled:
+        payload["provider"] = {"zdr": True}
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -131,7 +135,8 @@ def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tupl
 
 async def query_models_parallel(
     models: List[str],
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, str]],
+    zdr_enabled: bool = False,
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Query multiple models in parallel.
@@ -139,6 +144,7 @@ async def query_models_parallel(
     Args:
         models: List of OpenRouter model identifiers
         messages: List of message dicts to send to each model
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
 
     Returns:
         Dict mapping model identifier to response dict (or None if failed)
@@ -146,7 +152,10 @@ async def query_models_parallel(
     import asyncio
 
     # Create tasks for all models
-    tasks = [query_model(model, messages) for model in models]
+    tasks = [
+        query_model(model, messages, zdr_enabled=zdr_enabled)
+        for model in models
+    ]
 
     # Wait for all to complete
     responses = await asyncio.gather(*tasks)

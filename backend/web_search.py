@@ -20,6 +20,7 @@ async def web_search_stage0(
     query: str,
     depth: str = "fast",
     timeout: float = 30.0,
+    zdr_enabled: bool = False,
 ) -> Dict[str, Any]:
     """
     Perform web search grounding via Perplexity models on OpenRouter.
@@ -28,6 +29,7 @@ async def web_search_stage0(
         query: The user's question.
         depth: "fast" (sonar) or "deep" (sonar-pro).
         timeout: Request timeout.
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints.
 
     Returns:
         Dict with keys: context (str), citations (list), model (str), usage (dict).
@@ -49,7 +51,12 @@ async def web_search_stage0(
 
     try:
         logger.info("[WEBSEARCH] Stage 0: Querying %s for query=%r...", model, query[:80])
-        response = await query_model(model, messages, timeout=timeout)
+        response = await query_model(
+            model,
+            messages,
+            timeout=timeout,
+            zdr_enabled=zdr_enabled,
+        )
 
         if not response or not response.get("content"):
             logger.warning("[WEBSEARCH] No response from %s", model)

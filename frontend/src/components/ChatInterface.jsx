@@ -329,7 +329,7 @@ export default function ChatInterface({
     setIsUploading(true);
     try {
       for (const file of selectedFiles) {
-        const result = await api.uploadAttachment(file);
+        const result = await api.uploadAttachment(file, settings.zdrEnabled);
         // Add to attachments with the metadata from the API
         setAttachments(prev => [...prev, {
           attachment_id: result.attachment_id,
@@ -417,7 +417,7 @@ export default function ChatInterface({
     setIsUploading(true);
     try {
       for (const file of droppedFiles) {
-        const result = await api.uploadAttachment(file);
+        const result = await api.uploadAttachment(file, settings.zdrEnabled);
         setAttachments(prev => [...prev, {
           attachment_id: result.attachment_id,
           filename: result.filename,
