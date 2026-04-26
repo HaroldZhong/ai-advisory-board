@@ -142,6 +142,9 @@ function StageProgress({ stage, description, modelCount, icon: Icon }) {
 export default function ChatInterface({
   conversation,
   onSendMessage,
+  onUpdateSessionPolicy,
+  budgetWarning,
+  onDismissBudgetWarning,
   isLoading,
 }) {
   const [input, setInput] = useState('');
@@ -156,11 +159,26 @@ export default function ChatInterface({
   const [estimatedCost, setEstimatedCost] = useState(null);
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
-  const [sessionBudget, setSessionBudget] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [editingIndex, setEditingIndex] = useState(-1);
   const [editingContent, setEditingContent] = useState('');
   const { settings, updateSettings } = useSettings();
+
+  const sessionPolicy = conversation?.session_policy || {};
+  const sessionUsage = conversation?.session_usage || {};
+  const sessionBudget = sessionPolicy.budget_usd ?? null;
+  const spentUsd = sessionUsage.spent_usd ?? 0;
+  const budgetSpentPct = conversation?.budget_spent_pct ?? (
+    sessionBudget ? spentUsd / sessionBudget : null
+  );
+
+  const handleBudgetConfirm = async (budgetUsd) => {
+    try {
+      await onUpdateSessionPolicy?.({ budget_usd: budgetUsd });
+    } catch (error) {
+      alert(`Failed to update session budget: ${error.message || 'Unknown error'}`);
+    }
+  };
 
   // Robust scroll logic
   const viewportRef = useRef(null);
@@ -802,6 +820,13 @@ export default function ChatInterface({
 
       <div className="p-4 bg-background border-t">
         <div className="max-w-3xl mx-auto flex flex-col gap-2">
+          {budgetWarning && (
+            <BudgetWarningBanner
+              threshold={budgetWarning.threshold}
+              onDismiss={onDismissBudgetWarning}
+            />
+          )}
+
           {/* Show uploaded attachments as pills */}
           {attachments.length > 0 && (
             <div className="mb-2">
@@ -875,6 +900,11 @@ export default function ChatInterface({
                 <DollarSign className="h-3 w-3" />
                 Budget{sessionBudget ? `: $${sessionBudget}` : ''}
               </button>
+              <BudgetIndicator
+                budgetUsd={sessionBudget}
+                spentUsd={spentUsd}
+                spentPct={budgetSpentPct}
+              />
               <button
                 onClick={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
                 className={cn(
@@ -916,7 +946,7 @@ export default function ChatInterface({
           <SessionBudgetSelector
             isOpen={showBudgetSelector}
             onClose={() => setShowBudgetSelector(false)}
-            onConfirm={setSessionBudget}
+            onConfirm={handleBudgetConfirm}
             currentBudget={sessionBudget}
           />
           <AdvancedSettingsPanel

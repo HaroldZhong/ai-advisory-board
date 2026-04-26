@@ -32,6 +32,7 @@ jobs:
           uv run --group dev python -m pytest
           tests/test_crash_fixes.py
           tests/test_runtime_api_key_config.py
+          tests/test_session_budget_cost_accounting.py
           tests/test_metadata_smoke.py
           tests/test_reasoning.py
           -q

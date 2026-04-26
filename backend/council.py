@@ -682,7 +682,9 @@ async def run_full_council(
     # Prepare metadata
     metadata = {
         "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings
+        "aggregate_rankings": aggregate_rankings,
+        "steward_usage": steward_usage,
+        "steward_model": chairman_model or CHAIRMAN_MODEL,
     }
 
     return stage1_results, stage2_results, stage3_result, metadata, evidence_pack
