@@ -101,6 +101,9 @@ export const api = {
           content,
           mode,
           zdr_enabled: options.zdrEnabled || false,
+          execution_mode: options.executionMode || 'auto',
+          rag_preset: options.ragPreset || 'auto',
+          model_tier: options.modelTier || 'auto',
         }),
       }
     );
@@ -135,6 +138,9 @@ export const api = {
           web_search_depth: webSearch.depth || 'fast',
           custom_instructions: webSearch.customInstructions || '',
           zdr_enabled: webSearch.zdrEnabled || false,
+          execution_mode: webSearch.executionMode || 'auto',
+          rag_preset: webSearch.ragPreset || 'auto',
+          model_tier: webSearch.modelTier || 'auto',
           edit_index: editIndex,
         }),
       }
