@@ -27,12 +27,6 @@ from .logger import logger
 # Initialize RAG system
 rag_system = CouncilRAG()
 
-EXTRA_MODEL_PRICING = {
-    # Web search models used by backend.web_search but not present in the curated registry.
-    "perplexity/sonar": {"input": 1.0, "output": 1.0},
-    "perplexity/sonar-pro": {"input": 3.0, "output": 15.0},
-}
-
 def get_turn_index(conversation: Dict[str, Any]) -> int:
     """Count the number of completed Council turns (messages with stage3)."""
     count = 0
@@ -48,7 +42,7 @@ def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
     
     from .config import AVAILABLE_MODELS
     model_config = next((m for m in AVAILABLE_MODELS if m['id'] == model_id), None)
-    pricing = model_config.get('pricing', {}) if model_config else EXTRA_MODEL_PRICING.get(model_id)
+    pricing = model_config.get('pricing', {}) if model_config else None
     if not pricing:
         return 0.0
 
@@ -349,11 +343,17 @@ async def health_check():
 @app.get("/api/models")
 async def get_models():
     """Get list of available models with live pricing from OpenRouter."""
-    from .config import CURATED_MODELS
+    from .config import CHAIRMAN_MODEL, COUNCIL_MODELS, CURATED_MODELS
     from .openrouter_client import get_enriched_models
     
     enriched = await get_enriched_models(CURATED_MODELS)
-    return {"models": enriched}
+    return {
+        "models": enriched,
+        "defaults": {
+            "chairman": CHAIRMAN_MODEL,
+            "council": COUNCIL_MODELS,
+        },
+    }
 
 
 @app.get("/api/config/status")

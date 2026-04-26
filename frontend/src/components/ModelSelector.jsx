@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Check, User, Users, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSettings } from "@/contexts/SettingsContext";
 
 const DEFAULT_COUNCIL = [];
 
@@ -26,6 +27,9 @@ const PROVIDER_CONFIG = {
     'DeepSeek': { color: 'bg-cyan-500', textColor: 'text-cyan-700 dark:text-cyan-400' },
     'Meta': { color: 'bg-indigo-500', textColor: 'text-indigo-700 dark:text-indigo-400' },
     'Mistral': { color: 'bg-rose-500', textColor: 'text-rose-700 dark:text-rose-400' },
+    'MiniMax': { color: 'bg-pink-500', textColor: 'text-pink-700 dark:text-pink-400' },
+    'Qwen': { color: 'bg-violet-500', textColor: 'text-violet-700 dark:text-violet-400' },
+    'Z.ai': { color: 'bg-lime-500', textColor: 'text-lime-700 dark:text-lime-400' },
     'Other': { color: 'bg-gray-500', textColor: 'text-gray-700 dark:text-gray-400' },
 };
 
@@ -44,6 +48,9 @@ function getProvider(modelName) {
     if (modelName.toLowerCase().includes('deepseek')) return 'DeepSeek';
     if (modelName.toLowerCase().includes('llama') || modelName.toLowerCase().includes('meta')) return 'Meta';
     if (modelName.toLowerCase().includes('mistral')) return 'Mistral';
+    if (modelName.toLowerCase().includes('minimax')) return 'MiniMax';
+    if (modelName.toLowerCase().includes('qwen')) return 'Qwen';
+    if (modelName.toLowerCase().includes('glm') || modelName.toLowerCase().includes('z.ai')) return 'Z.ai';
     return 'Other';
 }
 
@@ -68,6 +75,7 @@ export default function ModelSelector({
     const [step, setStep] = useState(1);
     const [expandedProviders, setExpandedProviders] = useState({});
     const [activeProvider, setActiveProvider] = useState('all');
+    const { settings } = useSettings();
 
     useEffect(() => {
         if (isOpen) {
@@ -78,6 +86,18 @@ export default function ModelSelector({
             setActiveProvider('all');
         }
     }, [isOpen, initialCouncil, initialChairman]);
+
+    useEffect(() => {
+        if (!settings.zdrEnabled || models.length === 0) return;
+
+        const compatibleIds = new Set(models.filter(m => m.supports_zdr).map(m => m.id));
+        setSelectedCouncil(prev => prev.filter(id => compatibleIds.has(id)));
+        setSelectedChairman(prev => {
+            if (!prev || compatibleIds.has(prev)) return prev;
+            const fallback = models.find(m => m.supports_zdr && (m.type === 'chairman' || m.type === 'both'));
+            return fallback?.id || '';
+        });
+    }, [settings.zdrEnabled, models]);
 
     const fetchModels = async () => {
         try {
@@ -92,15 +112,20 @@ export default function ModelSelector({
             setExpandedProviders(expanded);
 
             if (initialCouncil.length === 0 && data.models.length > 0) {
-                const defaults = data.models
-                    .filter(m => m.type === 'council' || m.type === 'both')
-                    .slice(0, 5)
-                    .map(m => m.id);
+                const defaultIds = data.defaults?.council || [];
+                const availableDefaults = defaultIds.filter(id => data.models.some(m => m.id === id));
+                const defaults = availableDefaults.length > 0
+                    ? availableDefaults
+                    : data.models
+                        .filter(m => m.default_council || m.type === 'council' || m.type === 'both')
+                        .slice(0, 5)
+                        .map(m => m.id);
                 setSelectedCouncil(defaults);
             }
 
             if (!initialChairman && data.models.length > 0) {
-                const defaultChair = data.models.find(m => m.type === 'chairman' || m.type === 'both');
+                const defaultChair = data.models.find(m => m.id === data.defaults?.chairman)
+                    || data.models.find(m => m.type === 'chairman' || m.type === 'both');
                 if (defaultChair) setSelectedChairman(defaultChair.id);
             }
 
@@ -147,8 +172,11 @@ export default function ModelSelector({
         }));
     };
 
-    const chairmanModels = models.filter(m => m.type === 'chairman' || m.type === 'both');
-    const councilModels = models.filter(m => m.type === 'council' || m.type === 'both');
+    const selectableModels = settings.zdrEnabled
+        ? models.filter(m => m.supports_zdr)
+        : models;
+    const chairmanModels = selectableModels.filter(m => m.type === 'chairman' || m.type === 'both');
+    const councilModels = selectableModels.filter(m => m.type === 'council' || m.type === 'both');
 
     // Group models by provider
     const groupByProvider = (modelList) => {
@@ -218,6 +246,11 @@ export default function ModelSelector({
                         <span>Out: ${model.pricing.output}/M</span>
                     </div>
                     <div className="flex flex-wrap gap-1 mt-2">
+                        {model.supports_zdr && (
+                            <span className="inline-flex items-center rounded-sm border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                                ZDR
+                            </span>
+                        )}
                         {model.capabilities.slice(0, 3).map(c => (
                             <span key={c} className="inline-flex items-center rounded-sm border px-1.5 py-0.5 text-[10px] font-medium text-foreground">
                                 {c}
