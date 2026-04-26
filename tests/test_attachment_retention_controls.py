@@ -75,6 +75,32 @@ def test_delete_attachment_retains_referenced_files_without_force(monkeypatch, t
     assert retained.conversation_ids == ["conv-shared"]
 
 
+def test_force_delete_attachment_overrides_existing_references(monkeypatch, tmp_path):
+    attachment_storage = import_module_with_api_key(monkeypatch, "backend.attachment_storage")
+    configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
+
+    attachment = attachment_storage.create_attachment(
+        b"force delete contents",
+        "force.txt",
+        "text/plain",
+    )
+    attachment_storage.update_attachment_status(attachment.attachment_id, "success")
+    attachment_storage.save_attachment_text(attachment.attachment_id, "force delete text")
+    attachment_storage.link_attachments_to_conversation(
+        [attachment.attachment_id],
+        "conv-force-delete",
+    )
+
+    result = attachment_storage.delete_attachment(attachment.attachment_id, force=True)
+
+    assert result["found"] is True
+    assert result["deleted"] is True
+    assert result["retained"] is False
+    assert result["conversation_ids"] == []
+    assert attachment_storage.get_attachment(attachment.attachment_id) is None
+    assert attachment.sha256 not in attachment_storage.get_cache_index()
+
+
 @pytest.mark.asyncio
 async def test_delete_conversation_purges_unshared_attachment_artifacts(monkeypatch, tmp_path):
     storage = import_module_with_api_key(monkeypatch, "backend.storage")

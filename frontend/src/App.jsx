@@ -13,6 +13,7 @@ import ModelSelector from './components/ModelSelector';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import { calculateUsageCost, calculateStage1Cost, calculateStage2Cost, calculateStage3Cost } from './utils/cost';
 import { SettingsProvider, useSettings } from './contexts/SettingsContext';
+import { normalizeAdvancedSettingsForMode } from './utils/advancedSettingsAvailability';
 
 function ConversationView({
   conversations,
@@ -151,6 +152,7 @@ function ConversationView({
       const effectiveMsgCount = editIndex >= 0 ? editIndex : currentConversation.messages.length;
       const isFollowUp = effectiveMsgCount > 0;
       const mode = isFollowUp ? 'chat' : 'council';
+      const requestSettings = normalizeAdvancedSettingsForMode(settings, mode);
 
       if (mode === 'council') {
         const assistantMessage = {
@@ -327,11 +329,11 @@ function ConversationView({
       }, mode, attachmentIds, {
         enabled: settings.webSearchEnabled,
         depth: settings.webSearchDepth,
-        customInstructions: settings.customInstructions,
-        zdrEnabled: settings.zdrEnabled,
-        executionMode: settings.executionMode,
-        ragPreset: settings.ragPreset,
-        modelTier: settings.modelTier,
+        customInstructions: requestSettings.customInstructions,
+        zdrEnabled: requestSettings.zdrEnabled,
+        executionMode: requestSettings.executionMode,
+        ragPreset: requestSettings.ragPreset,
+        modelTier: requestSettings.modelTier,
       }, editIndex);
     } catch (error) {
       console.error('Failed to send message:', error);

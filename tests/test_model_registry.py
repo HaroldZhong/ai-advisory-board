@@ -141,3 +141,14 @@ def test_models_endpoint_returns_registry_defaults(monkeypatch):
     assert result["defaults"]["chairman"] == main.config.CHAIRMAN_MODEL
     assert result["defaults"]["council"] == main.config.COUNCIL_MODELS
     assert result["models"]
+
+
+def test_validate_registry_finds_missing_live_ids():
+    validate_registry = importlib.import_module("scripts.validate_model_registry")
+
+    missing = validate_registry.find_missing_model_ids(
+        registry={"models": [{"id": "model/a"}, {"id": "model/b"}]},
+        live_response={"data": [{"id": "model/a"}]},
+    )
+
+    assert missing == ["model/b"]
