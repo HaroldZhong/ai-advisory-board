@@ -329,6 +329,9 @@ function ConversationView({
         depth: settings.webSearchDepth,
         customInstructions: settings.customInstructions,
         zdrEnabled: settings.zdrEnabled,
+        executionMode: settings.executionMode,
+        ragPreset: settings.ragPreset,
+        modelTier: settings.modelTier,
       }, editIndex);
     } catch (error) {
       console.error('Failed to send message:', error);

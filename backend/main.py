@@ -148,7 +148,66 @@ class SendMessageRequest(BaseModel):
     web_search_depth: str = "fast"  # "fast" (sonar) or "deep" (sonar-pro)
     custom_instructions: str = ""  # Custom persona/instructions from user
     zdr_enabled: bool = False  # Restrict OpenRouter calls to Zero Data Retention endpoints
+    execution_mode: str = "auto"  # "auto", "quick", "standard", or "research"
+    rag_preset: str = "auto"  # "auto", "low", "medium", "high", or "max"
+    model_tier: str = "auto"  # "auto", "budget", "mid", or "premium"
     edit_index: int = -1  # If >= 0, truncate conversation to this message index before sending
+
+
+VALID_EXECUTION_MODES = {"auto", "quick", "standard", "research"}
+VALID_RAG_PRESETS = {"auto", "low", "medium", "high", "max"}
+VALID_MODEL_TIERS = {"auto", "budget", "mid", "premium"}
+
+
+def validate_advanced_message_settings(request: SendMessageRequest) -> None:
+    """Reject advanced UI settings the backend cannot honor."""
+    if request.execution_mode not in VALID_EXECUTION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid execution_mode: {request.execution_mode}",
+        )
+    if request.rag_preset not in VALID_RAG_PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid rag_preset: {request.rag_preset}",
+        )
+    if request.model_tier not in VALID_MODEL_TIERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model_tier: {request.model_tier}",
+        )
+
+
+def validate_advanced_settings_for_mode(mode: str, request: SendMessageRequest) -> None:
+    """Reject chat-routing controls for council mode instead of silently ignoring them."""
+    if mode != "council":
+        return
+
+    unsupported = []
+    if request.execution_mode != "auto":
+        unsupported.append("execution_mode")
+    if request.rag_preset != "auto":
+        unsupported.append("rag_preset")
+
+    if unsupported:
+        fields = ", ".join(unsupported)
+        raise HTTPException(
+            status_code=400,
+            detail=f"{fields} only apply to chat mode; council mode always runs the full council pipeline.",
+        )
+
+
+def resolve_chairman_model_for_request(
+    chairman_model: Optional[str],
+    request: SendMessageRequest,
+) -> Optional[str]:
+    """Apply model-tier override when the user explicitly set one."""
+    if request.model_tier == "auto":
+        return chairman_model
+
+    from .execution_modes import select_chairman_for_tier
+
+    return select_chairman_for_tier(request.model_tier, chairman_model)
 
 
 class SessionPolicyUpdate(BaseModel):
@@ -397,6 +456,8 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     """
     Send a message and run the 3-stage council process OR chat with chairman.
     """
+    validate_advanced_message_settings(request)
+
     # Check if conversation exists
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
@@ -405,9 +466,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
     mode = request.mode
-    
+
     if mode == "auto":
         mode = "council" if is_first_message else "chat"
+    validate_advanced_settings_for_mode(mode, request)
 
     # Add user message
     storage.add_user_message(conversation_id, request.content)
@@ -423,7 +485,10 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     # Get model configuration from conversation metadata
     metadata = conversation.get("metadata", {})
     council_models = metadata.get("council_models")
-    chairman_model = metadata.get("chairman_model")
+    chairman_model = resolve_chairman_model_for_request(
+        metadata.get("chairman_model"),
+        request,
+    )
 
     if mode == "council":
         # Run the 3-stage council process (now with Stage 0)
@@ -525,9 +590,21 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         )
         
         # Retrieve context via PageIndex reasoning RAG (using rewritten query)
+        from .budget_router import create_run_plan
+        run_plan = create_run_plan(
+            query=request.content,
+            conversation_id=conversation_id,
+            has_files=bool(request.attachment_ids),
+            chairman_model=chairman_model,
+            execution_mode=request.execution_mode,
+            rag_preset=request.rag_preset,
+            model_tier=request.model_tier,
+        )
+
         rag_context = await rag_system.retrieve_async(
             rewritten_query,
             conversation_id,
+            max_tokens=run_plan.rag_max_tokens,
             zdr_enabled=request.zdr_enabled,
         )
         
@@ -536,7 +613,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             request.content,  # Original query
             conversation["messages"],
             rag_context,
-            chairman_model=chairman_model,
+            chairman_model=run_plan.chairman_model or chairman_model,
             zdr_enabled=request.zdr_enabled,
         )
         
@@ -544,7 +621,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         turn_cost = calculate_turn_cost(
             mode="chat",
             response_dict=response_dict,
-            chairman_model=chairman_model,
+            chairman_model=run_plan.chairman_model or chairman_model,
         )
         storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)
         storage.update_conversation_cost(conversation_id, turn_cost)
@@ -559,6 +636,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             "total_cost": updated_conversation.get("total_cost", 0.0),
             "session_usage": budget_state["usage"],
             "budget_spent_pct": budget_state["budget_spent_pct"],
+            "run_plan": run_plan.to_dict(),
         }
 
 
@@ -567,6 +645,8 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     """
     Send a message and stream the response (Council or Chat).
     """
+    validate_advanced_message_settings(request)
+
     # Check if conversation exists
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
@@ -575,9 +655,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
     mode = request.mode
-    
+
     if mode == "auto":
         mode = "council" if is_first_message else "chat"
+    validate_advanced_settings_for_mode(mode, request)
 
     async def event_generator():
         try:
@@ -620,7 +701,10 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             # Get model configuration from conversation metadata
             metadata = current_conversation.get("metadata", {})
             council_models = metadata.get("council_models")
-            chairman_model = metadata.get("chairman_model")
+            chairman_model = resolve_chairman_model_for_request(
+                metadata.get("chairman_model"),
+                request,
+            )
 
             if mode == "council":
                 # Start title generation in parallel (don't await yet)
@@ -793,6 +877,9 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     conversation_id=conversation_id,
                     has_files=has_attachments,
                     chairman_model=chairman_model,
+                    execution_mode=request.execution_mode,
+                    rag_preset=request.rag_preset,
+                    model_tier=request.model_tier,
                 )
                 
                 # Send run plan to client for observability
@@ -850,7 +937,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         request.content,  # Original query to Chairman
                         updated_conversation["messages"],
                         combined_context,
-                        chairman_model=chairman_model,
+                        chairman_model=run_plan.chairman_model or chairman_model,
                         zdr_enabled=request.zdr_enabled,
                     )
                     logger.info(f"[CHAT] Chairman response received")
@@ -866,7 +953,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 turn_cost = calculate_turn_cost(
                     mode="chat",
                     response_dict=response_dict,
-                    chairman_model=chairman_model,
+                    chairman_model=run_plan.chairman_model or chairman_model,
                     extra_usage_records=extra_usage_records,
                 )
                 storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)

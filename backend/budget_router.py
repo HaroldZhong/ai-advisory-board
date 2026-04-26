@@ -17,6 +17,7 @@ class RunPlan:
     rag_preset: str              # "low", "medium", "high", "auto"
     rag_max_tokens: int          # Resolved token budget
     model_tier: str              # "budget", "mid", "premium" (for future use)
+    chairman_model: Optional[str] # Resolved chairman model for this run
     predicted_cost: float        # Estimated cost in USD
     policy_reason: str           # Why this decision was made
     task_signal: str             # Detected task type
@@ -31,6 +32,9 @@ def create_run_plan(
     conversation_id: str,
     has_files: bool = False,
     chairman_model: str = None,
+    execution_mode: str = "auto",
+    rag_preset: str = "auto",
+    model_tier: str = "auto",
 ) -> RunPlan:
     """
     Create a Run Plan based on query, budget status, and task signal.
@@ -40,10 +44,17 @@ def create_run_plan(
         conversation_id: Conversation ID for budget lookup
         has_files: Whether files are attached
         chairman_model: Selected chairman model (for cost estimation)
+        execution_mode: Optional user override: auto/quick/standard/research
+        rag_preset: Optional user override: auto/low/medium/high/max
+        model_tier: Optional user override: auto/budget/mid/premium
         
     Returns:
         RunPlan with routing decisions
     """
+    normalized_execution_mode = execution_mode or "auto"
+    normalized_rag_preset = rag_preset or "auto"
+    normalized_model_tier = model_tier or "auto"
+
     # 1. Detect task signal
     task_signal = detect_task_signal(query, has_files)
     logger.info("[ROUTER] Task signal: %s", task_signal)
@@ -83,17 +94,40 @@ def create_run_plan(
             rag_tokens = RAG_SETTINGS["presets"]["low"]["tokens"]
             mode = "quick"
     
+    overrides_applied = False
+    if normalized_execution_mode != "auto":
+        mode = normalized_execution_mode
+        if normalized_rag_preset == "auto":
+            rag_tokens, rag_preset = get_budget_for_task_signal(mode)
+        overrides_applied = True
+
+    if normalized_rag_preset != "auto":
+        rag_preset = normalized_rag_preset
+        rag_tokens = RAG_SETTINGS["presets"][rag_preset]["tokens"]
+        overrides_applied = True
+
+    resolved_model_tier = "mid"
+    resolved_chairman_model = chairman_model
+    if normalized_model_tier != "auto":
+        resolved_model_tier = normalized_model_tier
+        resolved_chairman_model = select_chairman_for_tier(
+            resolved_model_tier,
+            chairman_model,
+        )
+        overrides_applied = True
+
+    if overrides_applied:
+        policy_reason = "advanced_override"
+
     # 4. Estimate cost (simplified - Phase 2 uses rough estimate)
-    predicted_cost = estimate_message_cost(mode, rag_tokens, chairman_model)
-    
-    # 5. Model tier (placeholder for Phase 3)
-    model_tier = "mid"  # Default for now
+    predicted_cost = estimate_message_cost(mode, rag_tokens, resolved_chairman_model)
     
     run_plan = RunPlan(
         mode=mode,
         rag_preset=rag_preset,
         rag_max_tokens=rag_tokens,
-        model_tier=model_tier,
+        model_tier=resolved_model_tier,
+        chairman_model=resolved_chairman_model,
         predicted_cost=predicted_cost,
         policy_reason=policy_reason,
         task_signal=task_signal,
