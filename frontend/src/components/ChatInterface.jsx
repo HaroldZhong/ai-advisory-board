@@ -349,8 +349,19 @@ export default function ChatInterface({
     }
   };
 
-  const removeAttachment = (indexToRemove) => {
-    setAttachments(prev => prev.filter((_, index) => index !== indexToRemove));
+  const removeAttachment = async (indexToRemove) => {
+    const attachment = attachments[indexToRemove];
+    if (!attachment) return;
+
+    try {
+      if (attachment.attachment_id) {
+        await api.deleteAttachment(attachment.attachment_id);
+      }
+      setAttachments(prev => prev.filter((_, index) => index !== indexToRemove));
+    } catch (error) {
+      console.error('Failed to delete attachment:', error);
+      alert(`Failed to delete attachment: ${error.message}`);
+    }
   };
 
   const handleSubmit = async (e) => {

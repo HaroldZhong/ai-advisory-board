@@ -50,6 +50,7 @@ class Attachment(BaseModel):
     warning: Optional[str] = None
     error: Optional[str] = None
     stats: AttachmentStats = Field(default_factory=AttachmentStats)
+    conversation_ids: List[str] = Field(default_factory=list)
 
 
 def ensure_dirs():
@@ -176,6 +177,148 @@ def save_attachment(attachment: Attachment):
     
     with open(meta_path, 'w') as f:
         json.dump(attachment.model_dump(), f, indent=2)
+
+
+def link_attachments_to_conversation(
+    attachment_ids: List[str],
+    conversation_id: str,
+) -> List[Attachment]:
+    """Mark attachments as referenced by a conversation and return metadata."""
+    linked = []
+    updated = set()
+
+    for attachment_id in attachment_ids:
+        attachment = get_attachment(attachment_id)
+        if not attachment:
+            continue
+
+        if attachment_id not in updated:
+            if conversation_id not in attachment.conversation_ids:
+                attachment.conversation_ids.append(conversation_id)
+                save_attachment(attachment)
+            updated.add(attachment_id)
+
+        linked.append(attachment)
+
+    return linked
+
+
+def collect_attachment_ids_from_messages(messages: List[Dict[str, Any]]) -> List[str]:
+    """Collect unique attachment IDs from persisted conversation messages."""
+    attachment_ids = []
+    seen = set()
+
+    def add_id(attachment_id: Optional[str]):
+        if attachment_id and attachment_id not in seen:
+            seen.add(attachment_id)
+            attachment_ids.append(attachment_id)
+
+    for message in messages:
+        for attachment_id in message.get("attachment_ids") or []:
+            add_id(attachment_id)
+
+        for attachment in message.get("attachments") or []:
+            if isinstance(attachment, dict):
+                add_id(attachment.get("attachment_id"))
+
+    return attachment_ids
+
+
+def _remove_from_cache_index(attachment: Attachment):
+    index = get_cache_index()
+    changed = False
+
+    for sha256, attachment_id in list(index.items()):
+        if sha256 == attachment.sha256 or attachment_id == attachment.attachment_id:
+            del index[sha256]
+            changed = True
+
+    if changed:
+        save_cache_index(index)
+
+
+def _delete_file(path: str) -> bool:
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def delete_attachment(
+    attachment_id: str,
+    conversation_id: Optional[str] = None,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Delete an attachment's raw/text/meta artifacts when it has no remaining refs."""
+    attachment = get_attachment(attachment_id)
+    if not attachment:
+        return {
+            "attachment_id": attachment_id,
+            "found": False,
+            "deleted": False,
+            "retained": False,
+            "conversation_ids": [],
+            "files_deleted": 0,
+        }
+
+    remaining_refs = list(attachment.conversation_ids)
+    if conversation_id:
+        remaining_refs = [cid for cid in remaining_refs if cid != conversation_id]
+
+    if remaining_refs and not force:
+        attachment.conversation_ids = remaining_refs
+        save_attachment(attachment)
+        logger.info(
+            "[ATTACH] Retained %s; still referenced by %d conversation(s)",
+            attachment_id,
+            len(remaining_refs),
+        )
+        return {
+            "attachment_id": attachment_id,
+            "found": True,
+            "deleted": False,
+            "retained": True,
+            "conversation_ids": remaining_refs,
+            "files_deleted": 0,
+        }
+
+    raw_path = os.path.join(ATTACHMENTS_RAW_DIR, f"{attachment_id}.bin")
+    text_path = os.path.join(ATTACHMENTS_TEXT_DIR, f"{attachment_id}.txt")
+    meta_path = os.path.join(ATTACHMENTS_META_DIR, f"{attachment_id}.json")
+    files_deleted = sum(_delete_file(path) for path in [raw_path, text_path, meta_path])
+    _remove_from_cache_index(attachment)
+
+    logger.info("[ATTACH] Deleted attachment %s (%d artifact files)", attachment_id, files_deleted)
+    return {
+        "attachment_id": attachment_id,
+        "found": True,
+        "deleted": True,
+        "retained": False,
+        "conversation_ids": [],
+        "files_deleted": files_deleted,
+    }
+
+
+def delete_attachments_for_conversation(
+    conversation_id: str,
+    conversation: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Unreference and delete unshared attachments used by a conversation."""
+    attachment_ids = collect_attachment_ids_from_messages(conversation.get("messages", []))
+    results = [
+        delete_attachment(attachment_id, conversation_id=conversation_id)
+        for attachment_id in attachment_ids
+    ]
+
+    return {
+        "attachment_ids": attachment_ids,
+        "deleted": sum(1 for result in results if result["deleted"]),
+        "retained": sum(1 for result in results if result["retained"]),
+        "missing": sum(1 for result in results if not result["found"]),
+        "files_deleted": sum(result["files_deleted"] for result in results),
+        "results": results,
+    }
 
 
 def update_attachment_status(

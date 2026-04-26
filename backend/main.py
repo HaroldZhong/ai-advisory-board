@@ -18,6 +18,8 @@ from .file_processing import extract_text_from_file, process_file, get_mime_type
 from .attachment_storage import (
     create_attachment, get_attachment, update_attachment_status,
     save_attachment_text, get_attachment_text, build_llm_context,
+    link_attachments_to_conversation, delete_attachment,
+    delete_attachments_for_conversation, collect_attachment_ids_from_messages,
     Attachment
 )
 from .logger import logger
@@ -208,6 +210,44 @@ def resolve_chairman_model_for_request(
     from .execution_modes import select_chairman_for_tier
 
     return select_chairman_for_tier(request.model_tier, chairman_model)
+
+
+def prepare_message_attachments(
+    conversation_id: str,
+    attachment_ids: List[str],
+) -> List[Dict[str, Any]]:
+    """Persist attachment references and return metadata for the user message."""
+    if not attachment_ids:
+        return []
+
+    attachments = link_attachments_to_conversation(attachment_ids, conversation_id)
+    return [attachment.model_dump() for attachment in attachments]
+
+
+def delete_truncated_message_attachments(
+    conversation_id: str,
+    keep_count: int,
+) -> Dict[str, Any]:
+    """Release attachments referenced only by messages removed during edit/regenerate."""
+    conversation = storage.get_conversation(conversation_id)
+    if not conversation:
+        return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": []}
+
+    removed_messages = conversation.get("messages", [])[keep_count:]
+    attachment_ids = collect_attachment_ids_from_messages(removed_messages)
+    results = [
+        delete_attachment(attachment_id, conversation_id=conversation_id)
+        for attachment_id in attachment_ids
+    ]
+
+    return {
+        "attachment_ids": attachment_ids,
+        "deleted": sum(1 for result in results if result["deleted"]),
+        "retained": sum(1 for result in results if result["retained"]),
+        "missing": sum(1 for result in results if not result["found"]),
+        "files_deleted": sum(result["files_deleted"] for result in results),
+        "results": results,
+    }
 
 
 class SessionPolicyUpdate(BaseModel):
@@ -444,11 +484,16 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
 @app.delete("/api/conversations/{conversation_id}")
 async def delete_conversation(conversation_id: str):
     """Delete a conversation entirely."""
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
     if not storage.delete_conversation(conversation_id):
          raise HTTPException(status_code=404, detail="Conversation not found")
+    attachment_cleanup = delete_attachments_for_conversation(conversation_id, conversation)
     # Purge PageIndex memories for this conversation
     rag_system.delete_conversation_memories(conversation_id)
-    return {"success": True}
+    return {"success": True, "attachments": attachment_cleanup}
 
 
 @app.post("/api/conversations/{conversation_id}/message")
@@ -471,8 +516,15 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         mode = "council" if is_first_message else "chat"
     validate_advanced_settings_for_mode(mode, request)
 
+    message_attachments = prepare_message_attachments(conversation_id, request.attachment_ids)
+
     # Add user message
-    storage.add_user_message(conversation_id, request.content)
+    storage.add_user_message(
+        conversation_id,
+        request.content,
+        attachment_ids=request.attachment_ids,
+        attachments=message_attachments,
+    )
 
     # If this is the first message, generate a title
     if is_first_message:
@@ -690,13 +742,24 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             
             # Edit & Regenerate: truncate messages if edit_index is set
             if request.edit_index >= 0:
+                attachment_cleanup = delete_truncated_message_attachments(
+                    conversation_id,
+                    request.edit_index,
+                )
                 storage.truncate_messages(conversation_id, request.edit_index)
                 # Re-fetch conversation after truncation
                 current_conversation = storage.get_conversation(conversation_id)
-                yield f"data: {json.dumps({'type': 'edit_truncated', 'data': {'edit_index': request.edit_index}})}\n\n"
+                yield f"data: {json.dumps({'type': 'edit_truncated', 'data': {'edit_index': request.edit_index, 'attachments': attachment_cleanup}})}\n\n"
+
+            message_attachments = prepare_message_attachments(conversation_id, request.attachment_ids)
 
             # Add user message (store only original content, not attachment text)
-            storage.add_user_message(conversation_id, request.content)
+            storage.add_user_message(
+                conversation_id,
+                request.content,
+                attachment_ids=request.attachment_ids,
+                attachments=message_attachments,
+            )
 
             # Get model configuration from conversation metadata
             metadata = current_conversation.get("metadata", {})
@@ -1095,6 +1158,17 @@ async def get_attachment_endpoint(attachment_id: str):
         raise HTTPException(status_code=404, detail="Attachment not found")
     
     return attachment.model_dump()
+
+
+@app.delete("/api/attachments/{attachment_id}")
+async def delete_attachment_endpoint(attachment_id: str, force: bool = False):
+    """
+    Delete an unreferenced attachment's raw file, extracted text, metadata, and cache entry.
+    """
+    result = delete_attachment(attachment_id, force=force)
+    if not result["found"]:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return result
 
 
 @app.get("/api/attachments/{attachment_id}/text")

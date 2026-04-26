@@ -300,6 +300,22 @@ export const api = {
   },
 
   /**
+   * Delete an attachment if it is no longer referenced by a conversation.
+   * @param {string} attachmentId - The attachment ID
+   * @returns {Promise<{attachment_id, deleted, retained, files_deleted}>}
+   */
+  async deleteAttachment(attachmentId) {
+    const response = await fetch(`${API_BASE}/api/attachments/${attachmentId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || 'Failed to delete attachment');
+    }
+    return response.json();
+  },
+
+  /**
    * Get attachment extracted text.
    * @param {string} attachmentId - The attachment ID
    * @param {boolean} preview - If true, returns first 1000 chars only
