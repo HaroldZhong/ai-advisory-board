@@ -371,7 +371,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             "stage2": stage2_results,
             "stage3": stage3_result,
             "metadata": metadata,
-            "evidence": evidence_pack.dict() if evidence_pack else None
+            "evidence": evidence_pack.model_dump() if evidence_pack else None
         }
     else:
         # Chat with Chairman
@@ -486,7 +486,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 
                 yield f"data: {json.dumps({'type': 'steward_start'})}\n\n"
                 evidence_pack, steward_usage = await run_tool_steward_phase(request.content, run_id, chairman_model=chairman_model)
-                yield f"data: {json.dumps({'type': 'steward_complete', 'data': evidence_pack.dict(), 'usage': steward_usage})}\n\n"
+                yield f"data: {json.dumps({'type': 'steward_complete', 'data': evidence_pack.model_dump(), 'usage': steward_usage})}\n\n"
 
                 # Stage 1: Collect responses (use llm_content with attachments)
                 yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
