@@ -22,7 +22,7 @@ import {
 } from './utils/configStatus';
 import { createConversationWithDefaults } from './utils/conversationCreation';
 import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
-import { rollbackFailedSendMessages } from './utils/optimisticMessages';
+import { rollbackFailedSendConversation } from './utils/optimisticMessages';
 import {
   mergeConversationPrivacyUpdate,
   resolveEffectiveZdr,
@@ -206,6 +206,7 @@ function ConversationView({
   const handleSendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
     if (!conversationId) return;
 
+    const targetConversationId = conversationId;
     const previousMessages = editIndex >= 0
       ? [...(currentConversation?.messages || [])]
       : null;
@@ -426,14 +427,11 @@ function ConversationView({
         alert(`Failed to send message: ${error.message || 'Unknown error'}`);
       }
       setCurrentConversation((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          messages: rollbackFailedSendMessages(prev.messages, {
-            editIndex,
-            previousMessages,
-          }),
-        };
+        return rollbackFailedSendConversation(prev, {
+          conversationId: targetConversationId,
+          editIndex,
+          previousMessages,
+        });
       });
       setIsLoading(false);
       if (isBudgetCapError) {

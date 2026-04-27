@@ -14,3 +14,20 @@ export function rollbackFailedSendMessages(
   }
   return nextMessages;
 }
+
+export function rollbackFailedSendConversation(
+  conversation,
+  { conversationId, editIndex = -1, previousMessages = null } = {},
+) {
+  if (!conversation || conversation.id !== conversationId) {
+    return conversation;
+  }
+
+  return {
+    ...conversation,
+    messages: rollbackFailedSendMessages(conversation.messages, {
+      editIndex,
+      previousMessages,
+    }),
+  };
+}
