@@ -371,6 +371,12 @@ function ConversationView({
             });
             break;
 
+          case 'reasoning_delta':
+          case 'content_delta':
+            // Backend support landed before the dedicated reasoning UI. Ignore
+            // for now so these forward-compatible stream events do not warn.
+            break;
+
           case 'title_complete':
             loadConversations();
             break;

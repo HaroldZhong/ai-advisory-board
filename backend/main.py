@@ -23,6 +23,7 @@ from .attachment_storage import (
     Attachment
 )
 from .logger import logger
+from .reasoning_stream import ReasoningStreamState
 
 # Initialize RAG system
 rag_system = CouncilRAG()
@@ -82,6 +83,51 @@ def calculate_turn_cost(
         turn_cost += calculate_cost((response_dict or {}).get("usage", {}), chairman_model)
 
     return turn_cost
+
+
+def build_reasoning_stream_events(
+    response: Dict[str, Any],
+    *,
+    scope: str,
+    stage: str,
+    model: Optional[str],
+    content_key: str,
+    index: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Normalize completed model response text/reasoning into SSE event payloads."""
+    delta: Dict[str, Any] = {}
+    reasoning = response.get("reasoning") or response.get("reasoning_details")
+    if reasoning:
+        delta["reasoning_details"] = reasoning
+
+    content = response.get(content_key)
+    if isinstance(content, str) and content:
+        delta["content"] = content
+
+    if not delta:
+        return []
+
+    state = ReasoningStreamState("openrouter_unified")
+    events = []
+    for event in state.consume_delta(delta):
+        event_data = {
+            "scope": scope,
+            "stage": stage,
+            "model": model,
+            "text": event["text"],
+        }
+        if index is not None:
+            event_data["index"] = index
+        for key in ("detail_type", "format"):
+            if event.get(key) is not None:
+                event_data[key] = event[key]
+        events.append({"type": event["type"], "data": event_data})
+    return events
+
+
+def encode_sse_event(event: Dict[str, Any]) -> str:
+    """Encode a normalized event dict as a server-sent event line."""
+    return f"data: {json.dumps(event)}\n\n"
 
 app = FastAPI(title="AI Advisory Board API")
 
@@ -957,6 +1003,16 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     evidence_pack=evidence_pack,
                     zdr_enabled=zdr_enabled,
                 )
+                for index, result in enumerate(stage1_results):
+                    for event in build_reasoning_stream_events(
+                        result,
+                        scope="council",
+                        stage="stage1",
+                        model=result.get("model"),
+                        content_key="response",
+                        index=index,
+                    ):
+                        yield encode_sse_event(event)
                 yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
                 # Stage 2: Collect rankings
@@ -967,6 +1023,16 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     models=council_models,
                     zdr_enabled=zdr_enabled,
                 )
+                for index, result in enumerate(stage2_results):
+                    for event in build_reasoning_stream_events(
+                        result,
+                        scope="council",
+                        stage="stage2",
+                        model=result.get("model"),
+                        content_key="ranking",
+                        index=index,
+                    ):
+                        yield encode_sse_event(event)
                 aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
                 yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
@@ -985,6 +1051,14 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     chairman_model=chairman_model,
                     zdr_enabled=zdr_enabled,
                 )
+                for event in build_reasoning_stream_events(
+                    stage3_result,
+                    scope="council",
+                    stage="stage3",
+                    model=stage3_result.get("model"),
+                    content_key="response",
+                ):
+                    yield encode_sse_event(event)
                 yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
                 # Wait for title generation if it was started
@@ -1116,6 +1190,9 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 logger.info(f"[CHAT] RAG context retrieved ({len(rag_context)} chars), calling chairman...")
                 
                 # Chat with chairman (using original query + attachment context)
+                effective_chairman_model = (
+                    run_plan.chairman_model or chairman_model or config.CHAIRMAN_MODEL
+                )
                 try:
                     logger.info(f"[CHAT] Calling chairman with query: {request.content[:50]}...")
                     
@@ -1130,7 +1207,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         request.content,  # Original query to Chairman
                         updated_conversation["messages"],
                         combined_context,
-                        chairman_model=run_plan.chairman_model or chairman_model,
+                        chairman_model=effective_chairman_model,
                         zdr_enabled=zdr_enabled,
                     )
                     logger.info(f"[CHAT] Chairman response received")
@@ -1140,13 +1217,22 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         "content": f"I apologize, but I encountered an error: {str(e)}",
                         "usage": {}
                     }
+
+                for event in build_reasoning_stream_events(
+                    response_dict,
+                    scope="chat",
+                    stage="chat",
+                    model=effective_chairman_model,
+                    content_key="content",
+                ):
+                    yield encode_sse_event(event)
                 
                 # Save chat message
                 logger.info(f"[CHAT] Saving chat message...")
                 turn_cost = calculate_turn_cost(
                     mode="chat",
                     response_dict=response_dict,
-                    chairman_model=run_plan.chairman_model or chairman_model,
+                    chairman_model=effective_chairman_model,
                     extra_usage_records=extra_usage_records,
                 )
                 storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)

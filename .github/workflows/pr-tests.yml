@@ -43,6 +43,7 @@ jobs:
           tests/test_metadata_smoke.py
           tests/test_reasoning.py
           tests/test_reasoning_stream.py
+          tests/test_reasoning_stream_integration.py
           tests/test_auto_routing_heuristics.py
           -q
 
