@@ -172,7 +172,7 @@ export default function LandingPage() {
                             Consensus answers from a <span className="text-gradient">council of LLMs</span>
                         </h1>
                         <p className="text-lg md:text-xl text-slate-400 mb-8 leading-relaxed">
-                            Ask multiple models, let them review each other, then get a final synthesis with a confidence signal and RAG-powered multi-turn context.
+                            Ask multiple models, let them review each other, then get a final synthesis with a confidence signal and retrieval-assisted context.
                         </p>
 
                         {/* Immediate Engagement Input */}
@@ -293,7 +293,7 @@ export default function LandingPage() {
                             <div className="w-10 h-10 bg-amber-500/10 rounded-lg flex items-center justify-center mb-4 text-amber-400">
                                 <Search className="w-5 h-5" />
                             </div>
-                            <p className="text-slate-300">Follow-up questions <strong className="text-white">lose context</strong> without advanced retrieval strategies.</p>
+                            <p className="text-slate-300">Follow-up questions <strong className="text-white">lose useful context</strong> without retrieval support.</p>
                         </div>
                         <div className="bg-slate-900/50 p-6 rounded-xl border border-white/5">
                             <div className="w-10 h-10 bg-indigo-500/10 rounded-lg flex items-center justify-center mb-4 text-indigo-400">
@@ -304,7 +304,7 @@ export default function LandingPage() {
                     </div>
 
                     <p className="mt-12 text-xl text-indigo-200 font-medium">
-                        AI Advisory Board gives you diverse perspectives, transparent ranking, context-aware follow-ups, and cost insight.
+                        AI Advisory Board gives you diverse perspectives, transparent ranking, retrieval-assisted follow-ups, and cost insight.
                     </p>
                 </div>
             </section>
@@ -349,7 +349,7 @@ export default function LandingPage() {
                         {[
                             { icon: Shield, title: "More reliable answers", desc: "Reduces hallucinations via consensus.", sub: "Cross-model validation", grad: "from-blue-500/20 to-indigo-500/5" },
                             { icon: Search, title: "More transparent", desc: "See exactly how models ranked each other.", sub: "Full deliberation logs", grad: "from-purple-500/20 to-pink-500/5" },
-                            { icon: MessageSquare, title: "Better continuity", desc: "Never lose context in long chats.", sub: "RAG history injection", grad: "from-emerald-500/20 to-teal-500/5" },
+                            { icon: MessageSquare, title: "Better continuity", desc: "Bring relevant prior context into long chats.", sub: "Retrieval support", grad: "from-emerald-500/20 to-teal-500/5" },
                             { icon: BarChart, title: "Predictable costs", desc: "Track spend per message and keep cost visible during the session.", sub: "Cost visibility", grad: "from-amber-500/20 to-orange-500/5" },
                         ].map((b, i) => (
                             <Card key={i} className={`glass-card relative overflow-hidden group border-white/5`}>
@@ -381,15 +381,15 @@ export default function LandingPage() {
                             { title: "Session Status", desc: "Current mode and session cost stay close to the chat workflow.", icon: Shield },
                             { title: "Local Key Setup", desc: "Connect your OpenRouter key locally before convening the council.", icon: Terminal },
                             { title: "Web Search", desc: "Perplexity-powered web search with fast and deep modes, inline toggle from the chat bar.", icon: Globe },
-                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more for retrieval during conversation.", icon: Upload },
+                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more for use in the turns where you attach them.", icon: Upload },
                             { title: "Edit & Regenerate", desc: "Click any previous message to edit and regenerate from that point.", icon: Pencil },
                             { title: "Simple Defaults", desc: "Auto-routing keeps common choices lightweight while advanced settings stay out of the way.", icon: UserCog },
                             { title: "Folder Organization", desc: "Group conversations into color-coded folders for easy management.", icon: FolderOpen },
                             { title: "Responsive Desktop", desc: "The app now works cleanly down to a 960x600 desktop window.", icon: Monitor },
                             { title: "Curated Models", desc: "Frontier and specialist options from OpenAI, Anthropic, Google, DeepSeek, Kimi, Qwen, xAI, Mistral, and more.", icon: Users },
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
-                            { title: "Persistent Memory", desc: "File-based storage with PageIndex RAG keeps long conversations retrievable with query rewriting.", icon: Brain },
-                            { title: "Attachment Support", desc: "Uploaded files can be attached and indexed for retrieval in the conversations that use them.", icon: FileText },
+                            { title: "Persistent Memory", desc: "Local storage and retrieval support help long conversations stay easier to revisit.", icon: Brain },
+                            { title: "Attachment Support", desc: "Uploaded files can be attached to requests and used as added context for that turn.", icon: FileText },
                             { title: "Cost Controls", desc: "Per-call usage and session cost visibility help you monitor spend while you work.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
@@ -543,7 +543,7 @@ cd ai-advisory-board
                                         <div className="mt-1 w-2 h-2 rounded-full bg-amber-500" />
                                         <div>
                                             <h4 className="font-bold text-white text-sm">Data & Keys</h4>
-                                            <p className="text-xs text-slate-400 mt-1">Your .env file, local file-based storage, PageIndex RAG.</p>
+                                            <p className="text-xs text-slate-400 mt-1">Your .env file, local file-based storage, local retrieval index.</p>
                                         </div>
                                     </div>
                                 </div>
@@ -601,7 +601,7 @@ cd ai-advisory-board
                             { q: "What is Council Mode vs Chat Mode?", a: "Council Mode activates the 3-stage deliberation (Collect, Rank, Synthesize). Chat Mode is a standard single-model turn for fast follow-ups." },
                             { q: "How is confidence calculated?", a: "We aggregate the anonymous rankings from the 'Rank' stage and the Chairman's final synthesized assessment." },
                             { q: "What models/providers can I use?", a: "AI Advisory Board ships with a curated OpenRouter registry and live availability checks against OpenRouter's 350+ model catalog. Current examples include Claude Opus, GPT-5, Claude Sonnet, Gemini Pro, DeepSeek, Kimi, Qwen, xAI, and Mistral models." },
-                            { q: "Does it support multi-turn context?", a: "Yes. File-based local storage and PageIndex RAG with query rewriting maintain context across long conversations and uploaded documents." },
+                            { q: "Does it support multi-turn context?", a: "Yes. Local conversation storage and retrieval-assisted history help preserve prior-turn context. Uploaded files are used when attached to a request." },
                             { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call and keeps session cost visible while you work." },
                             { q: "Can I self-host and control data?", a: "Yes. The stack runs locally and stores app data on your machine. Model calls and enabled provider features still route through the providers you choose." }
                         ].map((item, i) => (
