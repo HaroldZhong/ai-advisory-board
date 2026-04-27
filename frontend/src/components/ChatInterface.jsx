@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
+import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
 import { getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 
 // Modern Chain of Thought component (ChatGPT/Claude style)
@@ -107,8 +108,8 @@ function ChainOfThought({ reasoning }) {
 // Stage progress component with pulsing animation
 function StageProgress({ stage, description, modelCount, icon: Icon }) {
   return (
-    <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 border border-primary/20">
-      <div className="relative">
+    <div className="flex flex-col gap-3 rounded-lg border border-primary/20 bg-muted/50 p-3 sm:flex-row sm:items-center">
+      <div className="relative shrink-0">
         <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
           <Icon className="h-5 w-5 text-primary" />
         </div>
@@ -116,19 +117,19 @@ function StageProgress({ stage, description, modelCount, icon: Icon }) {
           <Loader2 className="h-3 w-3 animate-spin text-primary-foreground" />
         </div>
       </div>
-      <div className="flex-1">
+      <div className="min-w-0 flex-1">
         <div className="font-medium text-sm">{stage}</div>
         <div className="text-xs text-muted-foreground">{description}</div>
       </div>
       {modelCount && (
-        <div className="flex items-center gap-1.5 text-xs font-mono bg-background px-2 py-1 rounded border">
+        <div className="flex w-fit items-center gap-1.5 rounded border bg-background px-2 py-1 font-mono text-xs sm:shrink-0">
           <Users className="h-3 w-3" />
           <span className="text-muted-foreground">Processing</span>
           <span className="font-semibold text-primary">{modelCount}</span>
           <span className="text-muted-foreground">models</span>
         </div>
       )}
-      <div className="flex gap-1">
+      <div className="flex gap-1 sm:shrink-0">
         {[...Array(3)].map((_, i) => (
           <div
             key={i}
@@ -645,11 +646,11 @@ export default function ChatInterface({
 
 
       <ScrollArea
-        className="flex-1 px-4"
+        className="flex-1"
         viewportRef={viewportRef}
         onScroll={handleScroll}
       >
-        <div className="flex flex-col gap-6 py-4 max-w-3xl mx-auto">
+        <div className={getChatSurfaceClass('messages')}>
           {conversation.messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-10">
               <h2 className="text-xl font-semibold mb-2">Start a conversation</h2>
@@ -665,7 +666,7 @@ export default function ChatInterface({
                 {msg.role === 'user' ? (
                   editingIndex === index ? (
                     // Inline editor for Edit & Regenerate
-                    <Card className="bg-primary/5 border-primary/30 p-3 max-w-[85%] w-full">
+                    <Card className="w-full max-w-[min(100%,42rem)] border-primary/30 bg-primary/5 p-3">
                       <Textarea
                         value={editingContent}
                         onChange={(e) => setEditingContent(e.target.value)}
@@ -679,13 +680,13 @@ export default function ChatInterface({
                           if (e.key === 'Escape') handleEditCancel();
                         }}
                       />
-                      <div className="flex gap-2 justify-end">
+                      <div className="flex flex-wrap justify-end gap-2">
                         <Button variant="ghost" size="sm" onClick={handleEditCancel}>Cancel</Button>
                         <Button size="sm" onClick={handleEditSubmit} disabled={!editingContent.trim()}>Submit</Button>
                       </div>
                     </Card>
                   ) : (
-                    <div className="group/msg relative max-w-[85%]">
+                    <div className="group/msg relative max-w-[min(85%,42rem)]">
                       <Card className="bg-primary text-primary-foreground p-3">
                         <div className="prose prose-invert max-w-none text-sm">
                           <MarkdownRenderer>{msg.content}</MarkdownRenderer>
@@ -699,7 +700,7 @@ export default function ChatInterface({
                       {!isLoading && (
                         <button
                           onClick={() => handleEditStart(index, msg.content)}
-                          className="absolute -left-8 top-1/2 -translate-y-1/2 opacity-0 group-hover/msg:opacity-100 transition-opacity p-1 rounded hover:bg-muted"
+                          className="absolute -left-8 top-1/2 rounded p-1 opacity-0 transition-opacity hover:bg-muted group-hover/msg:opacity-100"
                           title="Edit & Regenerate"
                         >
                           <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
@@ -708,7 +709,7 @@ export default function ChatInterface({
                     </div>
                   )
                 ) : (
-                  <Card className="bg-muted/50 p-4 max-w-[95%] w-full">
+                  <Card className="w-full max-w-full bg-muted/50 p-3 sm:p-4">
                     <div className="flex flex-col gap-4">
                       {/* Stage 1 Loading */}
                       {msg.loading?.stage1 && (
@@ -752,8 +753,8 @@ export default function ChatInterface({
 
                       {/* Chat Mode */}
                       {msg.loading?.chat && !msg.content && (
-                        <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 border border-primary/20">
-                          <div className="relative">
+                        <div className="flex flex-col gap-3 rounded-lg border border-primary/20 bg-muted/50 p-3 sm:flex-row sm:items-center">
+                          <div className="relative shrink-0">
                             <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
                               <Crown className="h-5 w-5 text-primary" />
                             </div>
@@ -761,11 +762,11 @@ export default function ChatInterface({
                               <Loader2 className="h-3 w-3 animate-spin text-primary-foreground" />
                             </div>
                           </div>
-                          <div className="flex-1">
+                          <div className="min-w-0 flex-1">
                             <div className="font-medium text-sm">Chairman is thinking...</div>
                             <div className="text-xs text-muted-foreground">Generating response with context</div>
                           </div>
-                          <div className="flex gap-1">
+                          <div className="flex gap-1 sm:shrink-0">
                             {[...Array(3)].map((_, i) => (
                               <div
                                 key={i}
@@ -787,7 +788,7 @@ export default function ChatInterface({
 
                       {/* Running Cost Display */}
                       {msg.role === 'assistant' && (
-                        <div className="text-xs text-muted-foreground mt-2 pt-2 border-t flex items-center justify-between">
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-xs text-muted-foreground">
                           <span>
                             Turn Cost: <span className="font-mono">${(msg.running_cost || 0).toFixed(6)}</span>
                           </span>
@@ -818,8 +819,8 @@ export default function ChatInterface({
         </div>
       </ScrollArea>
 
-      <div className="p-4 bg-background border-t">
-        <div className="max-w-3xl mx-auto flex flex-col gap-2">
+      <div className="border-t bg-background">
+        <div className={getChatSurfaceClass('composer')}>
           <TrustRow
             conversation={conversation}
             settings={settings}
@@ -871,7 +872,7 @@ export default function ChatInterface({
             </div>
           )}
 
-          <div className="relative flex gap-2 items-end">
+          <div className="relative flex items-end gap-2">
             <input
               type="file"
               ref={fileInputRef}
@@ -898,7 +899,7 @@ export default function ChatInterface({
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder="Ask your question... (Shift+Enter for new line)"
-                className="min-h-[44px] max-h-[200px] py-3 pr-10 resize-none"
+                className="min-h-[44px] max-h-[min(32vh,200px)] resize-none py-3 pr-10"
                 disabled={composerDisabled}
                 aria-describedby={sendError ? 'send-error' : undefined}
                 rows={1}

@@ -1,6 +1,7 @@
 import { AlertTriangle, DollarSign, FileText, Globe, Settings, Shield, ShieldOff, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { getTrustRowCostTileClass, getTrustRowGridClass } from '@/utils/responsiveChatLayout';
 import { formatTrustRowState, getEffectiveBudgetWarning } from '@/utils/trustState';
 
 const toneClasses = {
@@ -94,7 +95,7 @@ export default function TrustRow({
 
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-[1fr_1fr_1.25fr_1fr_auto]">
+      <div className={getTrustRowGridClass()}>
         <TrustTile
           icon={Users}
           label={state.council.label}
@@ -164,13 +165,13 @@ export default function TrustRow({
           )}
         </div>
 
-        <div className="col-span-2 flex min-h-[52px] items-center justify-between rounded-md border bg-muted/30 px-3 py-2 md:col-span-1 md:min-w-[130px] md:flex-col md:items-end md:justify-center">
+        <div className={getTrustRowCostTileClass()}>
           <div className="text-[11px] text-muted-foreground">{state.cost.label}</div>
           <div className="font-mono text-sm font-semibold">{state.cost.value}</div>
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 md:hidden"
+            className="h-7 w-7 lg:hidden"
             onClick={onOpenAdvancedSettings}
             title="Advanced settings"
           >
@@ -179,7 +180,7 @@ export default function TrustRow({
         </div>
       </div>
 
-      <div className="hidden justify-end md:flex">
+      <div className="hidden justify-end lg:flex">
         <Button
           variant="ghost"
           size="sm"
