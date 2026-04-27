@@ -92,6 +92,7 @@ export default function AdvancedSettingsPanel({
         ragPreset: settings?.ragPreset || 'auto',
         modelTier: settings?.modelTier || 'auto',
         zdrEnabled: settings?.zdrEnabled ?? false,
+        showReasoningByDefault: settings?.showReasoningByDefault ?? false,
         customInstructions: settings?.customInstructions || '',
     });
     const [isRoutingExpanded, setIsRoutingExpanded] = useState(() => (
@@ -118,6 +119,7 @@ export default function AdvancedSettingsPanel({
             ragPreset: 'auto',
             modelTier: 'auto',
             zdrEnabled: false,
+            showReasoningByDefault: false,
             customInstructions: '',
         });
     };
@@ -273,6 +275,49 @@ export default function AdvancedSettingsPanel({
                                 </div>
                             </div>
                         )}
+                    </div>
+
+                    {/* Reasoning display */}
+                    <div>
+                        <label className="text-sm font-medium mb-2 block">
+                            Reasoning Display
+                        </label>
+                        <button
+                            type="button"
+                            onClick={() => setLocalSettings(s => ({
+                                ...s,
+                                showReasoningByDefault: !s.showReasoningByDefault,
+                            }))}
+                            className={cn(
+                                "w-full flex items-center gap-3 p-3 rounded-lg border text-left transition-all",
+                                localSettings.showReasoningByDefault
+                                    ? "border-violet-500 bg-violet-500/10"
+                                    : "border-muted hover:border-primary/50"
+                            )}
+                        >
+                            <Brain className={cn(
+                                "h-5 w-5",
+                                localSettings.showReasoningByDefault
+                                    ? "text-violet-500"
+                                    : "text-muted-foreground"
+                            )} />
+                            <div className="flex-1">
+                                <div className="font-medium text-sm flex items-center gap-2">
+                                    Show reasoning by default
+                                    <span className={cn(
+                                        "text-xs px-1.5 py-0.5 rounded",
+                                        localSettings.showReasoningByDefault
+                                            ? "bg-violet-500/20 text-violet-600"
+                                            : "bg-muted text-muted-foreground"
+                                    )}>
+                                        {localSettings.showReasoningByDefault ? 'ON' : 'OFF'}
+                                    </span>
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                    Reasoning sections stay collapsible; this only changes their initial state.
+                                </div>
+                            </div>
+                        </button>
                     </div>
 
                     {/* Privacy - ZDR default */}

@@ -1,16 +1,19 @@
 import { useState } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
+import ReasoningSection from './ReasoningSection';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
 import { getStageTabListClass } from "@/utils/responsiveChatLayout";
 
-export default function Stage1({ responses }) {
+export default function Stage1({ responses, messageKey = 'message', showReasoningByDefault = false }) {
   const [activeTab, setActiveTab] = useState(0);
 
   if (!responses || responses.length === 0) {
     return null;
   }
+
+  const activeResponse = responses[activeTab];
+  const activeModelLabel = activeResponse.model.split('/')[1] || activeResponse.model;
 
   return (
     <div className="space-y-4">
@@ -35,10 +38,19 @@ export default function Stage1({ responses }) {
 
       <Card className="p-4 bg-background border">
         <div className="mb-2 break-all text-xs font-semibold text-muted-foreground">
-          {responses[activeTab].model}
+          {activeResponse.model}
         </div>
+        <ReasoningSection
+          className="mb-4"
+          modelId={activeResponse.model}
+          modelLabel={activeModelLabel}
+          reasoningText={activeResponse.reasoning}
+          status="complete"
+          defaultExpanded={showReasoningByDefault}
+          storageKey={`aab.reasoning.${messageKey}.stage1.${activeTab}`}
+        />
         <div className="prose max-w-none text-sm dark:prose-invert">
-          <MarkdownRenderer>{responses[activeTab].response}</MarkdownRenderer>
+          <MarkdownRenderer>{activeResponse.response}</MarkdownRenderer>
         </div>
       </Card>
     </div>
