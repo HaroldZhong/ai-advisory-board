@@ -108,3 +108,6 @@ secrets.*
 # test_*.py moved to tests/ and tracked
 # verify_*.py moved to tests/ and tracked
 test_output.txt
+
+# Local planning and handoff notes
+dev docs/
