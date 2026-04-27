@@ -151,7 +151,28 @@ BUDGET_POLICY = {
 
 # Task awareness heuristics (keywords for routing)
 TASK_SIGNALS = {
-    "research_keywords": ["cite", "paper", "compare", "analyze", "research", "study"],
-    "quick_keywords": ["quick", "briefly", "short", "summary", "tldr"],
+    "research_keywords": [
+        "cite",
+        "paper",
+        "papers",
+        "compare",
+        "analyze",
+        "research",
+        "study",
+        "investigate",
+        "sources",
+        "evidence",
+        "literature",
+    ],
+    "quick_keywords": [
+        "quick",
+        "quickly",
+        "briefly",
+        "short",
+        "summary",
+        "summarize",
+        "recap",
+        "tldr",
+    ],
     "research_query_length": 200,  # chars
 }
