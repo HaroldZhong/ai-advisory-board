@@ -45,9 +45,9 @@ import { cn } from "@/lib/utils";
 import { groupConversationsByFolder } from "@/utils/conversationOrganization";
 import {
   RESPONSIVE_WIDTHS,
-  SIDEBAR_COLLAPSED_STORAGE_KEY,
   getSidebarMode,
-  parseSidebarCollapsedPreference,
+  readSidebarCollapsedPreference,
+  writeSidebarCollapsedPreference,
 } from "@/utils/responsiveLayout";
 
 function SidebarTooltip({ label, enabled, children }) {
@@ -92,6 +92,146 @@ function InlineRenameInput({ defaultValue, onConfirm, onCancel }) {
   );
 }
 
+function RenameDialog({ open, title, defaultValue, onConfirm, onOpenChange }) {
+  const [value, setValue] = useState(defaultValue);
+
+  useEffect(() => {
+    if (open) setValue(defaultValue);
+  }, [defaultValue, open]);
+
+  const handleConfirm = () => {
+    const nextValue = value.trim();
+    if (nextValue) {
+      onConfirm(nextValue);
+    } else {
+      onOpenChange(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[360px]">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <Input
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") handleConfirm();
+            if (event.key === "Escape") onOpenChange(false);
+          }}
+          autoFocus
+        />
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleConfirm} disabled={!value.trim()}>
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ConversationActionsMenu({
+  title,
+  conv,
+  folders,
+  onRenameStart,
+  onDelete,
+  onMove,
+  compact = false,
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "rounded hover:bg-muted transition-colors",
+            compact
+              ? "absolute right-0.5 top-1/2 -translate-y-1/2 bg-background/90 p-1 text-muted-foreground shadow-sm"
+              : "opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 transition-opacity"
+          )}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          aria-label={`Conversation actions for ${title}`}
+        >
+          <MoreHorizontal className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuItem onClick={onRenameStart}>
+          <Pencil className="mr-2 h-4 w-4" /> Rename
+        </DropdownMenuItem>
+        {folders && folders.length > 0 && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <ArrowRightLeft className="mr-2 h-4 w-4" /> Move to...
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem onClick={() => onMove(conv.id, null)}>
+                No Folder
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {folders.map((folder) => (
+                <DropdownMenuItem key={folder.id} onClick={() => onMove(conv.id, folder.id)}>
+                  <FolderClosed className="mr-2 h-3 w-3" /> {folder.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="text-destructive focus:text-destructive"
+          onClick={() => onDelete(conv)}
+        >
+          <Trash2 className="mr-2 h-4 w-4" /> Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function FolderActionsMenu({ folder, onRenameStart, onDeleteFolder, compact = false }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "rounded hover:bg-muted transition-colors",
+            compact
+              ? "absolute right-0.5 top-1/2 -translate-y-1/2 bg-background/90 p-1 text-muted-foreground shadow-sm"
+              : "opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 transition-opacity"
+          )}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          aria-label={`Folder actions for ${folder.name}`}
+        >
+          <MoreHorizontal className={compact ? "h-4 w-4" : "h-3.5 w-3.5"} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuItem onClick={onRenameStart}>
+          <Pencil className="mr-2 h-4 w-4" /> Rename
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="text-destructive focus:text-destructive"
+          onClick={() => onDeleteFolder(folder.id)}
+        >
+          <Trash2 className="mr-2 h-4 w-4" /> Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ConversationItem({
   conv,
   isActive,
@@ -103,18 +243,20 @@ function ConversationItem({
   compact = false,
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
+  const [showCompactRenameDialog, setShowCompactRenameDialog] = useState(false);
   const title = conv.title || "New Conversation";
 
   const handleRenameConfirm = (newTitle) => {
     setIsRenaming(false);
+    setShowCompactRenameDialog(false);
     if (newTitle && newTitle !== conv.title) onRename(conv.id, newTitle);
   };
 
   const item = (
     <div
       className={cn(
-        "group flex items-center gap-1 rounded-md px-2 py-2 cursor-pointer transition-colors",
-        compact && "justify-center px-0",
+        "group relative flex items-center gap-1 rounded-md px-2 py-2 cursor-pointer transition-colors",
+        compact && "h-9 justify-center px-0",
         isActive
           ? "bg-secondary text-secondary-foreground"
           : "hover:bg-muted/50 text-muted-foreground hover:text-foreground"
@@ -137,58 +279,42 @@ function ConversationItem({
           </>
         )}
       </div>
-      {!isRenaming && !compact && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 rounded hover:bg-muted transition-opacity"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuItem onClick={() => setIsRenaming(true)}>
-              <Pencil className="mr-2 h-4 w-4" /> Rename
-            </DropdownMenuItem>
-            {folders && folders.length > 0 && (
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <ArrowRightLeft className="mr-2 h-4 w-4" /> Move to...
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuItem onClick={() => onMove(conv.id, null)}>
-                    No Folder
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  {folders.map((f) => (
-                    <DropdownMenuItem key={f.id} onClick={() => onMove(conv.id, f.id)}>
-                      <FolderClosed className="mr-2 h-3 w-3" /> {f.name}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            )}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onClick={() => onDelete(conv)}
-            >
-              <Trash2 className="mr-2 h-4 w-4" /> Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+      {!isRenaming && (
+        <ConversationActionsMenu
+          title={title}
+          conv={conv}
+          folders={folders}
+          onRenameStart={() => {
+            if (compact) {
+              setShowCompactRenameDialog(true);
+            } else {
+              setIsRenaming(true);
+            }
+          }}
+          onDelete={onDelete}
+          onMove={onMove}
+          compact={compact}
+        />
       )}
     </div>
   );
 
   return (
-    <SidebarTooltip
-      enabled={compact}
-      label={`${title} · ${conv.message_count} ${conv.message_count === 1 ? "message" : "messages"}`}
-    >
-      {item}
-    </SidebarTooltip>
+    <>
+      <SidebarTooltip
+        enabled={compact}
+        label={`${title} · ${conv.message_count} ${conv.message_count === 1 ? "message" : "messages"}`}
+      >
+        {item}
+      </SidebarTooltip>
+      <RenameDialog
+        open={showCompactRenameDialog}
+        title="Rename conversation"
+        defaultValue={title}
+        onConfirm={handleRenameConfirm}
+        onOpenChange={setShowCompactRenameDialog}
+      />
+    </>
   );
 }
 
@@ -216,20 +342,28 @@ function FolderGroup({
   if (compact) {
     return (
       <div className="mb-2">
-        <SidebarTooltip enabled label={`${folder.name} · ${conversations.length} conversations`}>
-          <button
-            type="button"
-            className="group flex h-9 w-full items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-            onClick={() => setIsOpen(!isOpen)}
-            aria-label={`${folder.name}, ${conversations.length} conversations`}
-          >
-            {isOpen ? (
-              <FolderOpen className="h-4 w-4 text-primary/70" />
-            ) : (
-              <FolderClosed className="h-4 w-4 text-primary/70" />
-            )}
-          </button>
-        </SidebarTooltip>
+        <div className="group relative">
+          <SidebarTooltip enabled label={`${folder.name} · ${conversations.length} conversations`}>
+            <button
+              type="button"
+              className="flex h-9 w-full items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+              onClick={() => setIsOpen(!isOpen)}
+              aria-label={`${folder.name}, ${conversations.length} conversations`}
+            >
+              {isOpen ? (
+                <FolderOpen className="h-4 w-4 text-primary/70" />
+              ) : (
+                <FolderClosed className="h-4 w-4 text-primary/70" />
+              )}
+            </button>
+          </SidebarTooltip>
+          <FolderActionsMenu
+            folder={folder}
+            onRenameStart={() => setIsRenaming(true)}
+            onDeleteFolder={onDeleteFolder}
+            compact
+          />
+        </div>
         {isOpen && conversations.length > 0 && (
           <div className="mt-1 space-y-1">
             {conversations.map((conv) => (
@@ -247,6 +381,13 @@ function FolderGroup({
             ))}
           </div>
         )}
+        <RenameDialog
+          open={isRenaming}
+          title="Rename folder"
+          defaultValue={folder.name}
+          onConfirm={handleFolderRename}
+          onOpenChange={setIsRenaming}
+        />
       </div>
     );
   }
@@ -280,28 +421,11 @@ function FolderGroup({
         </div>
         <span className="text-xs text-muted-foreground/50 mr-1">{conversations.length}</span>
         {!isRenaming && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="opacity-0 group-hover:opacity-100 focus:opacity-100 p-1 rounded hover:bg-muted transition-opacity"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-40">
-              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setIsRenaming(true); }}>
-                <Pencil className="mr-2 h-4 w-4" /> Rename
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={(e) => { e.stopPropagation(); onDeleteFolder(folder.id); }}
-              >
-                <Trash2 className="mr-2 h-4 w-4" /> Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <FolderActionsMenu
+            folder={folder}
+            onRenameStart={() => setIsRenaming(true)}
+            onDeleteFolder={onDeleteFolder}
+          />
         )}
       </div>
       {isOpen && (
@@ -555,7 +679,7 @@ export default function Sidebar(props) {
   ));
   const [userCollapsed, setUserCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
-    return parseSidebarCollapsedPreference(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY));
+    return readSidebarCollapsedPreference();
   });
 
   useEffect(() => {
@@ -573,7 +697,7 @@ export default function Sidebar(props) {
     if (!canToggleSidebar) return;
     setUserCollapsed((current) => {
       const next = !current;
-      localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
+      writeSidebarCollapsedPreference(next);
       return next;
     });
   };
