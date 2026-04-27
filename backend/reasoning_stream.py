@@ -47,6 +47,13 @@ class ReasoningStreamState:
             events.append(self._append_reasoning(reasoning))
 
         reasoning_details = delta.get("reasoning_details") or []
+        if isinstance(reasoning_details, str):
+            detail = {"type": "reasoning.text", "text": reasoning_details}
+            self.reasoning_details.append(detail)
+            event = self._append_reasoning(reasoning_details)
+            event["detail_type"] = detail["type"]
+            events.append(event)
+            reasoning_details = []
         if isinstance(reasoning_details, dict):
             reasoning_details = [reasoning_details]
 
@@ -117,7 +124,9 @@ class ReasoningStreamState:
                 continue
 
             candidate_tags = (
-                OPENING_THINK_TAGS if self._inline_mode == "content" else CLOSING_THINK_TAGS
+                OPENING_THINK_TAGS
+                if self._inline_mode == "content"
+                else OPENING_THINK_TAGS + CLOSING_THINK_TAGS
             )
             if not final and self._is_partial_tag(candidate_tags):
                 break

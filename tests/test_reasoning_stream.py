@@ -53,6 +53,24 @@ def test_openrouter_unified_accepts_plain_reasoning_field():
     assert state.reasoning_text == "Short reasoning chunk."
 
 
+def test_openrouter_unified_accepts_string_reasoning_details():
+    state = ReasoningStreamState("openrouter_unified")
+
+    events = state.consume_delta({"reasoning_details": "Detailed reasoning chunk."})
+
+    assert events == [
+        {
+            "type": "reasoning_delta",
+            "text": "Detailed reasoning chunk.",
+            "detail_type": "reasoning.text",
+        }
+    ]
+    assert state.reasoning_text == "Detailed reasoning chunk."
+    assert state.reasoning_details == [
+        {"type": "reasoning.text", "text": "Detailed reasoning chunk."}
+    ]
+
+
 def test_openrouter_unified_accepts_summary_reasoning_detail():
     state = ReasoningStreamState("openrouter_unified")
 
@@ -127,6 +145,23 @@ def test_inline_tags_drop_nested_opening_tag_inside_reasoning():
 
     events = []
     events.extend(state.consume_delta({"content": "<think>outer <think>inner</think>Answer"}))
+    events.extend(state.finish())
+
+    assert events == [
+        {"type": "reasoning_delta", "text": "outer "},
+        {"type": "reasoning_delta", "text": "inner"},
+        {"type": "content_delta", "text": "Answer"},
+    ]
+    assert state.reasoning_text == "outer inner"
+    assert state.content_text == "Answer"
+
+
+def test_inline_tags_drop_nested_opening_tag_split_across_chunks():
+    state = ReasoningStreamState("inline_tags")
+
+    events = []
+    events.extend(state.consume_delta({"content": "<think>outer <th"}))
+    events.extend(state.consume_delta({"content": "ink>inner</think>Answer"}))
     events.extend(state.finish())
 
     assert events == [
