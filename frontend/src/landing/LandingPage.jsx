@@ -324,7 +324,7 @@ export default function LandingPage() {
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
                             <div className="w-12 h-12 bg-slate-900 border border-slate-700 rounded-xl flex items-center justify-center mx-auto mb-6 text-xl font-bold text-slate-300">1</div>
                             <h3 className="text-xl font-semibold mb-3 text-center">Collect</h3>
-                            <p className="text-slate-400 text-center text-sm">A preset or custom council (e.g., GPT-5.4, Claude Sonnet 4.6, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, Kimi K2.6) answers independently.</p>
+                            <p className="text-slate-400 text-center text-sm">A preset or custom council answers independently so you can compare perspectives before synthesis.</p>
                         </div>
 
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
@@ -379,7 +379,7 @@ export default function LandingPage() {
                             { title: "Preset Councils", desc: "Start with Balanced, Research, Budget, or Private councils — or compose your own from the curated OpenRouter registry.", icon: Users },
                             { title: "Zero Data Retention", desc: "Private mode restricts routing to ZDR-capable providers for sensitive conversations.", icon: Lock },
                             { title: "Trust Row", desc: "Privacy, budget, tools, and session cost stay visible at send time.", icon: Shield },
-                            { title: "First-Run Setup", desc: "Connect OpenRouter, choose a privacy default, and set a budget before the first chat.", icon: Terminal },
+                            { title: "Local Key Setup", desc: "Connect your OpenRouter key locally before convening the council.", icon: Terminal },
                             { title: "Web Search", desc: "Perplexity-powered web search with fast and deep modes, inline toggle from the chat bar.", icon: Globe },
                             { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more — indexed locally for retrieval.", icon: Upload },
                             { title: "Edit & Regenerate", desc: "Click any previous message to edit and regenerate from that point.", icon: Pencil },
@@ -389,7 +389,7 @@ export default function LandingPage() {
                             { title: "Curated Models", desc: "Frontier and specialist options from OpenAI, Anthropic, Google, DeepSeek, Kimi, Qwen, xAI, Mistral, and more.", icon: Users },
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
                             { title: "Persistent Memory", desc: "File-based storage with PageIndex RAG keeps long conversations retrievable with query rewriting.", icon: Brain },
-                            { title: "Attachment Lifecycle", desc: "Reference-counted attachment retention cleans up unshared files when conversations are deleted.", icon: FileText },
+                            { title: "Attachment Handling", desc: "Uploaded files are processed locally and indexed for retrieval in the conversations that use them.", icon: FileText },
                             { title: "Budget Controls", desc: "Session budgets ($1/$2/$5/unlimited) warn at thresholds and can prevent new turns when a cap is enforced.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
@@ -529,7 +529,7 @@ cd ai-advisory-board
                                         <div className="mt-1 w-2 h-2 rounded-full bg-indigo-500" />
                                         <div>
                                             <h4 className="font-bold text-white text-sm">Frontend (React + Vite)</h4>
-                                            <p className="text-xs text-slate-400 mt-1">Responsive UI, first-run setup, trust row, cost visibility.</p>
+                                            <p className="text-xs text-slate-400 mt-1">Responsive UI, local key setup, trust row, cost visibility.</p>
                                         </div>
                                     </div>
                                     <div className="flex items-start gap-4">
@@ -567,7 +567,7 @@ cd ai-advisory-board
                                     "API key stays in your env variables",
                                     "Zero Data Retention routing on demand",
                                     "Conversation-level privacy and budget state",
-                                    "Attachment lifecycle cleanup",
+                                    "Local attachment handling",
                                     "Cost transparency and session budget controls"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300">
@@ -603,7 +603,7 @@ cd ai-advisory-board
                             { q: "What models/providers can I use?", a: "AI Advisory Board ships with a curated OpenRouter registry and live availability checks against OpenRouter's 350+ model catalog. Current examples include Claude Opus, GPT-5, Claude Sonnet, Gemini Pro, DeepSeek, Kimi, Qwen, xAI, and Mistral models." },
                             { q: "Does it support multi-turn context?", a: "Yes. File-based local storage and PageIndex RAG with query rewriting maintain context across long conversations and uploaded documents." },
                             { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call, shows session cost in the trust row, warns as budgets fill, and can block new turns when an enforced cap is reached." },
-                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, supports conversation-level ZDR routing, and cleans up unshared attachment artifacts when conversations are deleted." }
+                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, supports conversation-level ZDR routing, and keeps uploaded-file processing under your local setup." }
                         ].map((item, i) => (
                             <details key={i} className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
                                 <summary className="flex items-center justify-between p-4 cursor-pointer font-medium hover:bg-slate-800/50 transition-colors">
