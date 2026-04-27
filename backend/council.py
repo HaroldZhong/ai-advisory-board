@@ -75,11 +75,14 @@ async def stage1_collect_responses(
     stage1_results = []
     for model, response in responses.items():
         if response is not None:  # Only include successful responses
-            stage1_results.append({
+            result = {
                 "model": model,
                 "response": response.get('content', ''),
                 "usage": response.get('usage', {})
-            })
+            }
+            if response.get("reasoning_details"):
+                result["reasoning"] = response.get("reasoning_details")
+            stage1_results.append(result)
 
     return stage1_results
 
@@ -165,12 +168,15 @@ Now provide your evaluation and ranking:"""
         if response is not None:
             full_text = response.get('content', '')
             parsed = parse_ranking_from_text(full_text)
-            stage2_results.append({
+            result = {
                 "model": model,
                 "ranking": full_text,
                 "parsed_ranking": parsed,
                 "usage": response.get('usage', {})
-            })
+            }
+            if response.get("reasoning_details"):
+                result["reasoning"] = response.get("reasoning_details")
+            stage2_results.append(result)
 
     return stage2_results, label_to_model
 
@@ -267,7 +273,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     logger.info(f"[STAGE3] Synthesis complete, confidence={confidence_label}")
 
-    return {
+    result = {
         "model": target_chairman,
         "response": response.get('content', ''),
         "usage": response.get('usage', {}),
@@ -275,6 +281,9 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         "avg_consensus": avg_consensus,
         "quality_metrics": quality_metrics,
     }
+    if response.get("reasoning_details"):
+        result["reasoning"] = response.get("reasoning_details")
+    return result
 
 
 def parse_ranking_from_text(ranking_text: str) -> List[str]:
