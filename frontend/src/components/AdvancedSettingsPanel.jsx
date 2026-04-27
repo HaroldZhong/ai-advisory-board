@@ -19,6 +19,13 @@ import {
     getResponsiveModalBodyClass,
     getResponsiveModalContentClass,
 } from '@/utils/responsiveModalLayout';
+import {
+    getAdvancedRoutingSummary,
+    getModelTierHint,
+    getRagPresetHint,
+    readAdvancedRoutingDisclosurePreference,
+    writeAdvancedRoutingDisclosurePreference,
+} from '@/utils/advancedRoutingControls';
 
 /**
  * Advanced Settings Panel
@@ -87,9 +94,18 @@ export default function AdvancedSettingsPanel({
         zdrEnabled: settings?.zdrEnabled ?? false,
         customInstructions: settings?.customInstructions || '',
     });
+    const [isRoutingExpanded, setIsRoutingExpanded] = useState(() => (
+        readAdvancedRoutingDisclosurePreference()
+    ));
 
     const availability = getAdvancedSettingAvailability(nextMessageMode);
     const effectiveSettings = normalizeAdvancedSettingsForMode(localSettings, nextMessageMode);
+    const hasRoutingOverrides = effectiveSettings.ragPreset !== 'auto' || effectiveSettings.modelTier !== 'auto';
+
+    const setRoutingExpanded = (expanded) => {
+        setIsRoutingExpanded(expanded);
+        writeAdvancedRoutingDisclosurePreference(expanded);
+    };
 
     const handleSave = () => {
         onSave(effectiveSettings);
@@ -156,62 +172,107 @@ export default function AdvancedSettingsPanel({
                         </div>
                     </div>
 
-                    {/* RAG Context Level */}
-                    <div>
-                        <label className="text-sm font-medium mb-2 block">
-                            Context Level
-                        </label>
-                        <div className="flex flex-wrap gap-2">
-                            {RAG_PRESETS.map((preset) => {
-                                const isSelected = effectiveSettings.ragPreset === preset.id;
-                                const isDisabled = isChatOnlyAdvancedOptionDisabled('ragPreset', preset.id, nextMessageMode);
-                                return (
-                                    <button
-                                        key={preset.id}
-                                        disabled={isDisabled}
-                                        onClick={() => setLocalSettings(s => ({ ...s, ragPreset: preset.id }))}
-                                        className={cn(
-                                            "px-3 py-2 rounded-lg border text-sm transition-all",
-                                            isSelected
-                                                ? "border-primary bg-primary/5"
-                                                : "border-muted hover:border-primary/50",
-                                            isDisabled && "opacity-50 cursor-not-allowed hover:border-muted"
-                                        )}
-                                    >
-                                        {preset.label}
-                                        <span className="text-xs text-muted-foreground ml-1">
-                                            ({preset.tokens})
+                    {/* Advanced Routing Controls */}
+                    <div className="rounded-lg border border-muted">
+                        <button
+                            type="button"
+                            onClick={() => setRoutingExpanded(!isRoutingExpanded)}
+                            aria-expanded={isRoutingExpanded}
+                            aria-controls="advanced-routing-controls"
+                            className={cn(
+                                "w-full flex items-center justify-between gap-3 p-3 text-left transition-colors",
+                                hasRoutingOverrides ? "bg-primary/5" : "hover:bg-muted/40"
+                            )}
+                        >
+                            <div className="min-w-0">
+                                <div className="text-sm font-medium flex items-center gap-2">
+                                    Override auto-routing
+                                    {hasRoutingOverrides && (
+                                        <span className="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                                            Custom
                                         </span>
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
+                                    )}
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                    {getAdvancedRoutingSummary(effectiveSettings)}
+                                </div>
+                            </div>
+                            {isRoutingExpanded ? (
+                                <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            ) : (
+                                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            )}
+                        </button>
 
-                    {/* Model Tier */}
-                    <div>
-                        <label className="text-sm font-medium mb-2 block">
-                            Model Tier
-                        </label>
-                        <div className="flex flex-wrap gap-2">
-                            {MODEL_TIERS.map((tier) => {
-                                const isSelected = localSettings.modelTier === tier.id;
-                                return (
-                                    <button
-                                        key={tier.id}
-                                        onClick={() => setLocalSettings(s => ({ ...s, modelTier: tier.id }))}
-                                        className={cn(
-                                            "px-3 py-2 rounded-lg border text-sm transition-all",
-                                            isSelected
-                                                ? "border-primary bg-primary/5"
-                                                : "border-muted hover:border-primary/50"
-                                        )}
-                                    >
-                                        {tier.label}
-                                    </button>
-                                );
-                            })}
-                        </div>
+                        {isRoutingExpanded && (
+                            <div id="advanced-routing-controls" className="space-y-5 border-t border-muted p-3">
+                                {/* RAG Context Level */}
+                                <div>
+                                    <label className="text-sm font-medium mb-2 block">
+                                        Context Level
+                                    </label>
+                                    <div className="grid gap-2">
+                                        {RAG_PRESETS.map((preset) => {
+                                            const isSelected = effectiveSettings.ragPreset === preset.id;
+                                            const isDisabled = isChatOnlyAdvancedOptionDisabled('ragPreset', preset.id, nextMessageMode);
+                                            return (
+                                                <button
+                                                    key={preset.id}
+                                                    type="button"
+                                                    disabled={isDisabled}
+                                                    onClick={() => setLocalSettings(s => ({ ...s, ragPreset: preset.id }))}
+                                                    className={cn(
+                                                        "rounded-lg border p-3 text-left transition-all",
+                                                        isSelected
+                                                            ? "border-primary bg-primary/5"
+                                                            : "border-muted hover:border-primary/50",
+                                                        isDisabled && "opacity-50 cursor-not-allowed hover:border-muted"
+                                                    )}
+                                                >
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="text-sm font-medium">{preset.label}</span>
+                                                        <span className="text-xs text-muted-foreground">{preset.tokens}</span>
+                                                    </div>
+                                                    <div className="text-xs text-muted-foreground mt-1">
+                                                        {getRagPresetHint(preset.id)}
+                                                    </div>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Model Tier */}
+                                <div>
+                                    <label className="text-sm font-medium mb-2 block">
+                                        Model Tier
+                                    </label>
+                                    <div className="grid gap-2">
+                                        {MODEL_TIERS.map((tier) => {
+                                            const isSelected = localSettings.modelTier === tier.id;
+                                            return (
+                                                <button
+                                                    key={tier.id}
+                                                    type="button"
+                                                    onClick={() => setLocalSettings(s => ({ ...s, modelTier: tier.id }))}
+                                                    className={cn(
+                                                        "rounded-lg border p-3 text-left transition-all",
+                                                        isSelected
+                                                            ? "border-primary bg-primary/5"
+                                                            : "border-muted hover:border-primary/50"
+                                                    )}
+                                                >
+                                                    <div className="text-sm font-medium">{tier.label}</div>
+                                                    <div className="text-xs text-muted-foreground mt-1">
+                                                        {getModelTierHint(tier.id)}
+                                                    </div>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Privacy - ZDR default */}
@@ -286,9 +347,8 @@ export default function AdvancedSettingsPanel({
 
                     {/* Info box */}
                     <div className="p-3 rounded-lg bg-muted/50 text-sm text-muted-foreground">
-                        <strong>Note:</strong> These settings override the automatic budget-aware
-                        routing. Use "Auto" for each to let the system optimize based on your
-                        session budget and query type.
+                        <strong>Note:</strong> Auto routing uses query type and session budget.
+                        Manual routing overrides can increase context, model quality, and cost.
                     </div>
                 </div>
 
