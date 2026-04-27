@@ -150,7 +150,7 @@ def main():
         width=1200,
         height=800,
         resizable=True,
-        min_size=(800, 600)
+        min_size=(960, 600)
     )
     
     def on_loaded():
