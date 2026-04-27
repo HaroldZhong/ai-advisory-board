@@ -350,7 +350,7 @@ export default function LandingPage() {
                             { icon: Shield, title: "More reliable answers", desc: "Reduces hallucinations via consensus.", sub: "Cross-model validation", grad: "from-blue-500/20 to-indigo-500/5" },
                             { icon: Search, title: "More transparent", desc: "See exactly how models ranked each other.", sub: "Full deliberation logs", grad: "from-purple-500/20 to-pink-500/5" },
                             { icon: MessageSquare, title: "Better continuity", desc: "Never lose context in long chats.", sub: "RAG history injection", grad: "from-emerald-500/20 to-teal-500/5" },
-                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message and enforce a session cap.", sub: "Budget hard stops", grad: "from-amber-500/20 to-orange-500/5" },
+                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message and set session-level guardrails.", sub: "Budget visibility", grad: "from-amber-500/20 to-orange-500/5" },
                         ].map((b, i) => (
                             <Card key={i} className={`glass-card relative overflow-hidden group border-white/5`}>
                                 <div className={`absolute inset-0 bg-gradient-to-br ${b.grad} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
@@ -376,7 +376,7 @@ export default function LandingPage() {
                     <h2 className="text-3xl font-bold mb-12 text-center">Advanced Capabilities</h2>
                     <div className="grid md:grid-cols-2 LG:grid-cols-3 gap-8">
                         {[
-                            { title: "Preset Councils", desc: "Start with Balanced, Research, Budget, or Private councils — or compose your own from 26 curated models.", icon: Users },
+                            { title: "Preset Councils", desc: "Start with Balanced, Research, Budget, or Private councils — or compose your own from the curated OpenRouter registry.", icon: Users },
                             { title: "Zero Data Retention", desc: "Private mode restricts routing to ZDR-capable providers for sensitive conversations.", icon: Lock },
                             { title: "Trust Row", desc: "Privacy, budget, tools, and session cost stay visible at send time.", icon: Shield },
                             { title: "First-Run Setup", desc: "Connect OpenRouter, choose a privacy default, and set a budget before the first chat.", icon: Terminal },
@@ -386,11 +386,11 @@ export default function LandingPage() {
                             { title: "Simplified Routing", desc: "Auto-routing stays default, with advanced context and model-tier overrides tucked one click away.", icon: UserCog },
                             { title: "Folder Organization", desc: "Group conversations into color-coded folders for easy management.", icon: FolderOpen },
                             { title: "Responsive Desktop", desc: "The app now works cleanly down to a 960x600 desktop window.", icon: Monitor },
-                            { title: "26 Curated Models", desc: "Claude Opus 4.7 as chairman, plus OpenAI, Anthropic, Google, DeepSeek, Kimi, Qwen, xAI, Mistral, and more.", icon: Users },
+                            { title: "Curated Models", desc: "Frontier and specialist options from OpenAI, Anthropic, Google, DeepSeek, Kimi, Qwen, xAI, Mistral, and more.", icon: Users },
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
                             { title: "Persistent Memory", desc: "File-based storage with PageIndex RAG keeps long conversations retrievable with query rewriting.", icon: Brain },
                             { title: "Attachment Lifecycle", desc: "Reference-counted attachment retention cleans up unshared files when conversations are deleted.", icon: FileText },
-                            { title: "Budget Enforcement", desc: "Session budgets ($1/$2/$5/unlimited) warn at thresholds and stop new turns at 100% by default.", icon: BarChart },
+                            { title: "Budget Controls", desc: "Session budgets ($1/$2/$5/unlimited) warn at thresholds and can prevent new turns when a cap is enforced.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
                                 <div className="flex items-center gap-3 mb-4">
@@ -568,7 +568,7 @@ cd ai-advisory-board
                                     "Zero Data Retention routing on demand",
                                     "Conversation-level privacy and budget state",
                                     "Attachment lifecycle cleanup",
-                                    "Cost transparency and hard-stop budgets"
+                                    "Cost transparency and session budget controls"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300">
                                         <Check className="w-4 h-4 text-emerald-500" />
@@ -600,9 +600,9 @@ cd ai-advisory-board
                         {[
                             { q: "What is Council Mode vs Chat Mode?", a: "Council Mode activates the 3-stage deliberation (Collect, Rank, Synthesize). Chat Mode is a standard single-model turn for fast follow-ups." },
                             { q: "How is confidence calculated?", a: "We aggregate the anonymous rankings from the 'Rank' stage and the Chairman's final synthesized assessment." },
-                            { q: "What models/providers can I use?", a: "AI Advisory Board ships with 26 curated OpenRouter models, with live availability checks against OpenRouter's 350+ model catalog. The default Balanced preset uses Claude Opus 4.7 as chairman with GPT-5.4, Claude Sonnet 4.6, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, and Kimi K2.6 on the council." },
+                            { q: "What models/providers can I use?", a: "AI Advisory Board ships with a curated OpenRouter registry and live availability checks against OpenRouter's 350+ model catalog. Current examples include Claude Opus, GPT-5, Claude Sonnet, Gemini Pro, DeepSeek, Kimi, Qwen, xAI, and Mistral models." },
                             { q: "Does it support multi-turn context?", a: "Yes. File-based local storage and PageIndex RAG with query rewriting maintain context across long conversations and uploaded documents." },
-                            { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call, shows session cost in the trust row, warns as budgets fill, and blocks new turns at 100% by default." },
+                            { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call, shows session cost in the trust row, warns as budgets fill, and can block new turns when an enforced cap is reached." },
                             { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, supports conversation-level ZDR routing, and cleans up unshared attachment artifacts when conversations are deleted." }
                         ].map((item, i) => (
                             <details key={i} className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
