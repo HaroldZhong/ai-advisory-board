@@ -377,19 +377,19 @@ export default function LandingPage() {
                     <div className="grid md:grid-cols-2 LG:grid-cols-3 gap-8">
                         {[
                             { title: "Configurable Councils", desc: "Compose a chairman and council from a curated OpenRouter model registry.", icon: Users },
-                            { title: "Privacy-Aware Setup", desc: "Your OpenRouter key stays local and provider choices remain visible before you send sensitive work.", icon: Lock },
-                            { title: "Trust Row", desc: "Routing context, tools, and session cost stay visible at send time.", icon: Shield },
+                            { title: "Provider Transparency", desc: "Your OpenRouter key stays local and model/provider choices remain explicit.", icon: Lock },
+                            { title: "Session Status", desc: "Current mode and session cost stay close to the chat workflow.", icon: Shield },
                             { title: "Local Key Setup", desc: "Connect your OpenRouter key locally before convening the council.", icon: Terminal },
                             { title: "Web Search", desc: "Perplexity-powered web search with fast and deep modes, inline toggle from the chat bar.", icon: Globe },
-                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more — indexed locally for retrieval.", icon: Upload },
+                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more for retrieval during conversation.", icon: Upload },
                             { title: "Edit & Regenerate", desc: "Click any previous message to edit and regenerate from that point.", icon: Pencil },
-                            { title: "Simplified Routing", desc: "Auto-routing stays default, with advanced context and model-tier overrides tucked one click away.", icon: UserCog },
+                            { title: "Simple Defaults", desc: "Auto-routing keeps common choices lightweight while advanced settings stay out of the way.", icon: UserCog },
                             { title: "Folder Organization", desc: "Group conversations into color-coded folders for easy management.", icon: FolderOpen },
                             { title: "Responsive Desktop", desc: "The app now works cleanly down to a 960x600 desktop window.", icon: Monitor },
                             { title: "Curated Models", desc: "Frontier and specialist options from OpenAI, Anthropic, Google, DeepSeek, Kimi, Qwen, xAI, Mistral, and more.", icon: Users },
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
                             { title: "Persistent Memory", desc: "File-based storage with PageIndex RAG keeps long conversations retrievable with query rewriting.", icon: Brain },
-                            { title: "Attachment Handling", desc: "Uploaded files are processed locally and indexed for retrieval in the conversations that use them.", icon: FileText },
+                            { title: "Attachment Support", desc: "Uploaded files can be attached and indexed for retrieval in the conversations that use them.", icon: FileText },
                             { title: "Cost Controls", desc: "Per-call usage and session cost visibility help you monitor spend while you work.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
@@ -441,7 +441,7 @@ export default function LandingPage() {
                                     "Anonymous ranking & critique",
                                     "Final synthesis by Chairman",
                                     "Confidence badge (High/Med/Low)",
-                                    "Trust row with routing context, tools, and cost"
+                                    "Conversation status and cost cues near the chat workflow"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300 text-sm">
                                         <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500">
@@ -529,7 +529,7 @@ cd ai-advisory-board
                                         <div className="mt-1 w-2 h-2 rounded-full bg-indigo-500" />
                                         <div>
                                             <h4 className="font-bold text-white text-sm">Frontend (React + Vite)</h4>
-                                            <p className="text-xs text-slate-400 mt-1">Responsive UI, local key setup, trust row, cost visibility.</p>
+                                            <p className="text-xs text-slate-400 mt-1">Responsive UI, local key setup, chat status, cost visibility.</p>
                                         </div>
                                     </div>
                                     <div className="flex items-start gap-4">
@@ -565,9 +565,9 @@ cd ai-advisory-board
                                 {[
                                     "Self-hostable local setup",
                                     "API key stays in your env variables",
-                                    "Provider choices visible before sensitive work",
+                                    "Provider choices remain explicit",
                                     "Local key handling",
-                                    "Local attachment handling",
+                                    "Attachment upload support",
                                     "Cost transparency during active sessions"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300">
@@ -603,7 +603,7 @@ cd ai-advisory-board
                             { q: "What models/providers can I use?", a: "AI Advisory Board ships with a curated OpenRouter registry and live availability checks against OpenRouter's 350+ model catalog. Current examples include Claude Opus, GPT-5, Claude Sonnet, Gemini Pro, DeepSeek, Kimi, Qwen, xAI, and Mistral models." },
                             { q: "Does it support multi-turn context?", a: "Yes. File-based local storage and PageIndex RAG with query rewriting maintain context across long conversations and uploaded documents." },
                             { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call and keeps session cost visible while you work." },
-                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, and keeps uploaded-file processing under your local setup." }
+                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally and stores app data on your machine. Model calls and enabled provider features still route through the providers you choose." }
                         ].map((item, i) => (
                             <details key={i} className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
                                 <summary className="flex items-center justify-between p-4 cursor-pointer font-medium hover:bg-slate-800/50 transition-colors">
@@ -631,7 +631,7 @@ cd ai-advisory-board
                             <Github className="w-5 h-5 mr-3" /> View on GitHub
                         </Button>
                     </div>
-                    <p className="text-slate-400">Bring your OpenRouter key. Compose a council. Keep routing context and cost visible.</p>
+                    <p className="text-slate-400">Bring your OpenRouter key. Compose a council. Keep model choices and costs understandable.</p>
                 </div>
             </section>
 
