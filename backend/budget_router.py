@@ -74,12 +74,12 @@ def create_run_plan(
         # Apply budget policy
         pct = budget_pct * 100  # Convert to percentage
         
-        if pct <= 70:
-            policy_reason = "budget_under_70"
+        if pct <= 75:
+            policy_reason = "budget_under_75"
             rag_tokens, rag_preset = get_budget_for_task_signal(task_signal)
             mode = task_signal
         elif pct <= 85:
-            policy_reason = "budget_70_85"
+            policy_reason = "budget_75_85"
             rag_preset = "medium"
             rag_tokens = RAG_SETTINGS["presets"]["medium"]["tokens"]
             mode = "standard"

@@ -22,6 +22,11 @@ import {
 } from './utils/configStatus';
 import { createConversationWithDefaults } from './utils/conversationCreation';
 import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
+import {
+  mergeConversationPrivacyUpdate,
+  resolveEffectiveZdr,
+  setConversationPrivacyMetadata,
+} from './utils/trustState';
 import { toast } from './hooks/use-toast';
 
 function ConversationView({
@@ -168,7 +173,33 @@ function ConversationView({
       session_usage: state.usage,
       budget_spent_pct: state.budget_spent_pct,
     }) : prev);
+    setBudgetWarning(null);
     return state;
+  };
+
+  const handleUpdateConversationPrivacy = async (zdrEnabled) => {
+    if (!conversationId || isLoading) return null;
+
+    const targetConversationId = conversationId;
+    const previousZdr = currentConversation?.id === targetConversationId
+      ? currentConversation?.metadata?.zdr_enabled
+      : undefined;
+
+    setCurrentConversation((prev) => (
+      setConversationPrivacyMetadata(prev, targetConversationId, zdrEnabled)
+    ));
+
+    try {
+      const updated = await api.updateConversation(targetConversationId, { zdr_enabled: zdrEnabled });
+      setCurrentConversation((prev) => mergeConversationPrivacyUpdate(prev, updated));
+      loadConversations();
+      return updated;
+    } catch (error) {
+      setCurrentConversation((prev) => (
+        setConversationPrivacyMetadata(prev, targetConversationId, previousZdr)
+      ));
+      throw error;
+    }
   };
 
   const handleSendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
@@ -200,6 +231,7 @@ function ConversationView({
       const isFollowUp = effectiveMsgCount > 0;
       const mode = isFollowUp ? 'chat' : 'council';
       const requestSettings = normalizeAdvancedSettingsForMode(settings, mode);
+      requestSettings.zdrEnabled = resolveEffectiveZdr(currentConversation, settings);
 
       if (mode === 'council') {
         const assistantMessage = {
@@ -443,6 +475,7 @@ function ConversationView({
           conversation={currentConversation}
           onSendMessage={handleSendMessage}
           onUpdateSessionPolicy={handleUpdateSessionPolicy}
+          onUpdateConversationPrivacy={handleUpdateConversationPrivacy}
           budgetWarning={budgetWarning}
           onDismissBudgetWarning={() => setBudgetWarning(null)}
           isLoading={isLoading}

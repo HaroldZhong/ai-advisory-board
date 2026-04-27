@@ -210,10 +210,10 @@ export default function AdvancedSettingsPanel({
                         </div>
                     </div>
 
-                    {/* Privacy - ZDR Toggle */}
+                    {/* Privacy - ZDR default */}
                     <div>
                         <label className="text-sm font-medium mb-2 block">
-                            Privacy Settings
+                            Privacy Default
                         </label>
                         <button
                             onClick={() => setLocalSettings(s => ({ ...s, zdrEnabled: !s.zdrEnabled }))}
@@ -231,7 +231,7 @@ export default function AdvancedSettingsPanel({
                             )}
                             <div className="flex-1">
                                 <div className="font-medium text-sm flex items-center gap-2">
-                                    Zero Data Retention (ZDR)
+                                    Default ZDR for new conversations
                                     <span className={cn(
                                         "text-xs px-1.5 py-0.5 rounded",
                                         localSettings.zdrEnabled
@@ -242,7 +242,7 @@ export default function AdvancedSettingsPanel({
                                     </span>
                                 </div>
                                 <div className="text-xs text-muted-foreground">
-                                    Prevents providers from storing your data
+                                    Existing conversations use their own privacy setting when present
                                 </div>
                             </div>
                         </button>
@@ -250,13 +250,14 @@ export default function AdvancedSettingsPanel({
                         {/* ZDR Info Note */}
                         {!localSettings.zdrEnabled && (
                             <div className="mt-2 p-2 rounded bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
-                                <strong>Note:</strong> With ZDR off, providers may store your data according to their retention policies.
-                                Enable ZDR for enhanced privacy, but note that some providers may be unavailable.
+                                <strong>Default off:</strong> New standard conversations may use providers according
+                                to their retention policies. Use the trust row to change privacy for the active conversation.
                             </div>
                         )}
                         {localSettings.zdrEnabled && (
                             <div className="mt-2 p-2 rounded bg-green-500/10 border border-green-500/20 text-xs text-green-700 dark:text-green-400">
-                                <strong>Privacy protected:</strong> Your data will only be routed to providers with Zero Data Retention policies.
+                                <strong>Default on:</strong> New conversations and legacy conversations without
+                                stored privacy metadata will prefer Zero Data Retention routes.
                             </div>
                         )}
                     </div>

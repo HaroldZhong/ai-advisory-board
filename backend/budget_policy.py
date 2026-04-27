@@ -20,7 +20,7 @@ def get_policy_bracket(spent_pct: float) -> str:
     
     pct = spent_pct * 100  # Convert to percentage
     
-    if pct <= 70:
+    if pct <= 75:
         return "normal"
     elif pct <= 85:
         return "balanced"

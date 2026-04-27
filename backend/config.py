@@ -127,7 +127,7 @@ RAG_SETTINGS = {
 # =============================================================================
 SESSION_POLICY_DEFAULTS = {
     "budget_usd": None,  # None = no budget limit (default)
-    "notify_thresholds": [0.70, 0.85, 1.00],
+    "notify_thresholds": [0.75, 0.85, 1.00],
     "mode": "auto",
     "allow_overage": True,
 }
@@ -135,7 +135,7 @@ SESSION_POLICY_DEFAULTS = {
 # Budget policy: strategy based on spent percentage
 BUDGET_POLICY = {
     "thresholds": {
-        70: {"rag_preset": "auto", "mode": "from_task"},
+        75: {"rag_preset": "auto", "mode": "from_task"},
         85: {"rag_preset": "medium", "mode": "standard"},
         100: {"rag_preset": "low", "mode": "quick"},
     },

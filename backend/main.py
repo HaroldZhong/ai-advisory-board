@@ -406,6 +406,7 @@ class FolderUpdate(BaseModel):
 class ConversationUpdate(BaseModel):
     title: Optional[str] = None
     folder_id: Optional[str] = None
+    zdr_enabled: Optional[bool] = None
 
 
 @app.get("/api/health")
@@ -541,18 +542,38 @@ async def update_session_policy_endpoint(conversation_id: str, update: SessionPo
 
 @app.put("/api/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, updates: ConversationUpdate):
-    """Update conversation title or folder."""
+    """Update conversation title, folder, or conversation-level privacy."""
     updates_dict = updates.model_dump(exclude_unset=True)
+    conv = storage.get_conversation(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if "zdr_enabled" in updates_dict and updates.zdr_enabled is not None:
+        metadata = conv.get("metadata", {})
+        preset_id = metadata.get("preset_id")
+        preset = next(
+            (candidate for candidate in config.MODEL_PRESETS if candidate["id"] == preset_id),
+            None,
+        )
+        if updates.zdr_enabled is False and preset is not None and preset.get("requires_zdr"):
+            raise HTTPException(status_code=400, detail=f"Preset {preset_id} requires ZDR")
+        if updates.zdr_enabled is True:
+            ensure_zdr_compatible_models(
+                metadata.get("chairman_model"),
+                metadata.get("council_models"),
+            )
+
     if "title" in updates_dict and updates.title is not None:
         storage.update_conversation_title(conversation_id, updates.title)
     if "folder_id" in updates_dict:
         storage.update_conversation_folder(conversation_id, updates.folder_id)
         # Keep PageIndex folder routing in sync
         rag_system.update_conversation_folder(conversation_id, updates.folder_id or "root")
-        
+
+    if "zdr_enabled" in updates_dict and updates.zdr_enabled is not None:
+        storage.update_conversation_metadata(conversation_id, {"zdr_enabled": bool(updates.zdr_enabled)})
+
     conv = storage.get_conversation(conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
     return conv
 
 

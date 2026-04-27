@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { api } from '@/api';
 import { useSettings } from '@/contexts/SettingsContext';
+import { resolveAttachmentEnhancementZdr } from '@/utils/trustState';
 
 /**
  * Get icon component for file type
@@ -69,6 +70,8 @@ export default function AttachmentPill({
     onUpdate,
     showRemove = false,
     showEnhance = false,
+    enhanceDisabled = false,
+    effectiveZdr,
     className
 }) {
     const [isEnhancing, setIsEnhancing] = useState(false);
@@ -96,12 +99,12 @@ export default function AttachmentPill({
     if (warning) tooltipLines.push(`⚠️ ${warning}`);
 
     const handleEnhance = async (engine) => {
-        if (!attachment_id) return;
+        if (!attachment_id || enhanceDisabled) return;
 
         setIsEnhancing(true);
         try {
-            // Use ZDR setting from user preferences
-            const result = await api.enhanceAttachment(attachment_id, engine, settings.zdrEnabled);
+            const useZdr = resolveAttachmentEnhancementZdr(effectiveZdr, settings);
+            const result = await api.enhanceAttachment(attachment_id, engine, useZdr);
             // Update parent with new status
             if (onUpdate) {
                 onUpdate({
@@ -174,7 +177,7 @@ export default function AttachmentPill({
                                 size="sm"
                                 variant="outline"
                                 className="justify-start gap-2"
-                                disabled={isEnhancing}
+                                disabled={isEnhancing || enhanceDisabled}
                                 onClick={() => handleEnhance('pdf-text')}
                             >
                                 <Sparkles className="h-3 w-3" />
@@ -185,7 +188,7 @@ export default function AttachmentPill({
                                 size="sm"
                                 variant="outline"
                                 className="justify-start gap-2"
-                                disabled={isEnhancing}
+                                disabled={isEnhancing || enhanceDisabled}
                                 onClick={() => handleEnhance('mistral-ocr')}
                             >
                                 <Sparkles className="h-3 w-3" />
@@ -219,7 +222,15 @@ export default function AttachmentPill({
 /**
  * AttachmentPillList - Display multiple attachments
  */
-export function AttachmentPillList({ attachments, onRemove, onUpdate, showRemove = false, showEnhance = false }) {
+export function AttachmentPillList({
+    attachments,
+    onRemove,
+    onUpdate,
+    showRemove = false,
+    showEnhance = false,
+    enhanceDisabled = false,
+    effectiveZdr,
+}) {
     if (!attachments || attachments.length === 0) return null;
 
     return (
@@ -230,6 +241,8 @@ export function AttachmentPillList({ attachments, onRemove, onUpdate, showRemove
                     attachment={att}
                     showRemove={showRemove}
                     showEnhance={showEnhance}
+                    enhanceDisabled={enhanceDisabled}
+                    effectiveZdr={effectiveZdr}
                     onRemove={onRemove ? () => onRemove(index) : undefined}
                     onUpdate={onUpdate ? (updated) => onUpdate(index, updated) : undefined}
                 />

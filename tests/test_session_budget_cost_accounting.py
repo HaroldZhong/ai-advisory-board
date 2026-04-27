@@ -52,7 +52,7 @@ async def test_session_policy_endpoints_persist_budget(monkeypatch, tmp_path):
     )
 
     assert updated_state["policy"]["budget_usd"] == 2.0
-    assert updated_state["policy"]["notify_thresholds"] == [0.70, 0.85, 1.00]
+    assert updated_state["policy"]["notify_thresholds"] == [0.75, 0.85, 1.00]
     assert updated_state["usage"]["spent_usd"] == 0.0
 
     stored = main.storage.get_session_policy(conversation_id)
@@ -86,20 +86,20 @@ def test_record_session_usage_warns_after_updated_turn_cost(monkeypatch, tmp_pat
         conversation_id,
         {
             "budget_usd": 1.0,
-            "notify_thresholds": [0.70, 0.85, 1.00],
+            "notify_thresholds": [0.75, 0.85, 1.00],
             "mode": "auto",
             "allow_overage": True,
         },
     )
 
-    first = main.storage.record_session_usage(conversation_id, 0.72)
-    second = main.storage.record_session_usage(conversation_id, 0.20)
-    third = main.storage.record_session_usage(conversation_id, 0.10)
+    first = main.storage.record_session_usage(conversation_id, 0.76)
+    second = main.storage.record_session_usage(conversation_id, 0.10)
+    third = main.storage.record_session_usage(conversation_id, 0.14)
 
-    assert first["warning_level"] == 0.70
+    assert first["warning_level"] == 0.75
     assert second["warning_level"] == 0.85
     assert third["warning_level"] == 1.00
-    assert third["budget_spent_pct"] == pytest.approx(1.02)
+    assert third["budget_spent_pct"] == pytest.approx(1.00)
 
 
 @pytest.mark.asyncio

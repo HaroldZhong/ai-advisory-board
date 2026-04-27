@@ -85,7 +85,7 @@ export default function SessionBudgetSelector({
                 <div className="py-4">
                     <p className="text-sm text-muted-foreground mb-4">
                         Set a spending limit for this conversation. You'll receive
-                        alerts at 70%, 85%, and 100% of your budget.
+                        alerts at 75%, 85%, and 100% of your budget.
                     </p>
 
                     <div className="grid grid-cols-2 gap-3">
@@ -152,7 +152,7 @@ export function BudgetIndicator({ budgetUsd, spentUsd, spentPct, className }) {
         if (spentPct === null) return 'bg-green-500';
         if (spentPct >= 1.0) return 'bg-red-500';
         if (spentPct >= 0.85) return 'bg-orange-500';
-        if (spentPct >= 0.70) return 'bg-yellow-500';
+        if (spentPct >= 0.75) return 'bg-yellow-500';
         return 'bg-green-500';
     };
 
@@ -180,7 +180,7 @@ export function BudgetWarningBanner({ threshold, onDismiss }) {
         if (threshold >= 0.85) {
             return "You're at 85% of your session budget.";
         }
-        return "You're at 70% of your session budget.";
+        return "You're at 75% of your session budget.";
     };
 
     const getColor = () => {

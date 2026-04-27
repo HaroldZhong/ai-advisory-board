@@ -3,7 +3,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
-import SessionBudgetSelector, { BudgetIndicator, BudgetWarningBanner } from './SessionBudgetSelector';
+import SessionBudgetSelector from './SessionBudgetSelector';
 import AdvancedSettingsPanel from './AdvancedSettingsPanel';
 import { api } from '../api';
 import { Button } from "@/components/ui/button";
@@ -11,10 +11,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Paperclip, Send, Download, X, Loader2, Users, User, Crown, ChevronDown, Brain, Sparkles, DollarSign, Settings, Globe, Pencil } from "lucide-react";
+import { Paperclip, Send, Download, Loader2, Users, User, Crown, ChevronDown, Brain, Sparkles, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
+import TrustRow from './TrustRow';
+import { getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 
 // Modern Chain of Thought component (ChatGPT/Claude style)
 function ChainOfThought({ reasoning }) {
@@ -143,20 +145,18 @@ export default function ChatInterface({
   conversation,
   onSendMessage,
   onUpdateSessionPolicy,
+  onUpdateConversationPrivacy,
   budgetWarning,
-  onDismissBudgetWarning,
   isLoading,
 }) {
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-  const [files, setFiles] = useState([]);  // Raw File objects pending upload
+  const [isUpdatingPrivacy, setIsUpdatingPrivacy] = useState(false);
   const [attachments, setAttachments] = useState([]);  // Uploaded attachment metadata
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
 
-  const [models, setModels] = useState([]);
-  const [estimatedCost, setEstimatedCost] = useState(null);
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -165,13 +165,15 @@ export default function ChatInterface({
   const { settings, updateSettings } = useSettings();
 
   const sessionPolicy = conversation?.session_policy || {};
-  const sessionUsage = conversation?.session_usage || {};
   const sessionBudget = sessionPolicy.budget_usd ?? null;
-  const spentUsd = sessionUsage.spent_usd ?? 0;
-  const budgetSpentPct = conversation?.budget_spent_pct ?? (
-    sessionBudget ? spentUsd / sessionBudget : null
-  );
   const nextMessageMode = conversation?.messages?.length > 0 ? 'chat' : 'council';
+  const effectiveZdr = resolveEffectiveZdr(conversation, settings);
+  const composerDisabled = isLoading || isUploading || isUpdatingPrivacy;
+  const privacyDisabledReason = getPrivacyToggleDisabledReason({
+    isLoading,
+    isUploading,
+    isUpdatingPrivacy,
+  });
 
   const handleBudgetConfirm = async (budgetUsd) => {
     try {
@@ -258,57 +260,13 @@ export default function ChatInterface({
     };
   }, [conversation?.messages?.length, conversation?.id, isLoading]);
 
-  useEffect(() => {
-    fetchModels();
-  }, []);
-
-  const fetchModels = async () => {
-    try {
-      const data = await api.getModels();
-      setModels(data.models);
-    } catch (error) {
-      console.error('Failed to load models for pricing:', error);
-    }
-  };
-
-  const calculateCost = () => {
-    if (!conversation || !models.length) return;
-
-    const charCount = input.length;
-    const estimatedTokens = charCount / 4;
-    const metadata = conversation.metadata || {};
-    const councilIds = metadata.council_models || [];
-    const chairmanId = metadata.chairman_model;
-
-    if (!councilIds.length && !chairmanId) {
-      setEstimatedCost(null);
-      return;
-    }
-
-    let totalInputRate = 0;
-    const isFollowUp = conversation.messages.length > 0;
-
-    if (!isFollowUp) {
-      // Add council member input rates (Stage 1 + Stage 2)
-      councilIds.forEach(id => {
-        const m = models.find(mod => mod.id === id);
-        if (m) totalInputRate += m.pricing.input;
-      });
-      // Add chairman input rate (Stage 3)
-      const chair = models.find(mod => mod.id === chairmanId);
-      if (chair) totalInputRate += chair.pricing.input;
-    } else {
-      const chair = models.find(mod => mod.id === chairmanId);
-      if (chair) totalInputRate += chair.pricing.input;
-    }
-
-    const cost = (estimatedTokens / 1000000) * totalInputRate;
-    setEstimatedCost(cost);
-  };
-
   const handleFileUpload = async (e) => {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
+    if (isUpdatingPrivacy) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
 
     const MAX_FILE_SIZE = 50 * 1024 * 1024;  // 50MB
     const MAX_FILES = 10;
@@ -330,7 +288,7 @@ export default function ChatInterface({
     setIsUploading(true);
     try {
       for (const file of selectedFiles) {
-        const result = await api.uploadAttachment(file, settings.zdrEnabled);
+        const result = await api.uploadAttachment(file, effectiveZdr);
         // Add to attachments with the metadata from the API
         setAttachments(prev => [...prev, {
           attachment_id: result.attachment_id,
@@ -367,7 +325,7 @@ export default function ChatInterface({
 
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
-    if ((!input.trim() && attachments.length === 0) || isLoading || isUploading) return;
+    if ((!input.trim() && attachments.length === 0) || composerDisabled) return;
 
     // Collect attachment IDs to send with the message
     const attachmentIds = attachments.map(a => a.attachment_id);
@@ -412,6 +370,7 @@ export default function ChatInterface({
 
     const droppedFiles = Array.from(e.dataTransfer.files || []);
     if (droppedFiles.length === 0) return;
+    if (isUpdatingPrivacy) return;
 
     const MAX_FILE_SIZE = 50 * 1024 * 1024;
     const MAX_FILES = 10;
@@ -429,7 +388,7 @@ export default function ChatInterface({
     setIsUploading(true);
     try {
       for (const file of droppedFiles) {
-        const result = await api.uploadAttachment(file, settings.zdrEnabled);
+        const result = await api.uploadAttachment(file, effectiveZdr);
         setAttachments(prev => [...prev, {
           attachment_id: result.attachment_id,
           filename: result.filename,
@@ -637,17 +596,6 @@ export default function ChatInterface({
       <div className="flex items-center justify-between p-4 border-b h-14 shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10">
         <h3 className="font-semibold truncate max-w-[60%]">{conversation.title}</h3>
         <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowAdvancedSettings(true)}
-            title="Advanced Settings"
-            className={cn(
-              settings.zdrEnabled && "text-green-600"
-            )}
-          >
-            <Settings className="h-4 w-4" />
-          </Button>
           <Button variant="ghost" size="sm" onClick={handleExport} title="Export to Markdown">
             <Download className="mr-2 h-4 w-4" />
             Export
@@ -832,12 +780,29 @@ export default function ChatInterface({
 
       <div className="p-4 bg-background border-t">
         <div className="max-w-3xl mx-auto flex flex-col gap-2">
-          {budgetWarning && (
-            <BudgetWarningBanner
-              threshold={budgetWarning.threshold}
-              onDismiss={onDismissBudgetWarning}
-            />
-          )}
+          <TrustRow
+            conversation={conversation}
+            settings={settings}
+            attachmentCount={attachments.length}
+            budgetWarning={budgetWarning}
+            onOpenBudget={() => setShowBudgetSelector(true)}
+            onToggleWebSearch={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
+            onToggleWebDepth={() => updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' })}
+            onOpenAdvancedSettings={() => setShowAdvancedSettings(true)}
+            privacyDisabled={Boolean(privacyDisabledReason)}
+            privacyDisabledReason={privacyDisabledReason}
+            onUpdateConversationPrivacy={async (nextZdr) => {
+              if (privacyDisabledReason) return;
+              setIsUpdatingPrivacy(true);
+              try {
+                await onUpdateConversationPrivacy?.(nextZdr);
+              } catch (error) {
+                alert(`Failed to update conversation privacy: ${error.message || 'Unknown error'}`);
+              } finally {
+                setIsUpdatingPrivacy(false);
+              }
+            }}
+          />
 
           {/* Show uploaded attachments as pills */}
           {attachments.length > 0 && (
@@ -850,6 +815,8 @@ export default function ChatInterface({
                 }}
                 showRemove={true}
                 showEnhance={true}
+                enhanceDisabled={isUpdatingPrivacy}
+                effectiveZdr={effectiveZdr}
               />
             </div>
           )}
@@ -868,7 +835,7 @@ export default function ChatInterface({
               size="icon"
               className="h-10 w-10 shrink-0"
               onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading || isUploading}
+              disabled={composerDisabled}
               title="Attach files"
             >
               <Paperclip className="h-4 w-4" />
@@ -882,7 +849,7 @@ export default function ChatInterface({
                 onKeyDown={handleKeyDown}
                 placeholder="Ask your question... (Shift+Enter for new line)"
                 className="min-h-[44px] max-h-[200px] py-3 pr-10 resize-none"
-                disabled={isLoading || isUploading}
+                disabled={composerDisabled}
                 rows={1}
                 style={{ height: 'auto', minHeight: '44px' }}
                 onInput={(e) => {
@@ -894,65 +861,12 @@ export default function ChatInterface({
 
             <Button
               onClick={(e) => handleSubmit(e)}
-              disabled={(!input.trim() && files.length === 0) || isLoading || isUploading}
+              disabled={(!input.trim() && attachments.length === 0) || composerDisabled}
               className="h-10 w-10 shrink-0"
               size="icon"
             >
               {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </Button>
-          </div>
-
-          <div className="text-xs text-muted-foreground flex justify-between items-center gap-2 px-1">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setShowBudgetSelector(true)}
-                className="flex items-center gap-1 text-xs hover:text-primary transition-colors"
-                title="Set session budget"
-              >
-                <DollarSign className="h-3 w-3" />
-                Budget{sessionBudget ? `: $${sessionBudget}` : ''}
-              </button>
-              <BudgetIndicator
-                budgetUsd={sessionBudget}
-                spentUsd={spentUsd}
-                spentPct={budgetSpentPct}
-              />
-              <button
-                onClick={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
-                className={cn(
-                  "flex items-center gap-1 text-xs transition-colors rounded-full px-2 py-0.5",
-                  settings.webSearchEnabled
-                    ? "bg-blue-500/15 text-blue-500 hover:bg-blue-500/25"
-                    : "hover:text-primary"
-                )}
-                title={settings.webSearchEnabled ? 'Web search enabled — click to disable' : 'Click to enable web search'}
-              >
-                <Globe className="h-3 w-3" />
-                {settings.webSearchEnabled ? (
-                  <>
-                    Web
-                    <button
-                      className="ml-1 text-[10px] font-medium uppercase opacity-70 hover:opacity-100"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' });
-                      }}
-                      title={`Currently: ${settings.webSearchDepth}. Click to toggle.`}
-                    >
-                      ({settings.webSearchDepth})
-                    </button>
-                  </>
-                ) : 'Web'}
-              </button>
-            </div>
-            <div className="flex gap-2">
-              {estimatedCost !== null && (
-                <span>Est. Input: <span className="font-mono">${estimatedCost.toFixed(6)}</span></span>
-              )}
-              {conversation.total_cost !== undefined && (
-                <span> | Session Total: <span className="font-mono">${conversation.total_cost.toFixed(4)}</span></span>
-              )}
-            </div>
           </div>
 
           <SessionBudgetSelector
