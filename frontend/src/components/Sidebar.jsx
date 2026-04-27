@@ -198,6 +198,16 @@ function ConversationActionsMenu({
 }
 
 function FolderActionsMenu({ folder, onRenameStart, onDeleteFolder, compact = false }) {
+  const handleRename = (event) => {
+    event.stopPropagation();
+    onRenameStart();
+  };
+
+  const handleDelete = (event) => {
+    event.stopPropagation();
+    onDeleteFolder(folder.id);
+  };
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -217,13 +227,13 @@ function FolderActionsMenu({ folder, onRenameStart, onDeleteFolder, compact = fa
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
-        <DropdownMenuItem onClick={onRenameStart}>
+        <DropdownMenuItem onClick={handleRename}>
           <Pencil className="mr-2 h-4 w-4" /> Rename
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
           className="text-destructive focus:text-destructive"
-          onClick={() => onDeleteFolder(folder.id)}
+          onClick={handleDelete}
         >
           <Trash2 className="mr-2 h-4 w-4" /> Delete
         </DropdownMenuItem>
