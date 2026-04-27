@@ -80,6 +80,48 @@ async def test_stream_chat_emits_reasoning_and_content_events(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_delta_events_use_default_chairman_model(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    conversation_id = "conv-stream-chat-default-chairman-reasoning"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id)
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return ""
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {
+            "content": "Visible response",
+            "reasoning": "Reasoned through the answer",
+            "usage": {},
+        }
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    chunks = [chunk async for chunk in response.body_iterator]
+    events = parse_sse_events(chunks)
+    delta_events = [
+        event for event in events if event["type"] in {"reasoning_delta", "content_delta"}
+    ]
+
+    assert delta_events
+    assert {event["data"]["model"] for event in delta_events} == {main.config.CHAIRMAN_MODEL}
+
+
+@pytest.mark.asyncio
 async def test_stream_council_emits_reasoning_events_for_each_stage(monkeypatch, tmp_path):
     main = import_main(monkeypatch)
     conversation_id = "conv-stream-council-reasoning"

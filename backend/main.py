@@ -1190,6 +1190,9 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 logger.info(f"[CHAT] RAG context retrieved ({len(rag_context)} chars), calling chairman...")
                 
                 # Chat with chairman (using original query + attachment context)
+                effective_chairman_model = (
+                    run_plan.chairman_model or chairman_model or config.CHAIRMAN_MODEL
+                )
                 try:
                     logger.info(f"[CHAT] Calling chairman with query: {request.content[:50]}...")
                     
@@ -1204,7 +1207,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         request.content,  # Original query to Chairman
                         updated_conversation["messages"],
                         combined_context,
-                        chairman_model=run_plan.chairman_model or chairman_model,
+                        chairman_model=effective_chairman_model,
                         zdr_enabled=zdr_enabled,
                     )
                     logger.info(f"[CHAT] Chairman response received")
@@ -1219,7 +1222,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     response_dict,
                     scope="chat",
                     stage="chat",
-                    model=run_plan.chairman_model or chairman_model,
+                    model=effective_chairman_model,
                     content_key="content",
                 ):
                     yield encode_sse_event(event)
@@ -1229,7 +1232,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 turn_cost = calculate_turn_cost(
                     mode="chat",
                     response_dict=response_dict,
-                    chairman_model=run_plan.chairman_model or chairman_model,
+                    chairman_model=effective_chairman_model,
                     extra_usage_records=extra_usage_records,
                 )
                 storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)
