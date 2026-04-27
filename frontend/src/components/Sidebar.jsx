@@ -21,6 +21,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   PlusCircle,
   BarChart2,
   MessageSquare,
@@ -31,11 +37,33 @@ import {
   FolderOpen,
   FolderClosed,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ArrowRightLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { groupConversationsByFolder } from "@/utils/conversationOrganization";
+import {
+  RESPONSIVE_WIDTHS,
+  SIDEBAR_COLLAPSED_STORAGE_KEY,
+  getSidebarMode,
+  parseSidebarCollapsedPreference,
+} from "@/utils/responsiveLayout";
+
+function SidebarTooltip({ label, enabled, children }) {
+  if (!enabled) return children;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {children}
+      </TooltipTrigger>
+      <TooltipContent side="right" className="max-w-[240px]">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function InlineRenameInput({ defaultValue, onConfirm, onCancel }) {
   const [value, setValue] = useState(defaultValue);
@@ -72,40 +100,44 @@ function ConversationItem({
   onDelete,
   onMove,
   folders,
+  compact = false,
 }) {
   const [isRenaming, setIsRenaming] = useState(false);
+  const title = conv.title || "New Conversation";
 
   const handleRenameConfirm = (newTitle) => {
     setIsRenaming(false);
     if (newTitle && newTitle !== conv.title) onRename(conv.id, newTitle);
   };
 
-  return (
+  const item = (
     <div
       className={cn(
         "group flex items-center gap-1 rounded-md px-2 py-2 cursor-pointer transition-colors",
+        compact && "justify-center px-0",
         isActive
           ? "bg-secondary text-secondary-foreground"
           : "hover:bg-muted/50 text-muted-foreground hover:text-foreground"
       )}
       onClick={() => onSelect(conv.id)}
+      aria-label={compact ? title : undefined}
     >
       <MessageSquare className="h-4 w-4 shrink-0 opacity-60" />
-      <div className="flex-1 min-w-0">
+      <div className={cn("flex-1 min-w-0", compact && "hidden")}>
         {isRenaming ? (
           <InlineRenameInput
-            defaultValue={conv.title || "New Conversation"}
+            defaultValue={title}
             onConfirm={handleRenameConfirm}
             onCancel={() => setIsRenaming(false)}
           />
         ) : (
           <>
-            <p className="text-sm truncate">{conv.title || "New Conversation"}</p>
+            <p className="text-sm truncate">{title}</p>
             <p className="text-xs text-muted-foreground/60">{conv.message_count} messages</p>
           </>
         )}
       </div>
-      {!isRenaming && (
+      {!isRenaming && !compact && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -149,6 +181,15 @@ function ConversationItem({
       )}
     </div>
   );
+
+  return (
+    <SidebarTooltip
+      enabled={compact}
+      label={`${title} · ${conv.message_count} ${conv.message_count === 1 ? "message" : "messages"}`}
+    >
+      {item}
+    </SidebarTooltip>
+  );
 }
 
 function FolderGroup({
@@ -162,6 +203,7 @@ function FolderGroup({
   onRenameFolder,
   onDeleteFolder,
   folders,
+  compact = false,
 }) {
   const [isOpen, setIsOpen] = useState(true);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -170,6 +212,44 @@ function FolderGroup({
     setIsRenaming(false);
     if (newName && newName !== folder.name) onRenameFolder(folder.id, newName);
   };
+
+  if (compact) {
+    return (
+      <div className="mb-2">
+        <SidebarTooltip enabled label={`${folder.name} · ${conversations.length} conversations`}>
+          <button
+            type="button"
+            className="group flex h-9 w-full items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            onClick={() => setIsOpen(!isOpen)}
+            aria-label={`${folder.name}, ${conversations.length} conversations`}
+          >
+            {isOpen ? (
+              <FolderOpen className="h-4 w-4 text-primary/70" />
+            ) : (
+              <FolderClosed className="h-4 w-4 text-primary/70" />
+            )}
+          </button>
+        </SidebarTooltip>
+        {isOpen && conversations.length > 0 && (
+          <div className="mt-1 space-y-1">
+            {conversations.map((conv) => (
+              <ConversationItem
+                key={conv.id}
+                conv={conv}
+                isActive={conv.id === currentConversationId}
+                onSelect={onSelectConversation}
+                onRename={onRenameConversation}
+                onDelete={onDeleteConversation}
+                onMove={onMoveConversation}
+                folders={folders}
+                compact
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="mb-1">
@@ -239,6 +319,7 @@ function FolderGroup({
                 onDelete={onDeleteConversation}
                 onMove={onMoveConversation}
                 folders={folders}
+                compact={compact}
               />
             ))
           )}
@@ -262,10 +343,14 @@ export function SidebarContent({
   onRenameConversation,
   onDeleteConversation,
   onMoveConversation,
+  sidebarMode = "expanded",
+  onToggleSidebar,
+  canToggleSidebar = true,
 }) {
   const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [conversationPendingDelete, setConversationPendingDelete] = useState(null);
+  const isCompact = sidebarMode !== "expanded";
 
   const handleConversationSelect = (id) => {
     onSelectConversation(id);
@@ -303,38 +388,71 @@ export function SidebarContent({
   } = groupConversationsByFolder(conversations, folders);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="p-4 space-y-3">
-        <div className="flex items-center justify-between px-1">
-          <div className="flex items-center gap-2">
+    <TooltipProvider delayDuration={150}>
+      <div className="flex flex-col h-full">
+      <div className={cn("space-y-3", isCompact ? "p-2" : "p-4")}>
+        <div className={cn("flex items-center px-1", isCompact ? "flex-col gap-1 justify-center" : "justify-between")}>
+          <div className={cn("flex items-center gap-2", isCompact && "justify-center")}>
             <img src="/favicon.png" alt="Logo" className="w-7 h-7 rounded-lg" />
-            <h1 className="text-lg font-bold tracking-tight">AI Advisory Board</h1>
+            {!isCompact && <h1 className="text-lg font-bold tracking-tight">AI Advisory Board</h1>}
           </div>
+          {onToggleSidebar && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onToggleSidebar}
+              disabled={!canToggleSidebar}
+              title={canToggleSidebar ? (isCompact ? "Expand sidebar" : "Collapse sidebar") : "Widen the window to expand the sidebar"}
+              aria-label={canToggleSidebar ? (isCompact ? "Expand sidebar" : "Collapse sidebar") : "Sidebar is compact at this width"}
+            >
+              {isCompact ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </Button>
+          )}
         </div>
-        <div className="flex gap-2">
-          <Button onClick={handleNewConversation} className="flex-1 justify-start" size="sm">
-            <PlusCircle className="mr-2 h-4 w-4" />
-            New Chat
-          </Button>
+        <div className={cn("flex gap-2", isCompact && "flex-col items-center")}>
+          <SidebarTooltip enabled={isCompact} label="New chat">
+            <Button
+              onClick={handleNewConversation}
+              className={cn(isCompact ? "h-10 w-10 px-0" : "flex-1 justify-start")}
+              size="sm"
+              aria-label="New chat"
+            >
+              <PlusCircle className={cn("h-4 w-4", !isCompact && "mr-2")} />
+              {!isCompact && "New Chat"}
+            </Button>
+          </SidebarTooltip>
+          <SidebarTooltip enabled={isCompact} label="New folder">
+            <Button
+              onClick={() => setShowNewFolderDialog(true)}
+              variant="outline"
+              size="sm"
+              className={cn(isCompact ? "h-10 w-10 px-0" : "px-2")}
+              title="New Folder"
+              aria-label="New folder"
+            >
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+          </SidebarTooltip>
+        </div>
+        <SidebarTooltip enabled={isCompact} label="Analytics">
           <Button
-            onClick={() => setShowNewFolderDialog(true)}
-            variant="outline"
+            onClick={handleShowAnalytics}
+            variant="ghost"
+            className={cn(isCompact ? "h-10 w-10 px-0 mx-auto" : "w-full justify-start")}
             size="sm"
-            className="px-2"
-            title="New Folder"
+            aria-label="Analytics"
           >
-            <FolderPlus className="h-4 w-4" />
+            <BarChart2 className={cn("h-4 w-4", !isCompact && "mr-2")} />
+            {!isCompact && "Analytics"}
           </Button>
-        </div>
-        <Button onClick={handleShowAnalytics} variant="ghost" className="w-full justify-start" size="sm">
-          <BarChart2 className="mr-2 h-4 w-4" />
-          Analytics
-        </Button>
+        </SidebarTooltip>
       </div>
 
       <Separator />
 
-      <ScrollArea className="flex-1 px-2 py-2">
+      <ScrollArea className={cn("flex-1 py-2", isCompact ? "px-2" : "px-2")}>
         <div className="space-y-1 p-1">
           {/* Folder groups */}
           {folders.map((folder) => (
@@ -350,11 +468,12 @@ export function SidebarContent({
               onRenameFolder={onRenameFolder}
               onDeleteFolder={onDeleteFolder}
               folders={folders}
+              compact={isCompact}
             />
           ))}
 
           {/* Unfoldered conversations */}
-          {unfolderedConversations.length > 0 && folders.length > 0 && (
+          {unfolderedConversations.length > 0 && folders.length > 0 && !isCompact && (
             <div className="px-2 pt-3 pb-1">
               <p className="text-xs font-medium text-muted-foreground/60 uppercase tracking-wider">Conversations</p>
             </div>
@@ -374,6 +493,7 @@ export function SidebarContent({
               onDelete={setConversationPendingDelete}
               onMove={onMoveConversation}
               folders={folders}
+              compact={isCompact}
             />
           ))}
         </div>
@@ -421,7 +541,8 @@ export function SidebarContent({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }
 
@@ -429,9 +550,48 @@ export function SidebarContent({
  * Desktop sidebar wrapper - hidden on mobile
  */
 export default function Sidebar(props) {
+  const [viewportWidth, setViewportWidth] = useState(() => (
+    typeof window === "undefined" ? RESPONSIVE_WIDTHS.fullDesktop : window.innerWidth
+  ));
+  const [userCollapsed, setUserCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return parseSidebarCollapsedPreference(localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY));
+  });
+
+  useEffect(() => {
+    const handleResize = () => setViewportWidth(window.innerWidth);
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const sidebarMode = getSidebarMode(viewportWidth, userCollapsed);
+  const isCompact = sidebarMode !== "expanded";
+  const canToggleSidebar = viewportWidth >= RESPONSIVE_WIDTHS.fullDesktop;
+
+  const handleToggleSidebar = () => {
+    if (!canToggleSidebar) return;
+    setUserCollapsed((current) => {
+      const next = !current;
+      localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
+      return next;
+    });
+  };
+
   return (
-    <aside className="w-[300px] border-r bg-muted/10 hidden md:flex flex-col h-full">
-      <SidebarContent {...props} />
+    <aside
+      className={cn(
+        "border-r bg-muted/10 hidden md:flex flex-col h-full transition-[width] duration-200 ease-out",
+        isCompact ? "w-[64px]" : "w-[300px]"
+      )}
+      data-sidebar-mode={sidebarMode}
+    >
+      <SidebarContent
+        {...props}
+        sidebarMode={sidebarMode}
+        onToggleSidebar={handleToggleSidebar}
+        canToggleSidebar={canToggleSidebar}
+      />
     </aside>
   );
 }
