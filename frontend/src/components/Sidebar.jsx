@@ -49,6 +49,7 @@ import {
   readSidebarCollapsedPreference,
   writeSidebarCollapsedPreference,
 } from "@/utils/responsiveLayout";
+import { getResponsiveModalContentClass } from "@/utils/responsiveModalLayout";
 
 function SidebarTooltip({ label, enabled, children }) {
   if (!enabled) return children;
@@ -110,8 +111,8 @@ function RenameDialog({ open, title, defaultValue, onConfirm, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[360px]">
-        <DialogHeader>
+      <DialogContent className={cn(getResponsiveModalContentClass('narrow'), "flex flex-col")}>
+        <DialogHeader className="shrink-0">
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <Input
@@ -123,7 +124,7 @@ function RenameDialog({ open, title, defaultValue, onConfirm, onOpenChange }) {
           }}
           autoFocus
         />
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
@@ -635,8 +636,8 @@ export function SidebarContent({
 
       {/* New Folder Dialog */}
       <Dialog open={showNewFolderDialog} onOpenChange={setShowNewFolderDialog}>
-        <DialogContent className="sm:max-w-[360px]">
-          <DialogHeader>
+        <DialogContent className={cn(getResponsiveModalContentClass('narrow'), "flex flex-col")}>
+          <DialogHeader className="shrink-0">
             <DialogTitle>New Folder</DialogTitle>
           </DialogHeader>
           <Input
@@ -646,7 +647,7 @@ export function SidebarContent({
             onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
             autoFocus
           />
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setShowNewFolderDialog(false)}>Cancel</Button>
             <Button onClick={handleCreateFolder} disabled={!newFolderName.trim()}>Create</Button>
           </DialogFooter>
@@ -657,15 +658,15 @@ export function SidebarContent({
         open={Boolean(conversationPendingDelete)}
         onOpenChange={(open) => !open && setConversationPendingDelete(null)}
       >
-        <DialogContent className="sm:max-w-[380px]">
-          <DialogHeader>
+        <DialogContent className={cn(getResponsiveModalContentClass('narrow'), "flex flex-col")}>
+          <DialogHeader className="shrink-0">
             <DialogTitle>Delete conversation?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             This permanently deletes "{conversationPendingDelete?.title || 'New Conversation'}".
             Attachments that are not used elsewhere will also be cleaned up.
           </p>
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setConversationPendingDelete(null)}>
               Cancel
             </Button>

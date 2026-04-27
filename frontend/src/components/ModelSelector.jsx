@@ -18,6 +18,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useSettings } from '@/contexts/SettingsContext';
 import { cn } from '@/lib/utils';
 import {
+  getResponsiveModalBodyClass,
+  getResponsiveModalContentClass,
+} from '@/utils/responsiveModalLayout';
+import {
   estimateSelectionCost,
   filterModelsForRole,
   canConfirmModelSelection,
@@ -356,8 +360,8 @@ export default function ModelSelector({
   return (
     <TooltipProvider>
       <Dialog open={isOpen} onOpenChange={onClose}>
-        <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col p-0">
-          <DialogHeader className="border-b px-6 py-4">
+        <DialogContent className={cn(getResponsiveModalContentClass('wide'), 'flex flex-col p-0')}>
+          <DialogHeader className="shrink-0 border-b px-4 py-4 pr-14 sm:px-6 sm:pr-16">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <DialogTitle className="flex items-center gap-2">
                 <Sparkles className="h-5 w-5 text-primary" />
@@ -392,7 +396,7 @@ export default function ModelSelector({
             </div>
           </DialogHeader>
 
-          <div className="border-b px-6 py-3">
+          <div className="shrink-0 border-b px-4 py-3 sm:px-6">
             <div className="flex flex-wrap gap-2">
               <Button
                 type="button"
@@ -413,8 +417,8 @@ export default function ModelSelector({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <ScrollArea className="h-[58vh] px-6 py-4">
+          <div className={getResponsiveModalBodyClass()}>
+            <ScrollArea className="h-full px-4 py-4 sm:px-6">
               {loading ? (
                 <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">Loading models...</div>
               ) : error ? (
@@ -498,7 +502,7 @@ export default function ModelSelector({
             </ScrollArea>
           </div>
 
-          <DialogFooter className="border-t bg-muted/10 px-6 py-4">
+          <DialogFooter className="shrink-0 border-t bg-muted/10 px-4 py-4 sm:px-6">
             <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-wrap gap-2">
                 <StatPill>{activeCouncil.length} council</StatPill>

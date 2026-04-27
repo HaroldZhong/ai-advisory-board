@@ -7,6 +7,11 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+    getResponsiveModalBodyClass,
+    getResponsiveModalContentClass,
+} from "@/utils/responsiveModalLayout";
 
 export default function AnalyticsDashboard({ onClose }) {
     const [data, setData] = useState(null);
@@ -28,19 +33,19 @@ export default function AnalyticsDashboard({ onClose }) {
 
     return (
         <Dialog open={true} onOpenChange={onClose}>
-            <DialogContent className="max-w-3xl">
-                <DialogHeader>
+            <DialogContent className={cn(getResponsiveModalContentClass('analytics'), "flex flex-col")}>
+                <DialogHeader className="shrink-0">
                     <DialogTitle>Model Performance Analytics</DialogTitle>
                 </DialogHeader>
 
-                <div className="py-4">
+                <div className={cn(getResponsiveModalBodyClass(), "py-4 pr-1")}>
                     {loading ? (
                         <div className="flex justify-center items-center h-40 text-muted-foreground">
                             <Loader2 className="h-6 w-6 animate-spin mr-2" />
                             Loading stats...
                         </div>
                     ) : (
-                        <div className="rounded-md border">
+                        <div className="overflow-x-auto rounded-md border">
                             <table className="w-full caption-bottom text-sm">
                                 <thead className="[&_tr]:border-b">
                                     <tr className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
