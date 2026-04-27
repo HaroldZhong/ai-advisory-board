@@ -8,6 +8,10 @@ import {
     DialogFooter,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import {
+    getResponsiveModalBodyClass,
+    getResponsiveModalContentClass,
+} from '@/utils/responsiveModalLayout';
 import { DollarSign, Zap, Sparkles } from 'lucide-react';
 
 /**
@@ -74,21 +78,21 @@ export default function SessionBudgetSelector({
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="sm:max-w-md">
-                <DialogHeader>
+            <DialogContent className={cn(getResponsiveModalContentClass('narrow'), "flex flex-col")}>
+                <DialogHeader className="shrink-0">
                     <DialogTitle className="flex items-center gap-2">
                         <DollarSign className="h-5 w-5 text-primary" />
                         Session Budget
                     </DialogTitle>
                 </DialogHeader>
 
-                <div className="py-4">
+                <div className={cn(getResponsiveModalBodyClass(), "py-4 pr-1")}>
                     <p className="text-sm text-muted-foreground mb-4">
                         Set a spending limit for this conversation. You'll receive
                         alerts at 75%, 85%, and 100% of your budget.
                     </p>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         {BUDGET_PRESETS.map((preset) => {
                             const Icon = preset.icon;
                             const isSelected = selectedBudget === preset.value;
@@ -119,17 +123,15 @@ export default function SessionBudgetSelector({
                         })}
                     </div>
 
-                    <div className="mt-4 p-3 rounded-lg bg-muted/50 text-sm">
+                    <div className="mt-4 rounded-lg bg-muted/50 p-2 text-xs">
                         <p className="text-muted-foreground">
-                            <strong>How it works:</strong> When you approach your budget,
-                            the system automatically reduces context size and suggests
-                            more economical options. Your conversation will never be
-                            interrupted—responses continue in a lower-cost mode.
+                            <strong>How it works:</strong> Warnings appear as you approach
+                            the cap. Raise the budget before 100% to keep sending new turns.
                         </p>
                     </div>
                 </div>
 
-                <DialogFooter>
+                <DialogFooter className="shrink-0">
                     <Button variant="outline" onClick={onClose}>
                         Cancel
                     </Button>

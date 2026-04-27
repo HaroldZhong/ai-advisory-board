@@ -15,6 +15,10 @@ import {
     isChatOnlyAdvancedOptionDisabled,
     normalizeAdvancedSettingsForMode,
 } from '@/utils/advancedSettingsAvailability';
+import {
+    getResponsiveModalBodyClass,
+    getResponsiveModalContentClass,
+} from '@/utils/responsiveModalLayout';
 
 /**
  * Advanced Settings Panel
@@ -104,15 +108,15 @@ export default function AdvancedSettingsPanel({
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="sm:max-w-lg">
-                <DialogHeader>
+            <DialogContent className={cn(getResponsiveModalContentClass('form'), "flex flex-col")}>
+                <DialogHeader className="shrink-0">
                     <DialogTitle className="flex items-center gap-2">
                         <Settings className="h-5 w-5" />
                         Advanced Settings
                     </DialogTitle>
                 </DialogHeader>
 
-                <div className="py-4 space-y-6">
+                <div className={cn(getResponsiveModalBodyClass(), "space-y-6 py-4 pr-1")}>
                     {/* Execution Mode */}
                     <div>
                         <label className="text-sm font-medium mb-2 block">
@@ -288,7 +292,7 @@ export default function AdvancedSettingsPanel({
                     </div>
                 </div>
 
-                <DialogFooter className="flex justify-between">
+                <DialogFooter className="flex shrink-0 justify-between">
                     <Button variant="ghost" onClick={handleReset}>
                         Reset to Auto
                     </Button>
