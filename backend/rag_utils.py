@@ -1,5 +1,7 @@
 """RAG utility functions for budget resolution and task awareness."""
 
+import re
+
 from .config import RAG_SETTINGS, TASK_SIGNALS
 from .logger import logger
 
@@ -46,6 +48,15 @@ def resolve_rag_budget(metadata: dict) -> tuple[int, str]:
     return min(presets[default]["tokens"], absolute_max), default
 
 
+def _contains_keyword(query_lower: str, keyword: str) -> bool:
+    """Match a keyword or phrase without substring false positives."""
+    normalized_keyword = keyword.lower().strip()
+    if not normalized_keyword:
+        return False
+    pattern = rf"(?<!\w){re.escape(normalized_keyword)}(?!\w)"
+    return re.search(pattern, query_lower) is not None
+
+
 def detect_task_signal(query: str, has_files: bool = False) -> str:
     """
     Detect task signal from query using heuristics.
@@ -67,12 +78,12 @@ def detect_task_signal(query: str, has_files: bool = False) -> str:
         return "research"
     
     for keyword in TASK_SIGNALS["research_keywords"]:
-        if keyword in query_lower:
+        if _contains_keyword(query_lower, keyword):
             return "research"
     
     # Check for quick indicators
     for keyword in TASK_SIGNALS["quick_keywords"]:
-        if keyword in query_lower:
+        if _contains_keyword(query_lower, keyword):
             return "quick"
     
     # Default
