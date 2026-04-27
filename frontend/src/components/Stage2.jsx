@@ -3,6 +3,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { getStageTabListClass } from "@/utils/responsiveChatLayout";
 
 function deAnonymizeText(text, labelToModel) {
   if (!labelToModel) return text;
@@ -25,9 +26,9 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <h3 className="text-lg font-semibold flex items-center gap-2">
-          <span className="bg-primary/10 text-primary px-2 py-1 rounded text-sm">Stage 2</span>
-          Peer Rankings
+        <h3 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+          <span className="rounded bg-primary/10 px-2 py-1 text-sm text-primary">Stage 2</span>
+          <span>Peer Rankings</span>
         </h3>
         <p className="text-sm text-muted-foreground">
           Each model evaluated all responses. Below are the individual evaluations and the extracted rankings.
@@ -36,14 +37,14 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
 
       <div className="space-y-4">
         <h4 className="text-sm font-semibold">Raw Evaluations</h4>
-        <div className="flex flex-wrap gap-2">
+        <div className={getStageTabListClass()}>
           {rankings.map((rank, index) => (
             <Button
               key={index}
               variant={activeTab === index ? "default" : "outline"}
               size="sm"
               onClick={() => setActiveTab(index)}
-              className="text-xs"
+              className="max-w-[12rem] shrink-0 truncate text-xs"
             >
               {rank.model.split('/')[1] || rank.model}
             </Button>
@@ -51,7 +52,7 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
         </div>
 
         <Card className="p-4 bg-background border">
-          <div className="text-xs font-semibold text-muted-foreground mb-2">
+          <div className="mb-2 break-all text-xs font-semibold text-muted-foreground">
             Evaluator: {rankings[activeTab].model}
           </div>
           <div className="prose max-w-none text-sm dark:prose-invert mb-4">
@@ -90,7 +91,7 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
                   <div className="font-medium truncate text-sm">
                     {agg.model.split('/')[1] || agg.model}
                   </div>
-                  <div className="text-xs text-muted-foreground flex gap-2">
+                  <div className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
                     <span>Avg: {agg.average_rank.toFixed(2)}</span>
                     <span>({agg.rankings_count} votes)</span>
                   </div>
