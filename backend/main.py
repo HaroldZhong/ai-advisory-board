@@ -326,10 +326,13 @@ class SessionPolicyUpdate(BaseModel):
     allow_overage: bool = True
 
 
-def normalize_session_policy(update: SessionPolicyUpdate) -> Dict[str, Any]:
+def normalize_session_policy(
+    update: SessionPolicyUpdate,
+    base_policy: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Validate and normalize user-provided session policy settings."""
     update_dict = update.model_dump(exclude_unset=True)
-    policy = {**config.SESSION_POLICY_DEFAULTS, **update_dict}
+    policy = {**config.SESSION_POLICY_DEFAULTS, **(base_policy or {}), **update_dict}
 
     budget = policy.get("budget_usd")
     if budget is not None:
@@ -376,6 +379,32 @@ def build_session_budget_state(conversation_id: str) -> Dict[str, Any]:
         "usage": storage.get_session_usage(conversation_id),
         "budget_spent_pct": storage.get_budget_spent_percentage(conversation_id),
     }
+
+
+BUDGET_CAP_REACHED_DETAIL = "Session budget reached. Raise the cap before sending another message."
+
+
+def ensure_budget_allows_new_turn(
+    conversation_id: str,
+    conversation: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Reject new paid turns when an enforced session budget is already exhausted."""
+    if conversation is None:
+        policy = storage.get_session_policy(conversation_id)
+        spent_pct = storage.get_budget_spent_percentage(conversation_id)
+    else:
+        policy = {**config.SESSION_POLICY_DEFAULTS, **conversation.get("session_policy", {})}
+        usage = conversation.get("session_usage", {"spent_usd": 0.0})
+        budget = policy.get("budget_usd")
+        spent_pct = None
+        if budget is not None and budget > 0:
+            spent_pct = usage.get("spent_usd", 0.0) / budget
+
+    if policy.get("allow_overage", True):
+        return
+
+    if spent_pct is not None and spent_pct >= 1.0:
+        raise HTTPException(status_code=409, detail=BUDGET_CAP_REACHED_DETAIL)
 
 
 class ConversationMetadata(BaseModel):
@@ -536,7 +565,8 @@ async def update_session_policy_endpoint(conversation_id: str, update: SessionPo
     if storage.get_conversation(conversation_id) is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    storage.set_session_policy(conversation_id, normalize_session_policy(update))
+    existing_policy = storage.get_session_policy(conversation_id)
+    storage.set_session_policy(conversation_id, normalize_session_policy(update, existing_policy))
     return build_session_budget_state(conversation_id)
 
 
@@ -612,6 +642,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     if mode == "auto":
         mode = "council" if is_first_message else "chat"
     validate_advanced_settings_for_mode(mode, request)
+    ensure_budget_allows_new_turn(conversation_id, conversation)
 
     message_attachments = prepare_message_attachments(conversation_id, request.attachment_ids)
 
@@ -809,6 +840,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     if mode == "auto":
         mode = "council" if is_first_message else "chat"
     validate_advanced_settings_for_mode(mode, request)
+    ensure_budget_allows_new_turn(conversation_id, conversation)
 
     async def event_generator():
         try:

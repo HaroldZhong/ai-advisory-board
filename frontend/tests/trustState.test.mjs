@@ -7,6 +7,7 @@ import {
   formatTrustRowState,
   getBudgetTone,
   getBudgetWarningText,
+  getBudgetCapBlockState,
   getPrivacyToggleDisabledReason,
   mergeConversationPrivacyUpdate,
   resolveAttachmentEnhancementZdr,
@@ -45,6 +46,39 @@ test('budget warning text includes non-color signals at each threshold', () => {
     body: 'Raise the cap to keep spending predictable.',
     action: 'Raise cap',
   });
+});
+
+test('budget cap block state only blocks enforced budgets at or above cap', () => {
+  assert.deepEqual(
+    getBudgetCapBlockState({
+      session_policy: { budget_usd: 1, allow_overage: false },
+      session_usage: { spent_usd: 1 },
+    }),
+    {
+      blocked: true,
+      label: 'Budget reached',
+      detail: 'Raise the cap before sending another message.',
+      action: 'Raise cap',
+    },
+  );
+
+  assert.equal(
+    getBudgetCapBlockState({
+      session_policy: { budget_usd: 1, allow_overage: true },
+      session_usage: { spent_usd: 1.5 },
+    }).blocked,
+    false,
+  );
+
+  assert.equal(
+    getBudgetCapBlockState({
+      session_policy: { budget_usd: 1, allow_overage: false },
+      session_usage: { spent_usd: 0.99 },
+    }).blocked,
+    false,
+  );
+
+  assert.equal(getBudgetCapBlockState({ session_policy: {}, session_usage: {} }).blocked, false);
 });
 
 test('event warning fallback is ignored after live spend drops below threshold', () => {

@@ -79,6 +79,26 @@ export function getEffectiveBudgetWarning(spentPct, eventThreshold) {
   return getBudgetWarningTextForThreshold(eventThreshold);
 }
 
+export function getBudgetCapBlockState(conversation) {
+  const policy = conversation?.session_policy || {};
+  const usage = conversation?.session_usage || {};
+  const budgetUsd = policy.budget_usd ?? null;
+  const spentPct = getSpentPct(conversation, policy, usage);
+  const allowOverage = policy.allow_overage !== false;
+  const blocked = budgetUsd != null && !allowOverage && spentPct != null && spentPct >= 1;
+
+  if (!blocked) {
+    return { blocked: false };
+  }
+
+  return {
+    blocked: true,
+    label: 'Budget reached',
+    detail: 'Raise the cap before sending another message.',
+    action: 'Raise cap',
+  };
+}
+
 export function resolveEffectiveZdr(conversation, settings = {}) {
   const metadataZdr = conversation?.metadata?.zdr_enabled;
   if (metadataZdr === true || metadataZdr === false) return metadataZdr;
@@ -156,6 +176,7 @@ export function formatTrustRowState({
   const spentUsd = Number(usage.spent_usd || 0);
   const budgetUsd = policy.budget_usd ?? null;
   const spentPct = getSpentPct(conversation, policy, usage);
+  const budgetCapBlock = getBudgetCapBlockState(conversation);
   const pctLabel = spentPct == null ? null : `${Math.round(spentPct * 100)}% used`;
   const webEnabled = settings.webSearchEnabled === true;
   const webDepth = settings.webSearchDepth || 'fast';
@@ -183,6 +204,7 @@ export function formatTrustRowState({
         : `${formatCurrency(spentUsd)} / ${formatCurrency(budgetUsd)}`,
       detail: budgetUsd == null ? 'Set session limit' : pctLabel,
       warning: getBudgetWarningText(spentPct),
+      capBlock: budgetCapBlock,
     },
     tools: {
       webEnabled,

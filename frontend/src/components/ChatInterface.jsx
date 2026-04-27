@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
-import { getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
+import { getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 
 // Modern Chain of Thought component (ChatGPT/Claude style)
 function ChainOfThought({ reasoning }) {
@@ -159,6 +159,7 @@ export default function ChatInterface({
 
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [sendError, setSendError] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [editingIndex, setEditingIndex] = useState(-1);
   const [editingContent, setEditingContent] = useState('');
@@ -168,7 +169,8 @@ export default function ChatInterface({
   const sessionBudget = sessionPolicy.budget_usd ?? null;
   const nextMessageMode = conversation?.messages?.length > 0 ? 'chat' : 'council';
   const effectiveZdr = resolveEffectiveZdr(conversation, settings);
-  const composerDisabled = isLoading || isUploading || isUpdatingPrivacy;
+  const budgetCapBlock = getBudgetCapBlockState(conversation);
+  const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
     isLoading,
     isUploading,
@@ -177,6 +179,7 @@ export default function ChatInterface({
 
   const handleBudgetConfirm = async (budgetUsd) => {
     try {
+      setSendError(null);
       await onUpdateSessionPolicy?.({ budget_usd: budgetUsd });
     } catch (error) {
       alert(`Failed to update session budget: ${error.message || 'Unknown error'}`);
@@ -325,15 +328,34 @@ export default function ChatInterface({
 
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
-    if ((!input.trim() && attachments.length === 0) || composerDisabled) return;
+    if (!input.trim() && attachments.length === 0) return;
+    if (budgetCapBlock.blocked) {
+      setSendError(budgetCapBlock.detail);
+      setShowBudgetSelector(true);
+      return;
+    }
+    if (composerDisabled) return;
 
     // Collect attachment IDs to send with the message
     const attachmentIds = attachments.map(a => a.attachment_id);
+    const submittedInput = input;
+    const submittedAttachments = attachments;
 
     // Send message with attachment IDs (context built server-side)
-    onSendMessage(input, attachmentIds, attachments);
     setInput('');
     setAttachments([]);
+    setSendError(null);
+
+    try {
+      await onSendMessage(submittedInput, attachmentIds, submittedAttachments);
+    } catch (error) {
+      if (error?.status === 409) {
+        setInput(submittedInput);
+        setAttachments(submittedAttachments);
+        setSendError(error.message || budgetCapBlock.detail);
+        setShowBudgetSelector(true);
+      }
+    }
 
     // Reset textarea height after sending
     if (textareaRef.current) {
@@ -417,11 +439,29 @@ export default function ChatInterface({
     setEditingContent('');
   };
 
-  const handleEditSubmit = () => {
+  const handleEditSubmit = async () => {
     if (!editingContent.trim()) return;
-    onSendMessage(editingContent, [], [], editingIndex);
+    if (budgetCapBlock.blocked) {
+      setSendError(budgetCapBlock.detail);
+      setShowBudgetSelector(true);
+      return;
+    }
+
+    const submittedContent = editingContent;
+    const submittedIndex = editingIndex;
     setEditingIndex(-1);
     setEditingContent('');
+
+    try {
+      await onSendMessage(submittedContent, [], [], submittedIndex);
+    } catch (error) {
+      if (error?.status === 409) {
+        setEditingIndex(submittedIndex);
+        setEditingContent(submittedContent);
+        setSendError(error.message || budgetCapBlock.detail);
+        setShowBudgetSelector(true);
+      }
+    }
   };
 
   const handleExport = () => {
@@ -804,6 +844,16 @@ export default function ChatInterface({
             }}
           />
 
+          {sendError && (
+            <div
+              id="send-error"
+              role="alert"
+              className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {sendError}
+            </div>
+          )}
+
           {/* Show uploaded attachments as pills */}
           {attachments.length > 0 && (
             <div className="mb-2">
@@ -836,7 +886,7 @@ export default function ChatInterface({
               className="h-10 w-10 shrink-0"
               onClick={() => fileInputRef.current?.click()}
               disabled={composerDisabled}
-              title="Attach files"
+              title={budgetCapBlock.blocked ? budgetCapBlock.detail : 'Attach files'}
             >
               <Paperclip className="h-4 w-4" />
             </Button>
@@ -850,6 +900,7 @@ export default function ChatInterface({
                 placeholder="Ask your question... (Shift+Enter for new line)"
                 className="min-h-[44px] max-h-[200px] py-3 pr-10 resize-none"
                 disabled={composerDisabled}
+                aria-describedby={sendError ? 'send-error' : undefined}
                 rows={1}
                 style={{ height: 'auto', minHeight: '44px' }}
                 onInput={(e) => {
@@ -864,6 +915,7 @@ export default function ChatInterface({
               disabled={(!input.trim() && attachments.length === 0) || composerDisabled}
               className="h-10 w-10 shrink-0"
               size="icon"
+              title={budgetCapBlock.blocked ? budgetCapBlock.action : 'Send message'}
             >
               {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </Button>
