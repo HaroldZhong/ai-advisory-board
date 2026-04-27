@@ -416,7 +416,10 @@ function ConversationView({
       }, editIndex);
     } catch (error) {
       console.error('Failed to send message:', error);
-      alert(`Failed to send message: ${error.message || 'Unknown error'}`);
+      const isBudgetCapError = error?.status === 409;
+      if (!isBudgetCapError) {
+        alert(`Failed to send message: ${error.message || 'Unknown error'}`);
+      }
       setCurrentConversation((prev) => {
         const messages = [...prev.messages];
         if (messages.length >= 2 && messages[messages.length - 1].role === 'assistant') {
@@ -427,6 +430,9 @@ function ConversationView({
         return { ...prev, messages };
       });
       setIsLoading(false);
+      if (isBudgetCapError) {
+        throw error;
+      }
     }
   };
 

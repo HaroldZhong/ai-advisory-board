@@ -6,6 +6,13 @@
 // In production with reverse proxy or packaged exe, set API_BASE to empty string
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8001' : '');
 
+async function buildApiError(response, fallbackMessage) {
+  const errorData = await response.json().catch(() => ({}));
+  const error = new Error(errorData.detail || fallbackMessage);
+  error.status = response.status;
+  return error;
+}
+
 export const api = {
   /**
    * List all conversations.
@@ -112,7 +119,7 @@ export const api = {
       }
     );
     if (!response.ok) {
-      throw new Error('Failed to send message');
+      throw await buildApiError(response, 'Failed to send message');
     }
     return response.json();
   },
@@ -151,7 +158,7 @@ export const api = {
     );
 
     if (!response.ok) {
-      throw new Error('Failed to send message');
+      throw await buildApiError(response, 'Failed to send message');
     }
 
     const reader = response.body.getReader();
