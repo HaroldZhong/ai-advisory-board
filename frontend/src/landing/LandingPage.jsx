@@ -324,7 +324,7 @@ export default function LandingPage() {
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
                             <div className="w-12 h-12 bg-slate-900 border border-slate-700 rounded-xl flex items-center justify-center mx-auto mb-6 text-xl font-bold text-slate-300">1</div>
                             <h3 className="text-xl font-semibold mb-3 text-center">Collect</h3>
-                            <p className="text-slate-400 text-center text-sm">Multiple LLMs (e.g., GPT-5.1, Claude Sonnet 4.6, Gemini 3.1 Pro Preview) answer your query independently.</p>
+                            <p className="text-slate-400 text-center text-sm">A preset or custom council (e.g., GPT-5.4, Claude Sonnet 4.6, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, Kimi K2.6) answers independently.</p>
                         </div>
 
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
@@ -350,7 +350,7 @@ export default function LandingPage() {
                             { icon: Shield, title: "More reliable answers", desc: "Reduces hallucinations via consensus.", sub: "Cross-model validation", grad: "from-blue-500/20 to-indigo-500/5" },
                             { icon: Search, title: "More transparent", desc: "See exactly how models ranked each other.", sub: "Full deliberation logs", grad: "from-purple-500/20 to-pink-500/5" },
                             { icon: MessageSquare, title: "Better continuity", desc: "Never lose context in long chats.", sub: "RAG history injection", grad: "from-emerald-500/20 to-teal-500/5" },
-                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message in real-time.", sub: "Token breakdown", grad: "from-amber-500/20 to-orange-500/5" },
+                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message and enforce a session cap.", sub: "Budget hard stops", grad: "from-amber-500/20 to-orange-500/5" },
                         ].map((b, i) => (
                             <Card key={i} className={`glass-card relative overflow-hidden group border-white/5`}>
                                 <div className={`absolute inset-0 bg-gradient-to-br ${b.grad} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
@@ -376,15 +376,21 @@ export default function LandingPage() {
                     <h2 className="text-3xl font-bold mb-12 text-center">Advanced Capabilities</h2>
                     <div className="grid md:grid-cols-2 LG:grid-cols-3 gap-8">
                         {[
+                            { title: "Preset Councils", desc: "Start with Balanced, Research, Budget, or Private councils — or compose your own from 26 curated models.", icon: Users },
+                            { title: "Zero Data Retention", desc: "Private mode restricts routing to ZDR-capable providers for sensitive conversations.", icon: Lock },
+                            { title: "Trust Row", desc: "Privacy, budget, tools, and session cost stay visible at send time.", icon: Shield },
+                            { title: "First-Run Setup", desc: "Connect OpenRouter, choose a privacy default, and set a budget before the first chat.", icon: Terminal },
                             { title: "Web Search", desc: "Perplexity-powered web search with fast and deep modes, inline toggle from the chat bar.", icon: Globe },
-                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more — auto-indexed for retrieval.", icon: Upload },
+                            { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more — indexed locally for retrieval.", icon: Upload },
                             { title: "Edit & Regenerate", desc: "Click any previous message to edit and regenerate from that point.", icon: Pencil },
-                            { title: "Custom Personas", desc: "Set persistent instructions that shape every council response.", icon: UserCog },
+                            { title: "Simplified Routing", desc: "Auto-routing stays default, with advanced context and model-tier overrides tucked one click away.", icon: UserCog },
                             { title: "Folder Organization", desc: "Group conversations into color-coded folders for easy management.", icon: FolderOpen },
-                            { title: "40+ Models", desc: "Curated registry from OpenAI, Anthropic, Google, xAI, DeepSeek, Mistral, and more.", icon: Users },
+                            { title: "Responsive Desktop", desc: "The app now works cleanly down to a 960x600 desktop window.", icon: Monitor },
+                            { title: "26 Curated Models", desc: "Claude Opus 4.7 as chairman, plus OpenAI, Anthropic, Google, DeepSeek, Kimi, Qwen, xAI, Mistral, and more.", icon: Users },
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
-                            { title: "Persistent Memory", desc: "PageIndex RAG indexes conversations for cross-session retrieval with query rewriting.", icon: Brain },
-                            { title: "Cost Tracking", desc: "Session budgets ($1/$2/$5/unlimited) with real-time per-model cost analytics.", icon: BarChart },
+                            { title: "Persistent Memory", desc: "File-based storage with PageIndex RAG keeps long conversations retrievable with query rewriting.", icon: Brain },
+                            { title: "Attachment Lifecycle", desc: "Reference-counted attachment retention cleans up unshared files when conversations are deleted.", icon: FileText },
+                            { title: "Budget Enforcement", desc: "Session budgets ($1/$2/$5/unlimited) warn at thresholds and stop new turns at 100% by default.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
                                 <div className="flex items-center gap-3 mb-4">
@@ -430,11 +436,12 @@ export default function LandingPage() {
                             <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-6">What you'll see</h3>
                             <ul className="space-y-4">
                                 {[
+                                    "Preset council membership before the first turn",
                                     "Side-by-side answers from multiple models",
                                     "Anonymous ranking & critique",
                                     "Final synthesis by Chairman",
                                     "Confidence badge (High/Med/Low)",
-                                    "Real-time cost summary"
+                                    "Trust row with privacy, budget, tools, and cost"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300 text-sm">
                                         <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500">
@@ -522,7 +529,7 @@ cd ai-advisory-board
                                         <div className="mt-1 w-2 h-2 rounded-full bg-indigo-500" />
                                         <div>
                                             <h4 className="font-bold text-white text-sm">Frontend (React + Vite)</h4>
-                                            <p className="text-xs text-slate-400 mt-1">Responsive UI, real-time streaming, cost visualization.</p>
+                                            <p className="text-xs text-slate-400 mt-1">Responsive UI, first-run setup, trust row, cost visibility.</p>
                                         </div>
                                     </div>
                                     <div className="flex items-start gap-4">
@@ -536,7 +543,7 @@ cd ai-advisory-board
                                         <div className="mt-1 w-2 h-2 rounded-full bg-amber-500" />
                                         <div>
                                             <h4 className="font-bold text-white text-sm">Data & Keys</h4>
-                                            <p className="text-xs text-slate-400 mt-1">Your .env file, local chromaDB vector store.</p>
+                                            <p className="text-xs text-slate-400 mt-1">Your .env file, local file-based storage, PageIndex RAG.</p>
                                         </div>
                                     </div>
                                 </div>
@@ -558,8 +565,10 @@ cd ai-advisory-board
                                 {[
                                     "Self-hostable local setup",
                                     "API key stays in your env variables",
-                                    "Cost transparency per session",
-                                    "Confidence indicator for uncertainty"
+                                    "Zero Data Retention routing on demand",
+                                    "Conversation-level privacy and budget state",
+                                    "Attachment lifecycle cleanup",
+                                    "Cost transparency and hard-stop budgets"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300">
                                         <Check className="w-4 h-4 text-emerald-500" />
@@ -591,10 +600,10 @@ cd ai-advisory-board
                         {[
                             { q: "What is Council Mode vs Chat Mode?", a: "Council Mode activates the 3-stage deliberation (Collect, Rank, Synthesize). Chat Mode is a standard single-model turn for fast follow-ups." },
                             { q: "How is confidence calculated?", a: "We aggregate the anonymous rankings from the 'Rank' stage and the Chairman's final synthesized assessment." },
-                            { q: "What models/providers can I use?", a: "We support OpenRouter with 40+ curated models across tiers — including GPT-5.1, Claude Sonnet 4.6, Gemini 3.1 Pro Preview, Grok 4, Kimi K2.5, DeepSeek V3.2, and many more. Models are selectable at runtime." },
-                            { q: "Does it support multi-turn context?", a: "Yes. We use advanced RAG with query rewriting to maintain context across long conversations." },
-                            { q: "How do costs work?", a: "You bring your own API key. We track token usage per call and estimate costs in real-time." },
-                            { q: "Can I self-host and control data?", a: "Absolutely. The entire stack runs locally on your machine. No data is sent to our servers." }
+                            { q: "What models/providers can I use?", a: "AI Advisory Board ships with 26 curated OpenRouter models, with live availability checks against OpenRouter's 350+ model catalog. The default Balanced preset uses Claude Opus 4.7 as chairman with GPT-5.4, Claude Sonnet 4.6, Gemini 3.1 Pro Preview, DeepSeek V4 Pro, and Kimi K2.6 on the council." },
+                            { q: "Does it support multi-turn context?", a: "Yes. File-based local storage and PageIndex RAG with query rewriting maintain context across long conversations and uploaded documents." },
+                            { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call, shows session cost in the trust row, warns as budgets fill, and blocks new turns at 100% by default." },
+                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, supports conversation-level ZDR routing, and cleans up unshared attachment artifacts when conversations are deleted." }
                         ].map((item, i) => (
                             <details key={i} className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
                                 <summary className="flex items-center justify-between p-4 cursor-pointer font-medium hover:bg-slate-800/50 transition-colors">
@@ -622,7 +631,7 @@ cd ai-advisory-board
                             <Github className="w-5 h-5 mr-3" /> View on GitHub
                         </Button>
                     </div>
-                    <p className="text-slate-400">Bring your OpenRouter key. Choose your models. Start debating.</p>
+                    <p className="text-slate-400">Bring your OpenRouter key. Choose a preset council. Keep privacy, budget, and cost visible.</p>
                 </div>
             </section>
 
