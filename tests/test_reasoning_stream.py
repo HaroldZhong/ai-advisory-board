@@ -144,32 +144,37 @@ def test_inline_tags_drop_nested_opening_tag_inside_reasoning():
     state = ReasoningStreamState("inline_tags")
 
     events = []
-    events.extend(state.consume_delta({"content": "<think>outer <think>inner</think>Answer"}))
+    events.extend(
+        state.consume_delta({"content": "<think>outer <think>inner</think> still outer</think>Answer"})
+    )
     events.extend(state.finish())
 
     assert events == [
         {"type": "reasoning_delta", "text": "outer "},
         {"type": "reasoning_delta", "text": "inner"},
+        {"type": "reasoning_delta", "text": " still outer"},
         {"type": "content_delta", "text": "Answer"},
     ]
-    assert state.reasoning_text == "outer inner"
+    assert state.reasoning_text == "outer inner still outer"
     assert state.content_text == "Answer"
 
 
-def test_inline_tags_drop_nested_opening_tag_split_across_chunks():
+def test_inline_tags_preserve_nested_depth_across_split_tags():
     state = ReasoningStreamState("inline_tags")
 
     events = []
     events.extend(state.consume_delta({"content": "<think>outer <th"}))
-    events.extend(state.consume_delta({"content": "ink>inner</think>Answer"}))
+    events.extend(state.consume_delta({"content": "ink>inner</th"}))
+    events.extend(state.consume_delta({"content": "ink> still outer</think>Answer"}))
     events.extend(state.finish())
 
     assert events == [
         {"type": "reasoning_delta", "text": "outer "},
         {"type": "reasoning_delta", "text": "inner"},
+        {"type": "reasoning_delta", "text": " still outer"},
         {"type": "content_delta", "text": "Answer"},
     ]
-    assert state.reasoning_text == "outer inner"
+    assert state.reasoning_text == "outer inner still outer"
     assert state.content_text == "Answer"
 
 

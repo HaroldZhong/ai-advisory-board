@@ -24,6 +24,7 @@ class ReasoningStreamState:
 
         self._inline_buffer = ""
         self._inline_mode = "content"
+        self._inline_reasoning_depth = 0
 
     def consume_delta(self, delta: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Consume one provider delta and return normalized stream events."""
@@ -114,12 +115,17 @@ class ReasoningStreamState:
             if matched_tag:
                 if self._inline_mode == "content":
                     self._inline_mode = "reasoning"
+                    self._inline_reasoning_depth = 1
+                else:
+                    self._inline_reasoning_depth += 1
                 self._inline_buffer = self._inline_buffer[len(matched_tag):]
                 continue
 
             matched_tag = self._match_tag(CLOSING_THINK_TAGS)
             if matched_tag and self._inline_mode == "reasoning":
-                self._inline_mode = "content"
+                self._inline_reasoning_depth = max(0, self._inline_reasoning_depth - 1)
+                if self._inline_reasoning_depth == 0:
+                    self._inline_mode = "content"
                 self._inline_buffer = self._inline_buffer[len(matched_tag):]
                 continue
 
