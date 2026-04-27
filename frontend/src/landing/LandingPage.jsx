@@ -324,7 +324,7 @@ export default function LandingPage() {
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
                             <div className="w-12 h-12 bg-slate-900 border border-slate-700 rounded-xl flex items-center justify-center mx-auto mb-6 text-xl font-bold text-slate-300">1</div>
                             <h3 className="text-xl font-semibold mb-3 text-center">Collect</h3>
-                            <p className="text-slate-400 text-center text-sm">A preset or custom council answers independently so you can compare perspectives before synthesis.</p>
+                            <p className="text-slate-400 text-center text-sm">A curated or custom council answers independently so you can compare perspectives before synthesis.</p>
                         </div>
 
                         <div className="relative bg-slate-950 p-8 rounded-2xl border border-slate-800 z-10">
@@ -350,7 +350,7 @@ export default function LandingPage() {
                             { icon: Shield, title: "More reliable answers", desc: "Reduces hallucinations via consensus.", sub: "Cross-model validation", grad: "from-blue-500/20 to-indigo-500/5" },
                             { icon: Search, title: "More transparent", desc: "See exactly how models ranked each other.", sub: "Full deliberation logs", grad: "from-purple-500/20 to-pink-500/5" },
                             { icon: MessageSquare, title: "Better continuity", desc: "Never lose context in long chats.", sub: "RAG history injection", grad: "from-emerald-500/20 to-teal-500/5" },
-                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message and set session-level guardrails.", sub: "Budget visibility", grad: "from-amber-500/20 to-orange-500/5" },
+                            { icon: BarChart, title: "Predictable costs", desc: "Track spend per message and keep cost visible during the session.", sub: "Cost visibility", grad: "from-amber-500/20 to-orange-500/5" },
                         ].map((b, i) => (
                             <Card key={i} className={`glass-card relative overflow-hidden group border-white/5`}>
                                 <div className={`absolute inset-0 bg-gradient-to-br ${b.grad} opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
@@ -376,9 +376,9 @@ export default function LandingPage() {
                     <h2 className="text-3xl font-bold mb-12 text-center">Advanced Capabilities</h2>
                     <div className="grid md:grid-cols-2 LG:grid-cols-3 gap-8">
                         {[
-                            { title: "Preset Councils", desc: "Start with Balanced, Research, Budget, or Private councils — or compose your own from the curated OpenRouter registry.", icon: Users },
-                            { title: "Zero Data Retention", desc: "Private mode restricts routing to ZDR-capable providers for sensitive conversations.", icon: Lock },
-                            { title: "Trust Row", desc: "Privacy, budget, tools, and session cost stay visible at send time.", icon: Shield },
+                            { title: "Configurable Councils", desc: "Compose a chairman and council from a curated OpenRouter model registry.", icon: Users },
+                            { title: "Privacy-Aware Setup", desc: "Your OpenRouter key stays local and provider choices remain visible before you send sensitive work.", icon: Lock },
+                            { title: "Trust Row", desc: "Routing context, tools, and session cost stay visible at send time.", icon: Shield },
                             { title: "Local Key Setup", desc: "Connect your OpenRouter key locally before convening the council.", icon: Terminal },
                             { title: "Web Search", desc: "Perplexity-powered web search with fast and deep modes, inline toggle from the chat bar.", icon: Globe },
                             { title: "File Processing", desc: "Drag & drop PDF, DOCX, PPTX, XLSX, CSV, images and more — indexed locally for retrieval.", icon: Upload },
@@ -390,7 +390,7 @@ export default function LandingPage() {
                             { title: "Confidence Scoring", desc: "HIGH / MEDIUM / LOW based on council consensus and synthesis.", icon: Shield },
                             { title: "Persistent Memory", desc: "File-based storage with PageIndex RAG keeps long conversations retrievable with query rewriting.", icon: Brain },
                             { title: "Attachment Handling", desc: "Uploaded files are processed locally and indexed for retrieval in the conversations that use them.", icon: FileText },
-                            { title: "Budget Controls", desc: "Session budgets ($1/$2/$5/unlimited) warn at thresholds and can prevent new turns when a cap is enforced.", icon: BarChart },
+                            { title: "Cost Controls", desc: "Per-call usage and session cost visibility help you monitor spend while you work.", icon: BarChart },
                         ].map((f, i) => (
                             <div key={i} className="group p-6 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500/50 transition-all">
                                 <div className="flex items-center gap-3 mb-4">
@@ -436,12 +436,12 @@ export default function LandingPage() {
                             <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-6">What you'll see</h3>
                             <ul className="space-y-4">
                                 {[
-                                    "Preset council membership before the first turn",
+                                    "Council membership before the first turn",
                                     "Side-by-side answers from multiple models",
                                     "Anonymous ranking & critique",
                                     "Final synthesis by Chairman",
                                     "Confidence badge (High/Med/Low)",
-                                    "Trust row with privacy, budget, tools, and cost"
+                                    "Trust row with routing context, tools, and cost"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300 text-sm">
                                         <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-500">
@@ -565,10 +565,10 @@ cd ai-advisory-board
                                 {[
                                     "Self-hostable local setup",
                                     "API key stays in your env variables",
-                                    "Zero Data Retention routing on demand",
-                                    "Conversation-level privacy and budget state",
+                                    "Provider choices visible before sensitive work",
+                                    "Local key handling",
                                     "Local attachment handling",
-                                    "Cost transparency and session budget controls"
+                                    "Cost transparency during active sessions"
                                 ].map((item, i) => (
                                     <li key={i} className="flex items-center gap-3 text-slate-300">
                                         <Check className="w-4 h-4 text-emerald-500" />
@@ -602,8 +602,8 @@ cd ai-advisory-board
                             { q: "How is confidence calculated?", a: "We aggregate the anonymous rankings from the 'Rank' stage and the Chairman's final synthesized assessment." },
                             { q: "What models/providers can I use?", a: "AI Advisory Board ships with a curated OpenRouter registry and live availability checks against OpenRouter's 350+ model catalog. Current examples include Claude Opus, GPT-5, Claude Sonnet, Gemini Pro, DeepSeek, Kimi, Qwen, xAI, and Mistral models." },
                             { q: "Does it support multi-turn context?", a: "Yes. File-based local storage and PageIndex RAG with query rewriting maintain context across long conversations and uploaded documents." },
-                            { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call, shows session cost in the trust row, warns as budgets fill, and can block new turns when an enforced cap is reached." },
-                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, supports conversation-level ZDR routing, and keeps uploaded-file processing under your local setup." }
+                            { q: "How do costs work?", a: "You bring your own OpenRouter key. The app tracks token usage per call and keeps session cost visible while you work." },
+                            { q: "Can I self-host and control data?", a: "Yes. The stack runs locally, stores data on your machine, and keeps uploaded-file processing under your local setup." }
                         ].map((item, i) => (
                             <details key={i} className="group bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
                                 <summary className="flex items-center justify-between p-4 cursor-pointer font-medium hover:bg-slate-800/50 transition-colors">
@@ -631,7 +631,7 @@ cd ai-advisory-board
                             <Github className="w-5 h-5 mr-3" /> View on GitHub
                         </Button>
                     </div>
-                    <p className="text-slate-400">Bring your OpenRouter key. Choose a preset council. Keep privacy, budget, and cost visible.</p>
+                    <p className="text-slate-400">Bring your OpenRouter key. Compose a council. Keep routing context and cost visible.</p>
                 </div>
             </section>
 
