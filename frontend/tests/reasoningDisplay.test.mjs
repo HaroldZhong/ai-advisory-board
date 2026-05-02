@@ -30,7 +30,7 @@ test('getReasoningStatusLabel maps stream states to user-facing copy', () => {
   assert.equal(getReasoningStatusLabel('streaming'), 'Reasoning');
   assert.equal(getReasoningStatusLabel('complete'), 'Reasoning complete');
   assert.equal(getReasoningStatusLabel('unavailable'), 'Reasoning unavailable');
-  assert.equal(getReasoningStatusLabel('unknown'), 'Reasoning');
+  assert.equal(getReasoningStatusLabel('unknown'), 'Reasoning complete');
 });
 
 test('hasReasoningText rejects blank reasoning', () => {

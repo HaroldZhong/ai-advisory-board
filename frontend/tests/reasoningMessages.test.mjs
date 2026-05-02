@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   appendContentDeltaToMessage,
   appendReasoningDeltaToMessage,
+  applyStreamUpdateToActiveConversation,
+  markLastAssistantStreamInterrupted,
   mergeReasoningBufferIntoResult,
   mergeReasoningBuffersIntoResults,
 } from '../src/utils/reasoningMessages.js';
@@ -37,6 +39,41 @@ test('appendReasoningDeltaToMessage buffers council reasoning by stage and index
     model: 'provider/model-b',
     text: 'Reasoning',
   });
+});
+
+test('appendReasoningDeltaToMessage keeps index zero as an explicit slot', () => {
+  const message = { role: 'assistant' };
+
+  const updated = appendReasoningDeltaToMessage(message, {
+    scope: 'council',
+    stage: 'stage1',
+    index: 0,
+    model: 'provider/model-a',
+    text: 'First reasoning',
+  });
+
+  assert.equal(updated.reasoningBuffers.stage1['0'].text, 'First reasoning');
+});
+
+test('appendReasoningDeltaToMessage warns and leaves message unchanged for unknown council stages', () => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+
+  try {
+    const message = { role: 'assistant' };
+    const updated = appendReasoningDeltaToMessage(message, {
+      scope: 'council',
+      stage: 'stageX',
+      text: 'Unexpected',
+    });
+
+    assert.equal(updated, message);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Unknown reasoning stream stage/);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test('mergeReasoningBuffersIntoResults fills missing reasoning without overwriting completed reasoning', () => {
@@ -76,4 +113,70 @@ test('appendContentDeltaToMessage appends chat content only', () => {
     appendContentDeltaToMessage(message, { stage: 'stage1', text: 'ignored' }).content,
     'Hello',
   );
+});
+
+test('applyStreamUpdateToActiveConversation ignores stale events for inactive conversations', () => {
+  const activeConversation = {
+    id: 'conversation-b',
+    messages: [{ role: 'assistant', content: 'Existing' }],
+  };
+
+  const updated = applyStreamUpdateToActiveConversation(
+    activeConversation,
+    'conversation-a',
+    (conversation) => ({
+      ...conversation,
+      messages: [{ role: 'assistant', content: 'Corrupted' }],
+    }),
+  );
+
+  assert.equal(updated, activeConversation);
+});
+
+test('applyStreamUpdateToActiveConversation applies updates for the originating conversation', () => {
+  const activeConversation = {
+    id: 'conversation-a',
+    messages: [{ role: 'assistant', content: 'Existing' }],
+  };
+
+  const updated = applyStreamUpdateToActiveConversation(
+    activeConversation,
+    'conversation-a',
+    (conversation) => ({
+      ...conversation,
+      messages: [{ role: 'assistant', content: 'Updated' }],
+    }),
+  );
+
+  assert.equal(updated.messages[0].content, 'Updated');
+});
+
+test('markLastAssistantStreamInterrupted clears active assistant loading flags', () => {
+  const conversation = {
+    id: 'conversation-a',
+    messages: [
+      { role: 'user', content: 'Question' },
+      {
+        role: 'assistant',
+        loading: {
+          chat: true,
+          stage1: true,
+          stage2: false,
+          stage3: true,
+          stage3_status: 'pending',
+        },
+      },
+    ],
+  };
+
+  const updated = markLastAssistantStreamInterrupted(conversation);
+
+  assert.deepEqual(updated.messages[1].loading, {
+    chat: false,
+    stage1: false,
+    stage2: false,
+    stage3: false,
+    stage3_status: 'error',
+  });
+  assert.equal(conversation.messages[1].loading.chat, true);
 });

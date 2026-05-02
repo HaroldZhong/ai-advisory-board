@@ -39,7 +39,8 @@ export function getReasoningStatusLabel(status) {
     case 'unavailable':
       return 'Reasoning unavailable';
     case 'streaming':
-    default:
       return 'Reasoning';
+    default:
+      return 'Reasoning complete';
   }
 }

@@ -1,5 +1,10 @@
 const COUNCIL_STAGES = new Set(['stage1', 'stage2', 'stage3']);
 
+/**
+ * Transient stream reasoning is held on the active assistant message until the
+ * completed stage payload arrives. Council buffers are keyed by index first,
+ * then model id, then a default slot for singleton stages like stage3.
+ */
 function appendText(existing, next) {
   return `${existing || ''}${next || ''}`;
 }
@@ -22,6 +27,7 @@ export function appendReasoningDeltaToMessage(message, data) {
   }
 
   if (!COUNCIL_STAGES.has(data.stage)) {
+    console.warn('Unknown reasoning stream stage:', data.stage);
     return message;
   }
 
@@ -46,11 +52,51 @@ export function appendReasoningDeltaToMessage(message, data) {
 }
 
 export function appendContentDeltaToMessage(message, data) {
+  // Council content deltas are intentionally ignored here; completed stage
+  // payloads remain the source of truth for Stage 1/2/3 visible content.
   if (!message || !data?.text || data.stage !== 'chat') return message;
 
   return {
     ...message,
     content: appendText(message.content, data.text),
+  };
+}
+
+export function applyStreamUpdateToActiveConversation(conversation, targetConversationId, updater) {
+  if (!conversation || conversation.id !== targetConversationId) {
+    return conversation;
+  }
+  return updater(conversation);
+}
+
+export function markLastAssistantStreamInterrupted(conversation) {
+  if (!conversation?.messages?.length) return conversation;
+
+  const messages = [...conversation.messages];
+  const lastIndex = messages.length - 1;
+  const lastMessage = messages[lastIndex];
+  if (lastMessage?.role !== 'assistant' || !lastMessage.loading) {
+    return conversation;
+  }
+
+  const nextLoading = { ...lastMessage.loading };
+  for (const key of Object.keys(nextLoading)) {
+    if (typeof nextLoading[key] === 'boolean') {
+      nextLoading[key] = false;
+    }
+  }
+  if ('stage3_status' in nextLoading) {
+    nextLoading.stage3_status = 'error';
+  }
+
+  messages[lastIndex] = {
+    ...lastMessage,
+    loading: nextLoading,
+  };
+
+  return {
+    ...conversation,
+    messages,
   };
 }
 
