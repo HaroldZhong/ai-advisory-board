@@ -77,6 +77,49 @@ async def test_stream_chat_emits_reasoning_and_content_events(monkeypatch, tmp_p
         },
     } in events
     assert any(event["type"] == "chat_response" for event in events)
+    stored = main.storage.get_conversation(conversation_id)
+    assert stored["messages"][-1]["reasoning"] == "Reasoned through the answer"
+
+
+@pytest.mark.asyncio
+async def test_sync_chat_persists_reasoning(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    conversation_id = "conv-sync-chat-reasoning"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "anthropic/claude-opus-4.7"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return ""
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {
+            "content": "Visible sync response",
+            "reasoning": "Stored sync reasoning",
+            "usage": {},
+        }
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["reasoning"] == "Stored sync reasoning"
+    stored = main.storage.get_conversation(conversation_id)
+    assert stored["messages"][-1]["content"] == "Visible sync response"
+    assert stored["messages"][-1]["reasoning"] == "Stored sync reasoning"
 
 
 @pytest.mark.asyncio
