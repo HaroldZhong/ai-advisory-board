@@ -28,6 +28,7 @@ def test_curated_models_are_unique_and_schema_valid(monkeypatch):
         assert model["type"] in valid_types
         assert isinstance(model.get("capabilities"), list)
         assert isinstance(model.get("supports_zdr"), bool)
+        assert isinstance(model.get("supports_reasoning"), bool)
         assert isinstance(model.get("default_council", False), bool)
         assert isinstance(model.get("pricing", {}).get("input"), (int, float))
         assert isinstance(model.get("pricing", {}).get("output"), (int, float))
@@ -53,6 +54,7 @@ def test_model_presets_reference_registry_models(monkeypatch):
     config = import_module_with_api_key(monkeypatch, "backend.config")
     registry_ids = {model["id"] for model in config.CURATED_MODELS}
     preset_ids = set()
+    valid_efforts = {"minimal", "low", "medium", "high", "xhigh"}
 
     assert config.MODEL_PRESETS
     assert [preset["sort_order"] for preset in config.MODEL_PRESETS] == sorted(
@@ -62,9 +64,20 @@ def test_model_presets_reference_registry_models(monkeypatch):
         assert preset["id"] not in preset_ids
         preset_ids.add(preset["id"])
         assert preset["chairman_model"] in registry_ids
+        assert preset["default_reasoning_effort"] in valid_efforts
         assert 3 <= len(preset["council_models"]) <= 8
         for model_id in preset["council_models"]:
             assert model_id in registry_ids
+
+
+def test_presets_expose_expected_reasoning_effort_defaults(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    by_id = {preset["id"]: preset for preset in config.MODEL_PRESETS}
+
+    assert by_id["balanced"]["default_reasoning_effort"] == "medium"
+    assert by_id["research"]["default_reasoning_effort"] == "high"
+    assert by_id["budget"]["default_reasoning_effort"] == "low"
+    assert by_id["private"]["default_reasoning_effort"] == "medium"
 
 
 def test_private_preset_only_uses_zdr_models(monkeypatch):
@@ -183,3 +196,29 @@ def test_validate_registry_finds_missing_live_ids():
     )
 
     assert missing == ["model/b"]
+
+
+def test_validate_registry_finds_reasoning_metadata_mismatches():
+    validate_registry = importlib.import_module("scripts.validate_model_registry")
+
+    mismatches = validate_registry.find_reasoning_metadata_mismatches(
+        registry={
+            "models": [
+                {"id": "model/reasoning", "supports_reasoning": False},
+                {"id": "model/plain", "supports_reasoning": True},
+                {"id": "model/missing", "supports_reasoning": True},
+            ]
+        },
+        live_reasoning_response={"data": [{"id": "model/reasoning"}]},
+        live_response={
+            "data": [
+                {"id": "model/reasoning"},
+                {"id": "model/plain"},
+            ]
+        },
+    )
+
+    assert mismatches == [
+        {"id": "model/reasoning", "expected": True, "actual": False},
+        {"id": "model/plain", "expected": False, "actual": True},
+    ]
