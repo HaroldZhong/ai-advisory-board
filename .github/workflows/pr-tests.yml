@@ -45,6 +45,7 @@ jobs:
           tests/test_reasoning_stream.py
           tests/test_reasoning_stream_integration.py
           tests/test_auto_routing_heuristics.py
+          tests/test_thinking_effort_backend.py
           -q
 
   frontend-deterministic-tests:

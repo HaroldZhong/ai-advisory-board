@@ -12,11 +12,22 @@ import uuid
 import json
 
 
+THINKING_EFFORT_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+
+
+def ensure_minimum_thinking_effort(effort: str = None, minimum: str = "medium") -> str:
+    """Raise effort to the minimum level required for a stage."""
+    if effort is None:
+        return minimum
+    return effort if THINKING_EFFORT_ORDER.get(effort, 0) >= THINKING_EFFORT_ORDER[minimum] else minimum
+
+
 async def stage1_collect_responses(
     user_query: str,
     models: List[str] = None,
     evidence_pack: EvidencePack = None,
     zdr_enabled: bool = False,
+    thinking_effort: str = None,
 ) -> List[Dict[str, Any]]:
     """
     Stage 1: Collect individual responses from all council models.
@@ -26,6 +37,7 @@ async def stage1_collect_responses(
         models: Optional list of models to query (defaults to COUNCIL_MODELS)
         evidence_pack: Optional evidence gathered by the Steward
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
 
     Returns:
         List of dicts with 'model' and 'response' keys
@@ -65,11 +77,10 @@ async def stage1_collect_responses(
     messages = [{"role": "user", "content": prompt}]
 
     # Query all models in parallel
-    responses = await query_models_parallel(
-        target_models,
-        messages,
-        zdr_enabled=zdr_enabled,
-    )
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = thinking_effort
+    responses = await query_models_parallel(target_models, messages, **query_kwargs)
 
     # Format results
     stage1_results = []
@@ -92,6 +103,7 @@ async def stage2_collect_rankings(
     stage1_results: List[Dict[str, Any]],
     models: List[str] = None,
     zdr_enabled: bool = False,
+    thinking_effort: str = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -101,6 +113,7 @@ async def stage2_collect_rankings(
         stage1_results: Results from Stage 1
         models: Optional list of models to query (defaults to COUNCIL_MODELS)
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
 
     Returns:
         Tuple of (rankings list, label_to_model mapping)
@@ -156,11 +169,10 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(
-        target_models,
-        messages,
-        zdr_enabled=zdr_enabled,
-    )
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = thinking_effort
+    responses = await query_models_parallel(target_models, messages, **query_kwargs)
 
     # Format results
     stage2_results = []
@@ -189,6 +201,7 @@ async def stage3_synthesize_final(
     quality_metrics: Dict[str, Dict[str, Any]],
     chairman_model: str = None,
     zdr_enabled: bool = False,
+    thinking_effort: str = None,
 ) -> Dict[str, Any]:
     """
     Stage 3: Chairman synthesizes final answer with confidence scoring.
@@ -201,6 +214,7 @@ async def stage3_synthesize_final(
         quality_metrics: Per-model quality metrics from Stage 2 rankings
         chairman_model: Optional chairman model ID
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
         
     Returns:
         Dict with 'response', 'model', 'usage', 'confidence', 'avg_consensus', 'quality_metrics'
@@ -257,7 +271,13 @@ Provide a clear, well-reasoned final answer that represents the council's collec
 
     # Query the chairman model
     logger.info(f"[STAGE3] Requesting synthesis from {target_chairman}...")
-    response = await query_model(target_chairman, messages, zdr_enabled=zdr_enabled)
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = ensure_minimum_thinking_effort(
+            thinking_effort,
+            "medium",
+        )
+    response = await query_model(target_chairman, messages, **query_kwargs)
 
     if response is None:
         logger.error(f"[STAGE3] ERROR: query_model returned None")
@@ -685,6 +705,7 @@ async def run_full_council(
     council_models: List[str] = None, 
     chairman_model: str = None,
     zdr_enabled: bool = False,
+    thinking_effort: str = None,
 ) -> Tuple[List, List, Dict, Dict, EvidencePack]:
     """
     Run the complete 3-stage council process (now with Stage 0 Steward).
@@ -694,6 +715,7 @@ async def run_full_council(
         council_models: Optional list of council models (defaults to COUNCIL_MODELS)
         chairman_model: Optional chairman model (defaults to CHAIRMAN_MODEL)
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
 
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata, evidence_pack)
@@ -715,6 +737,7 @@ async def run_full_council(
         council_models,
         evidence_pack,
         zdr_enabled=zdr_enabled,
+        thinking_effort=thinking_effort,
     )
 
     # If no models responded successfully, return error
@@ -730,6 +753,7 @@ async def run_full_council(
         stage1_results,
         council_models,
         zdr_enabled=zdr_enabled,
+        thinking_effort=thinking_effort,
     )
 
     # Calculate aggregate rankings
@@ -747,6 +771,7 @@ async def run_full_council(
         quality_metrics,
         chairman_model,
         zdr_enabled=zdr_enabled,
+        thinking_effort=thinking_effort,
     )
 
     # Prepare metadata
@@ -866,6 +891,7 @@ async def chat_with_chairman(
     rag_context: str = "",
     chairman_model: str = None,
     zdr_enabled: bool = False,
+    thinking_effort: str = None,
 ) -> Dict[str, Any]:
     """
     Chat directly with the Chairman, using RAG-retrieved context.
@@ -876,6 +902,7 @@ async def chat_with_chairman(
         rag_context: Relevant context retrieved from ChromaDB
         chairman_model: Optional chairman model ID (defaults to CHAIRMAN_MODEL)
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
 
     Returns:
         Dict with 'content' and optional 'reasoning' (chain of thought)
@@ -934,7 +961,10 @@ Guidance on context labels:
     logger.info(f"[CHAIRMAN] Calling {target_chairman} with {len(messages)} messages...")
     import time
     start_time = time.time()
-    response = await query_model(target_chairman, messages, zdr_enabled=zdr_enabled)
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = thinking_effort
+    response = await query_model(target_chairman, messages, **query_kwargs)
     elapsed = time.time() - start_time
     logger.info(f"[CHAIRMAN] Response received in {elapsed:.2f}s")
     

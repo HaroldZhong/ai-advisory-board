@@ -11,6 +11,7 @@ async def query_model(
     messages: List[Dict[str, str]],
     timeout: float = 120.0,
     zdr_enabled: bool = False,
+    thinking_effort: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single model via OpenRouter API.
@@ -20,6 +21,7 @@ async def query_model(
         messages: List of message dicts with 'role' and 'content'
         timeout: Request timeout in seconds
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
 
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
@@ -40,6 +42,8 @@ async def query_model(
     }
     if zdr_enabled:
         payload["provider"] = {"zdr": True}
+    if thinking_effort and model_supports_reasoning(model):
+        payload["reasoning"] = {"effort": thinking_effort}
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -71,6 +75,14 @@ async def query_model(
     except Exception as e:
         logger.error(f"Error querying model {model}: {e}")
         return None
+
+
+def model_supports_reasoning(model: str) -> bool:
+    """Return whether the curated registry says a model accepts reasoning controls."""
+    from .config import CURATED_MODELS
+
+    registry_model = next((candidate for candidate in CURATED_MODELS if candidate["id"] == model), None)
+    return registry_model is not None and registry_model.get("supports_reasoning") is True
 
 
 def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tuple[str, str]:
@@ -137,6 +149,7 @@ async def query_models_parallel(
     models: List[str],
     messages: List[Dict[str, str]],
     zdr_enabled: bool = False,
+    thinking_effort: Optional[str] = None,
 ) -> Dict[str, Optional[Dict[str, Any]]]:
     """
     Query multiple models in parallel.
@@ -145,6 +158,7 @@ async def query_models_parallel(
         models: List of OpenRouter model identifiers
         messages: List of message dicts to send to each model
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
 
     Returns:
         Dict mapping model identifier to response dict (or None if failed)
@@ -152,10 +166,11 @@ async def query_models_parallel(
     import asyncio
 
     # Create tasks for all models
-    tasks = [
-        query_model(model, messages, zdr_enabled=zdr_enabled)
-        for model in models
-    ]
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = thinking_effort
+
+    tasks = [query_model(model, messages, **query_kwargs) for model in models]
 
     # Wait for all to complete
     responses = await asyncio.gather(*tasks)
