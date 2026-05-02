@@ -231,13 +231,19 @@ def add_assistant_message(
         save_conversation(conversation)
 
 
-def add_chat_message(conversation_id: str, content: str, running_cost: float = None):
+def add_chat_message(
+    conversation_id: str,
+    content: str,
+    running_cost: float = None,
+    reasoning: Optional[str] = None,
+):
     """
     Add a simple chat message (from assistant) to a conversation.
 
     Args:
         conversation_id: Conversation identifier
         content: The assistant's response text
+        reasoning: Optional model reasoning text associated with the answer
     """
     with ConversationLock.get_lock(conversation_id):
         conversation = get_conversation(conversation_id)
@@ -250,6 +256,8 @@ def add_chat_message(conversation_id: str, content: str, running_cost: float = N
         }
         if running_cost is not None:
             message["running_cost"] = running_cost
+        if reasoning:
+            message["reasoning"] = reasoning
 
         conversation["messages"].append(message)
 

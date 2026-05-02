@@ -849,7 +849,12 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             response_dict=response_dict,
             chairman_model=run_plan.chairman_model or chairman_model,
         )
-        storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)
+        storage.add_chat_message(
+            conversation_id,
+            response_dict["content"],
+            running_cost=turn_cost,
+            reasoning=response_dict.get("reasoning"),
+        )
         storage.update_conversation_cost(conversation_id, turn_cost)
         budget_state = storage.record_session_usage(conversation_id, turn_cost)
         updated_conversation = storage.get_conversation(conversation_id)
@@ -1235,7 +1240,12 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     chairman_model=effective_chairman_model,
                     extra_usage_records=extra_usage_records,
                 )
-                storage.add_chat_message(conversation_id, response_dict["content"], running_cost=turn_cost)
+                storage.add_chat_message(
+                    conversation_id,
+                    response_dict["content"],
+                    running_cost=turn_cost,
+                    reasoning=response_dict.get("reasoning"),
+                )
                 
                 yield f"data: {json.dumps({'type': 'chat_response', 'data': response_dict})}\n\n"
                 logger.info(f"[CHAT] Chat response sent to client")
