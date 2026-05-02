@@ -23,12 +23,14 @@ export function formatDuration(durationMs) {
     return `${Math.max(0, Math.round(durationMs))}ms`;
   }
 
-  if (durationMs < 60_000) {
+  const roundedSeconds = Math.round(Math.max(0, durationMs) / 1000);
+
+  if (roundedSeconds < 60) {
     return `${(durationMs / 1000).toFixed(1).replace(/\.0$/, '')}s`;
   }
 
-  const minutes = Math.floor(durationMs / 60_000);
-  const seconds = Math.round((durationMs % 60_000) / 1000);
+  const minutes = Math.floor(roundedSeconds / 60);
+  const seconds = roundedSeconds % 60;
   return `${minutes}m ${seconds}s`;
 }
 

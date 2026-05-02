@@ -26,6 +26,10 @@ test('formatDuration uses compact human-readable units', () => {
   assert.equal(formatDuration(null), null);
 });
 
+test('formatDuration normalizes second rollover at minute boundaries', () => {
+  assert.equal(formatDuration(119999), '2m 0s');
+});
+
 test('getReasoningStatusLabel maps stream states to user-facing copy', () => {
   assert.equal(getReasoningStatusLabel('streaming'), 'Reasoning');
   assert.equal(getReasoningStatusLabel('complete'), 'Reasoning complete');
