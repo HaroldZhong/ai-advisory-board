@@ -150,6 +150,7 @@ class CreateConversationRequest(BaseModel):
     zdr_enabled: Optional[bool] = None
     budget_usd: Optional[float] = None
     budget_allow_overage: bool = False
+    thinking_effort: Optional[str] = None
 
 
 @app.post("/api/conversations")
@@ -183,6 +184,11 @@ async def create_conversation(request: CreateConversationRequest):
         metadata["zdr_enabled"] = bool(request.zdr_enabled)
     elif preset is not None and preset.get("requires_zdr"):
         metadata["zdr_enabled"] = True
+
+    if request.thinking_effort is not None:
+        metadata["thinking_effort"] = validate_thinking_effort(request.thinking_effort)
+    elif preset is not None:
+        metadata["thinking_effort"] = preset.get("default_reasoning_effort", "medium")
 
     if request.budget_usd is not None:
         session_policy = normalize_session_policy(SessionPolicyUpdate(
@@ -233,12 +239,14 @@ class SendMessageRequest(BaseModel):
     execution_mode: str = "auto"  # "auto", "quick", "standard", or "research"
     rag_preset: str = "auto"  # "auto", "low", "medium", "high", or "max"
     model_tier: str = "auto"  # "auto", "budget", "mid", or "premium"
+    thinking_effort: Optional[str] = None  # "minimal", "low", "medium", "high", or "xhigh"
     edit_index: int = -1  # If >= 0, truncate conversation to this message index before sending
 
 
 VALID_EXECUTION_MODES = {"auto", "quick", "standard", "research"}
 VALID_RAG_PRESETS = {"auto", "low", "medium", "high", "max"}
 VALID_MODEL_TIERS = {"auto", "budget", "mid", "premium"}
+VALID_THINKING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 def get_model_by_id(model_id: str) -> Optional[Dict[str, Any]]:
@@ -275,6 +283,40 @@ def resolve_effective_zdr(conversation: Dict[str, Any], request: SendMessageRequ
     return metadata.get("zdr_enabled") is True or request.zdr_enabled is True
 
 
+def validate_thinking_effort(thinking_effort: str) -> str:
+    """Validate a user-facing thinking effort value."""
+    if thinking_effort not in VALID_THINKING_EFFORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid thinking_effort: {thinking_effort}",
+        )
+    return thinking_effort
+
+
+def resolve_effective_thinking_effort(
+    conversation: Dict[str, Any],
+    request: SendMessageRequest,
+) -> str:
+    """Resolve thinking effort for a turn: request > metadata > preset default > medium."""
+    if request.thinking_effort is not None:
+        return validate_thinking_effort(request.thinking_effort)
+
+    metadata = conversation.get("metadata", {})
+    stored_effort = metadata.get("thinking_effort")
+    if stored_effort in VALID_THINKING_EFFORTS:
+        return stored_effort
+
+    preset_id = metadata.get("preset_id")
+    preset = next(
+        (candidate for candidate in config.MODEL_PRESETS if candidate["id"] == preset_id),
+        None,
+    )
+    if preset is not None and preset.get("default_reasoning_effort") in VALID_THINKING_EFFORTS:
+        return preset["default_reasoning_effort"]
+
+    return "medium"
+
+
 def validate_advanced_message_settings(request: SendMessageRequest) -> None:
     """Reject advanced UI settings the backend cannot honor."""
     if request.execution_mode not in VALID_EXECUTION_MODES:
@@ -292,6 +334,8 @@ def validate_advanced_message_settings(request: SendMessageRequest) -> None:
             status_code=400,
             detail=f"Invalid model_tier: {request.model_tier}",
         )
+    if request.thinking_effort is not None:
+        validate_thinking_effort(request.thinking_effort)
 
 
 def validate_advanced_settings_for_mode(mode: str, request: SendMessageRequest) -> None:
@@ -482,6 +526,7 @@ class ConversationUpdate(BaseModel):
     title: Optional[str] = None
     folder_id: Optional[str] = None
     zdr_enabled: Optional[bool] = None
+    thinking_effort: Optional[str] = None
 
 
 @app.get("/api/health")
@@ -638,6 +683,8 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
                 metadata.get("chairman_model"),
                 metadata.get("council_models"),
             )
+    if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
+        validate_thinking_effort(updates.thinking_effort)
 
     if "title" in updates_dict and updates.title is not None:
         storage.update_conversation_title(conversation_id, updates.title)
@@ -648,6 +695,11 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
 
     if "zdr_enabled" in updates_dict and updates.zdr_enabled is not None:
         storage.update_conversation_metadata(conversation_id, {"zdr_enabled": bool(updates.zdr_enabled)})
+    if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
+        storage.update_conversation_metadata(
+            conversation_id,
+            {"thinking_effort": updates.thinking_effort},
+        )
 
     conv = storage.get_conversation(conversation_id)
     return conv
@@ -680,6 +732,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     zdr_enabled = resolve_effective_zdr(conversation, request)
+    thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
@@ -726,6 +779,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             council_models=council_models,
             chairman_model=chairman_model,
             zdr_enabled=zdr_enabled,
+            thinking_effort=thinking_effort,
         )
         extra_usage_records = []
         if metadata.get("steward_usage"):
@@ -841,6 +895,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             rag_context,
             chairman_model=run_plan.chairman_model or chairman_model,
             zdr_enabled=zdr_enabled,
+            thinking_effort=thinking_effort,
         )
         
         # Add simple chat message
@@ -883,6 +938,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     zdr_enabled = resolve_effective_zdr(conversation, request)
+    thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
     # Determine mode
     is_first_message = len(conversation["messages"]) == 0
@@ -1007,6 +1063,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     models=council_models,
                     evidence_pack=evidence_pack,
                     zdr_enabled=zdr_enabled,
+                    thinking_effort=thinking_effort,
                 )
                 for index, result in enumerate(stage1_results):
                     for event in build_reasoning_stream_events(
@@ -1027,6 +1084,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     stage1_results,
                     models=council_models,
                     zdr_enabled=zdr_enabled,
+                    thinking_effort=thinking_effort,
                 )
                 for index, result in enumerate(stage2_results):
                     for event in build_reasoning_stream_events(
@@ -1055,6 +1113,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     quality_metrics,
                     chairman_model=chairman_model,
                     zdr_enabled=zdr_enabled,
+                    thinking_effort=thinking_effort,
                 )
                 for event in build_reasoning_stream_events(
                     stage3_result,
@@ -1214,6 +1273,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                         combined_context,
                         chairman_model=effective_chairman_model,
                         zdr_enabled=zdr_enabled,
+                        thinking_effort=thinking_effort,
                     )
                     logger.info(f"[CHAT] Chairman response received")
                 except Exception as e:
