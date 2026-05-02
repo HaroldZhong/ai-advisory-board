@@ -24,6 +24,14 @@ import { createConversationWithDefaults } from './utils/conversationCreation';
 import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
 import { rollbackFailedSendConversation } from './utils/optimisticMessages';
 import {
+  appendContentDeltaToMessage,
+  appendReasoningDeltaToMessage,
+  applyStreamUpdateToActiveConversation,
+  markLastAssistantStreamInterrupted,
+  mergeReasoningBufferIntoResult,
+  mergeReasoningBuffersIntoResults,
+} from './utils/reasoningMessages';
+import {
   mergeConversationPrivacyUpdate,
   resolveEffectiveZdr,
   setConversationPrivacyMetadata,
@@ -210,6 +218,11 @@ function ConversationView({
     const previousMessages = editIndex >= 0
       ? [...(currentConversation?.messages || [])]
       : null;
+    const updateTargetConversation = (updater) => {
+      setCurrentConversation((prev) => (
+        applyStreamUpdateToActiveConversation(prev, targetConversationId, updater)
+      ));
+    };
 
     setIsLoading(true);
     try {
@@ -221,12 +234,12 @@ function ConversationView({
 
       // Edit & Regenerate: truncate local state to edit point
       if (editIndex >= 0) {
-        setCurrentConversation((prev) => ({
+        updateTargetConversation((prev) => ({
           ...prev,
           messages: [...prev.messages.slice(0, editIndex), userMessage],
         }));
       } else {
-        setCurrentConversation((prev) => ({
+        updateTargetConversation((prev) => ({
           ...prev,
           messages: [...prev.messages, userMessage],
         }));
@@ -254,7 +267,7 @@ function ConversationView({
           },
         };
 
-        setCurrentConversation((prev) => ({
+        updateTargetConversation((prev) => ({
           ...prev,
           messages: [...prev.messages, assistantMessage],
         }));
@@ -267,7 +280,7 @@ function ConversationView({
           }
         };
 
-        setCurrentConversation((prev) => ({
+        updateTargetConversation((prev) => ({
           ...prev,
           messages: [...prev.messages, assistantMessage],
         }));
@@ -276,7 +289,7 @@ function ConversationView({
       await api.sendMessageStream(conversationId, content, (eventType, event) => {
         switch (eventType) {
           case 'stage1_start':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.loading.stage1 = true;
@@ -285,13 +298,16 @@ function ConversationView({
             break;
 
           case 'stage1_complete':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
-              lastMsg.stage1 = event.data;
+              lastMsg.stage1 = mergeReasoningBuffersIntoResults(
+                event.data,
+                lastMsg.reasoningBuffers?.stage1,
+              );
               lastMsg.loading.stage1 = false;
 
-              const cost = calculateStage1Cost(event.data, availableModels);
+              const cost = calculateStage1Cost(lastMsg.stage1, availableModels);
               lastMsg.running_cost = (lastMsg.running_cost || 0) + cost;
 
               return { ...prev, messages };
@@ -299,7 +315,7 @@ function ConversationView({
             break;
 
           case 'stage2_start':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.loading.stage2 = true;
@@ -308,14 +324,17 @@ function ConversationView({
             break;
 
           case 'stage2_complete':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
-              lastMsg.stage2 = event.data;
+              lastMsg.stage2 = mergeReasoningBuffersIntoResults(
+                event.data,
+                lastMsg.reasoningBuffers?.stage2,
+              );
               lastMsg.metadata = event.metadata;
               lastMsg.loading.stage2 = false;
 
-              const cost = calculateStage2Cost(event.data, availableModels);
+              const cost = calculateStage2Cost(lastMsg.stage2, availableModels);
               lastMsg.running_cost = (lastMsg.running_cost || 0) + cost;
 
               return { ...prev, messages };
@@ -323,7 +342,7 @@ function ConversationView({
             break;
 
           case 'stage3_start':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.loading.stage3 = true;
@@ -332,13 +351,16 @@ function ConversationView({
             break;
 
           case 'stage3_complete':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
-              lastMsg.stage3 = event.data;
+              lastMsg.stage3 = mergeReasoningBufferIntoResult(
+                event.data,
+                lastMsg.reasoningBuffers?.stage3,
+              );
               lastMsg.loading.stage3 = false;
 
-              const cost = calculateStage3Cost(event.data, availableModels);
+              const cost = calculateStage3Cost(lastMsg.stage3, availableModels);
               lastMsg.running_cost = (lastMsg.running_cost || 0) + cost;
 
               return { ...prev, messages };
@@ -346,7 +368,7 @@ function ConversationView({
             break;
 
           case 'chat_start':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.loading.chat = true;
@@ -355,7 +377,7 @@ function ConversationView({
             break;
 
           case 'chat_response':
-            setCurrentConversation((prev) => {
+            updateTargetConversation((prev) => {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               if (typeof event.data === 'string') {
@@ -372,9 +394,23 @@ function ConversationView({
             break;
 
           case 'reasoning_delta':
+            updateTargetConversation((prev) => {
+              const messages = [...prev.messages];
+              const lastIndex = messages.length - 1;
+              if (lastIndex < 0) return prev;
+              messages[lastIndex] = appendReasoningDeltaToMessage(messages[lastIndex], event.data);
+              return { ...prev, messages };
+            });
+            break;
+
           case 'content_delta':
-            // Backend support landed before the dedicated reasoning UI. Ignore
-            // for now so these forward-compatible stream events do not warn.
+            updateTargetConversation((prev) => {
+              const messages = [...prev.messages];
+              const lastIndex = messages.length - 1;
+              if (lastIndex < 0) return prev;
+              messages[lastIndex] = appendContentDeltaToMessage(messages[lastIndex], event.data);
+              return { ...prev, messages };
+            });
             break;
 
           case 'title_complete':
@@ -387,9 +423,7 @@ function ConversationView({
 
           case 'complete':
             if (event.data) {
-              setCurrentConversation((prev) => {
-                if (!prev) return prev;
-
+              updateTargetConversation((prev) => {
                 const messages = [...prev.messages];
                 const lastMsg = messages[messages.length - 1];
                 if (lastMsg?.role === 'assistant' && event.data.turn_cost != null) {
@@ -411,6 +445,7 @@ function ConversationView({
 
           case 'error':
             console.error('Stream error:', event.message);
+            updateTargetConversation(markLastAssistantStreamInterrupted);
             setIsLoading(false);
             break;
 

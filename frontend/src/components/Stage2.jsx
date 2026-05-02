@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
+import ReasoningSection from './ReasoningSection';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
 import { getStageTabListClass } from "@/utils/responsiveChatLayout";
 
 function deAnonymizeText(text, labelToModel) {
@@ -16,12 +16,21 @@ function deAnonymizeText(text, labelToModel) {
   return result;
 }
 
-export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
+export default function Stage2({
+  rankings,
+  labelToModel,
+  aggregateRankings,
+  messageKey = 'message',
+  showReasoningByDefault = false,
+}) {
   const [activeTab, setActiveTab] = useState(0);
 
   if (!rankings || rankings.length === 0) {
     return null;
   }
+
+  const activeRanking = rankings[activeTab];
+  const activeModelLabel = activeRanking.model.split('/')[1] || activeRanking.model;
 
   return (
     <div className="space-y-6">
@@ -53,19 +62,28 @@ export default function Stage2({ rankings, labelToModel, aggregateRankings }) {
 
         <Card className="p-4 bg-background border">
           <div className="mb-2 break-all text-xs font-semibold text-muted-foreground">
-            Evaluator: {rankings[activeTab].model}
+            Evaluator: {activeRanking.model}
           </div>
+          <ReasoningSection
+            className="mb-4"
+            modelId={activeRanking.model}
+            modelLabel={activeModelLabel}
+            reasoningText={activeRanking.reasoning}
+            status="complete"
+            defaultExpanded={showReasoningByDefault}
+            storageKey={`aab.reasoning.${messageKey}.stage2.${activeTab}`}
+          />
           <div className="prose max-w-none text-sm dark:prose-invert mb-4">
             <MarkdownRenderer>
-              {deAnonymizeText(rankings[activeTab].ranking, labelToModel)}
+              {deAnonymizeText(activeRanking.ranking, labelToModel)}
             </MarkdownRenderer>
           </div>
 
-          {rankings[activeTab].parsed_ranking && rankings[activeTab].parsed_ranking.length > 0 && (
+          {activeRanking.parsed_ranking && activeRanking.parsed_ranking.length > 0 && (
             <div className="bg-muted/50 p-3 rounded-md">
               <strong className="text-xs uppercase tracking-wider text-muted-foreground">Extracted Ranking</strong>
               <ol className="list-decimal list-inside text-sm mt-1 space-y-1">
-                {rankings[activeTab].parsed_ranking.map((label, i) => (
+                {activeRanking.parsed_ranking.map((label, i) => (
                   <li key={i}>
                     {labelToModel && labelToModel[label]
                       ? labelToModel[label].split('/')[1] || labelToModel[label]

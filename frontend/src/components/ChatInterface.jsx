@@ -3,6 +3,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
+import ReasoningSection from './ReasoningSection';
 import SessionBudgetSelector from './SessionBudgetSelector';
 import AdvancedSettingsPanel from './AdvancedSettingsPanel';
 import { api } from '../api';
@@ -11,99 +12,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Paperclip, Send, Download, Loader2, Users, User, Crown, ChevronDown, Brain, Sparkles, Pencil } from "lucide-react";
+import { Paperclip, Send, Download, Loader2, Users, User, Crown, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
 import { getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
-
-// Modern Chain of Thought component (ChatGPT/Claude style)
-function ChainOfThought({ reasoning }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  if (!reasoning) return null;
-
-  // Calculate summary stats
-  const wordCount = reasoning.split(/\s+/).filter(Boolean).length;
-  const lines = reasoning.split('\n').filter(Boolean).length;
-
-  // Get a brief excerpt (first sentence or first 100 chars)
-  const getExcerpt = () => {
-    const firstSentence = reasoning.match(/^[^.!?]*[.!?]/);
-    if (firstSentence && firstSentence[0].length < 150) {
-      return firstSentence[0];
-    }
-    return reasoning.substring(0, 100) + '...';
-  };
-
-  return (
-    <div className="relative">
-      {/* Collapsible Header */}
-      <button
-        onClick={() => setIsExpanded(!isExpanded)}
-        className={cn(
-          "w-full flex items-center gap-3 p-3 rounded-lg transition-all duration-200",
-          "bg-gradient-to-r from-violet-500/10 via-purple-500/10 to-fuchsia-500/10",
-          "hover:from-violet-500/15 hover:via-purple-500/15 hover:to-fuchsia-500/15",
-          "border border-violet-500/20",
-          isExpanded ? "rounded-b-none" : ""
-        )}
-      >
-        {/* Thinking Icon */}
-        <div className="relative shrink-0">
-          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
-            <Brain className="h-4 w-4 text-white" />
-          </div>
-          <Sparkles className="absolute -top-1 -right-1 h-3 w-3 text-violet-400" />
-        </div>
-
-        {/* Title and Summary */}
-        <div className="flex-1 text-left min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-medium text-sm text-foreground">Reasoning</span>
-            <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-              {wordCount} words
-            </span>
-          </div>
-          {!isExpanded && (
-            <p className="text-xs text-muted-foreground truncate mt-0.5">
-              {getExcerpt()}
-            </p>
-          )}
-        </div>
-
-        {/* Expand/Collapse Icon */}
-        <ChevronDown
-          className={cn(
-            "h-4 w-4 text-muted-foreground shrink-0 transition-transform duration-200",
-            isExpanded && "rotate-180"
-          )}
-        />
-      </button>
-
-      {/* Expandable Content */}
-      <div
-        className={cn(
-          "overflow-hidden transition-all duration-300 ease-in-out",
-          isExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
-        )}
-      >
-        <div className={cn(
-          "p-4 rounded-b-lg border border-t-0 border-violet-500/20",
-          "bg-gradient-to-b from-violet-500/5 to-transparent"
-        )}>
-          <ScrollArea className="max-h-[400px]">
-            <div className="prose prose-sm max-w-none dark:prose-invert text-muted-foreground">
-              <MarkdownRenderer>{reasoning}</MarkdownRenderer>
-            </div>
-          </ScrollArea>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // Stage progress component with pulsing animation
 function StageProgress({ stage, description, modelCount, icon: Icon }) {
@@ -721,7 +636,13 @@ export default function ChatInterface({
                         />
                       )}
 
-                      {msg.stage1 && <Stage1 responses={msg.stage1} />}
+                      {msg.stage1 && (
+                        <Stage1
+                          responses={msg.stage1}
+                          messageKey={`${conversation?.id || 'conversation'}-${index}`}
+                          showReasoningByDefault={settings.showReasoningByDefault}
+                        />
+                      )}
 
                       {/* Stage 2 Loading */}
                       {msg.loading?.stage2 && (
@@ -737,6 +658,8 @@ export default function ChatInterface({
                           rankings={msg.stage2}
                           labelToModel={msg.metadata?.label_to_model}
                           aggregateRankings={msg.metadata?.aggregate_rankings}
+                          messageKey={`${conversation?.id || 'conversation'}-${index}`}
+                          showReasoningByDefault={settings.showReasoningByDefault}
                         />
                       )}
 
@@ -749,7 +672,13 @@ export default function ChatInterface({
                           icon={Crown}
                         />
                       )}
-                      {msg.stage3 && <Stage3 finalResponse={msg.stage3} />}
+                      {msg.stage3 && (
+                        <Stage3
+                          finalResponse={msg.stage3}
+                          messageKey={`${conversation?.id || 'conversation'}-${index}`}
+                          showReasoningByDefault={settings.showReasoningByDefault}
+                        />
+                      )}
 
                       {/* Chat Mode */}
                       {msg.loading?.chat && !msg.content && (
@@ -778,7 +707,14 @@ export default function ChatInterface({
                         </div>
                       )}
 
-                      <ChainOfThought reasoning={msg.reasoning} />
+                      <ReasoningSection
+                        modelId={conversation?.metadata?.chairman_model}
+                        modelLabel="Chairman"
+                        reasoningText={msg.reasoning}
+                        status={msg.loading?.chat ? 'streaming' : 'complete'}
+                        defaultExpanded={settings.showReasoningByDefault}
+                        storageKey={`aab.reasoning.${conversation?.id || 'conversation'}-${index}.chat`}
+                      />
 
                       {msg.content && (
                         <div className="prose max-w-none text-sm dark:prose-invert">

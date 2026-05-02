@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
     zdrEnabled: false,
     defaultZdrEnabled: false,
     defaultSessionBudgetUsd: null,
+    showReasoningByDefault: false,
     webSearchEnabled: false,
     webSearchDepth: 'fast',  // 'fast' or 'deep'
     customInstructions: '',
