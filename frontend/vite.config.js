@@ -74,7 +74,7 @@ function manualChunks(id) {
     return 'vendor-markdown'
   }
 
-  return 'vendor'
+  return undefined
 }
 
 // https://vite.dev/config/
