@@ -15,6 +15,7 @@ are left in place after the target is written.
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -110,9 +111,18 @@ def _env_has_openrouter_key(path: Path, logger: Optional[object] = None) -> bool
 def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8", verify: bool = True) -> None:
     """Write text through a temp file, replace atomically, and verify content."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path: Optional[Path] = None
     try:
-        with temp_path.open("w", encoding=encoding, newline="") as handle:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding=encoding,
+            newline="",
+            dir=path.parent,
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
@@ -120,7 +130,8 @@ def write_text_atomic(path: Path, content: str, *, encoding: str = "utf-8", veri
         if verify and path.read_text(encoding=encoding) != content:
             raise RuntimeError(f"Atomic write verification failed for {path}")
     except Exception:
-        temp_path.unlink(missing_ok=True)
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
         raise
 
 

@@ -110,6 +110,28 @@ def test_write_text_atomic_removes_temp_when_replace_fails(tmp_path, monkeypatch
 
     assert not target.exists()
     assert not (tmp_path / ".env.tmp").exists()
+    assert list(tmp_path.glob(".env.*.tmp")) == []
+
+
+def test_write_text_atomic_uses_unique_temp_name_per_write(tmp_path, monkeypatch):
+    app_paths = import_app_paths()
+    target = tmp_path / ".env"
+    seen_temp_names = []
+    real_replace = app_paths.os.replace
+
+    def record_replace(src, dst):
+        seen_temp_names.append(Path(src).name)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(app_paths.os, "replace", record_replace)
+
+    app_paths.write_text_atomic(target, "OPENROUTER_API_KEY=sk-or-first\n")
+    app_paths.write_text_atomic(target, "OPENROUTER_API_KEY=sk-or-second\n")
+
+    assert len(seen_temp_names) == 2
+    assert len(set(seen_temp_names)) == 2
+    assert all(name.startswith(".env.") and name.endswith(".tmp") for name in seen_temp_names)
+    assert target.read_text(encoding="utf-8") == "OPENROUTER_API_KEY=sk-or-second\n"
 
 
 def test_write_text_atomic_rejects_readback_mismatch(tmp_path, monkeypatch):
