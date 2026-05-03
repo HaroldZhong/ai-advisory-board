@@ -13,6 +13,11 @@ import json
 
 
 THINKING_EFFORT_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+STAGE3_THINKING_EFFORT_MAX_BY_MODEL = {
+    # Release smoke showed high-effort Stage 3 synthesis can exceed the practical
+    # streaming window for the lightweight Budget chairman, while medium completes.
+    "google/gemini-2.5-flash-lite": "medium",
+}
 
 
 def ensure_minimum_thinking_effort(effort: str = None, minimum: str = "medium") -> str:
@@ -20,6 +25,22 @@ def ensure_minimum_thinking_effort(effort: str = None, minimum: str = "medium") 
     if effort is None:
         return minimum
     return effort if THINKING_EFFORT_ORDER.get(effort, 0) >= THINKING_EFFORT_ORDER[minimum] else minimum
+
+
+def cap_thinking_effort(effort: str, maximum: str) -> str:
+    """Lower effort to a model-specific maximum when needed."""
+    if THINKING_EFFORT_ORDER.get(effort, 0) <= THINKING_EFFORT_ORDER[maximum]:
+        return effort
+    return maximum
+
+
+def resolve_stage3_thinking_effort(model: str, effort: str = None) -> str:
+    """Resolve chairman synthesis effort: at least Medium, with per-model safety caps."""
+    resolved = ensure_minimum_thinking_effort(effort, "medium")
+    maximum = STAGE3_THINKING_EFFORT_MAX_BY_MODEL.get(model)
+    if maximum:
+        return cap_thinking_effort(resolved, maximum)
+    return resolved
 
 
 async def stage1_collect_responses(
@@ -273,9 +294,9 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     logger.info(f"[STAGE3] Requesting synthesis from {target_chairman}...")
     query_kwargs = {"zdr_enabled": zdr_enabled}
     if thinking_effort is not None:
-        query_kwargs["thinking_effort"] = ensure_minimum_thinking_effort(
+        query_kwargs["thinking_effort"] = resolve_stage3_thinking_effort(
+            target_chairman,
             thinking_effort,
-            "medium",
         )
     response = await query_model(target_chairman, messages, **query_kwargs)
 
