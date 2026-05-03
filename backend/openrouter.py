@@ -1,5 +1,6 @@
 """OpenRouter API client for making LLM requests."""
 
+import asyncio
 import httpx
 from typing import List, Dict, Any, Optional
 from .config import OPENROUTER_API_URL, get_openrouter_api_key
@@ -47,10 +48,13 @@ async def query_model(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                OPENROUTER_API_URL,
-                headers=headers,
-                json=payload
+            response = await asyncio.wait_for(
+                client.post(
+                    OPENROUTER_API_URL,
+                    headers=headers,
+                    json=payload
+                ),
+                timeout=timeout,
             )
             response.raise_for_status()
 
@@ -72,6 +76,9 @@ async def query_model(
                 'usage': usage
             }
 
+    except asyncio.TimeoutError:
+        logger.error(f"OpenRouter request to {model} timed out after {timeout:.1f}s")
+        return None
     except Exception as e:
         logger.error(f"Error querying model {model}: {e}")
         return None
