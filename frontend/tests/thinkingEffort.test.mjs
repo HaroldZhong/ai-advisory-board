@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   THINKING_EFFORT_LEVELS,
   formatThinkingEffortLabel,
+  getThinkingEffortLevelsForConversation,
   getThinkingEffortOption,
   getThinkingEffortTone,
   isValidThinkingEffort,
@@ -48,6 +49,16 @@ test('thinking effort resolver prefers conversation metadata over preset default
   assert.equal(resolveEffectiveThinkingEffort(null), 'medium');
 });
 
+test('budget preset caps effective and selectable thinking effort at medium', () => {
+  assert.equal(resolveEffectiveThinkingEffort({
+    metadata: { preset_id: 'budget', thinking_effort: 'high' },
+  }), 'medium');
+  assert.deepEqual(
+    getThinkingEffortLevelsForConversation({ metadata: { preset_id: 'budget' } }),
+    ['minimal', 'low', 'medium'],
+  );
+});
+
 test('thinking effort options include honest relative cost hints', () => {
   assert.equal(getThinkingEffortOption('minimal').costHint, '~0.2x reasoning tokens');
   assert.equal(getThinkingEffortOption('medium').costHint, 'Default reasoning token budget');
@@ -80,6 +91,17 @@ test('local thinking effort metadata update only applies to the active conversat
   assert.notEqual(updated, current);
   assert.equal(updated.metadata.thinking_effort, 'high');
   assert.equal(updated.metadata.preset_id, 'balanced');
+
+  const budgetUpdated = setConversationThinkingEffortMetadata(
+    {
+      id: 'conversation-1',
+      messages: [],
+      metadata: { preset_id: 'budget', thinking_effort: 'low' },
+    },
+    'conversation-1',
+    'xhigh',
+  );
+  assert.equal(budgetUpdated.metadata.thinking_effort, 'medium');
 
   assert.equal(
     setConversationThinkingEffortMetadata(current, 'conversation-2', 'high'),
