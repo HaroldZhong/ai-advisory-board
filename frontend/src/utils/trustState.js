@@ -1,3 +1,8 @@
+import {
+  getThinkingEffortOption,
+  resolveEffectiveThinkingEffort,
+} from './thinkingEffort.js';
+
 const PRESET_LABELS = {
   balanced: 'Balanced',
   research: 'Research',
@@ -180,6 +185,8 @@ export function formatTrustRowState({
   const pctLabel = spentPct == null ? null : `${Math.round(spentPct * 100)}% used`;
   const webEnabled = settings.webSearchEnabled === true;
   const webDepth = settings.webSearchDepth || 'fast';
+  const effectiveThinkingEffort = resolveEffectiveThinkingEffort(conversation);
+  const thinkingOption = getThinkingEffortOption(effectiveThinkingEffort);
 
   return {
     council: {
@@ -214,6 +221,13 @@ export function formatTrustRowState({
       detail: attachmentCount > 0
         ? `${attachmentCount} ${attachmentCount === 1 ? 'file' : 'files'} attached`
         : 'No files attached',
+    },
+    thinking: {
+      value: effectiveThinkingEffort,
+      label: thinkingOption.label,
+      detail: thinkingOption.costHint,
+      description: thinkingOption.description,
+      tone: thinkingOption.tone,
     },
     cost: {
       value: formatCurrency(conversation?.total_cost || 0),
