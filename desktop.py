@@ -25,17 +25,21 @@ def get_app_dir():
 # --- Logging to file (critical for --noconsole builds) ---
 APP_DIR = get_app_dir()
 LOG_FILE = str(get_desktop_log_path())
-os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
-)
 logger = logging.getLogger("desktop")
+
+
+def configure_logging() -> logging.Logger:
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+    return logging.getLogger("desktop")
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8001
@@ -133,7 +137,8 @@ def wait_for_port(host, port, timeout=30):
     return False
 
 def main():
-    global server_error
+    global logger, server_error
+    logger = configure_logging()
     logger.info("=== AI Advisory Board Desktop Starting ===")
     logger.info("Python: %s", sys.version)
     logger.info("Frozen: %s", getattr(sys, 'frozen', False))
