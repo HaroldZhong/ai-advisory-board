@@ -62,12 +62,14 @@ export default function ChatInterface({
   onSendMessage,
   onUpdateSessionPolicy,
   onUpdateConversationPrivacy,
+  onUpdateThinkingEffort,
   budgetWarning,
   isLoading,
 }) {
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdatingPrivacy, setIsUpdatingPrivacy] = useState(false);
+  const [isUpdatingThinkingEffort, setIsUpdatingThinkingEffort] = useState(false);
   const [attachments, setAttachments] = useState([]);  // Uploaded attachment metadata
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -86,12 +88,17 @@ export default function ChatInterface({
   const nextMessageMode = conversation?.messages?.length > 0 ? 'chat' : 'council';
   const effectiveZdr = resolveEffectiveZdr(conversation, settings);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
-  const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
+  const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
     isLoading,
     isUploading,
     isUpdatingPrivacy,
   });
+  const thinkingDisabledReason = isLoading
+    ? 'Thinking effort changes apply to future turns and are disabled while a response is streaming'
+    : isUpdatingThinkingEffort
+      ? 'Thinking effort update is being saved'
+      : null;
 
   const handleBudgetConfirm = async (budgetUsd) => {
     try {
@@ -768,6 +775,8 @@ export default function ChatInterface({
             onOpenAdvancedSettings={() => setShowAdvancedSettings(true)}
             privacyDisabled={Boolean(privacyDisabledReason)}
             privacyDisabledReason={privacyDisabledReason}
+            thinkingDisabled={Boolean(thinkingDisabledReason)}
+            thinkingDisabledReason={thinkingDisabledReason}
             onUpdateConversationPrivacy={async (nextZdr) => {
               if (privacyDisabledReason) return;
               setIsUpdatingPrivacy(true);
@@ -777,6 +786,17 @@ export default function ChatInterface({
                 alert(`Failed to update conversation privacy: ${error.message || 'Unknown error'}`);
               } finally {
                 setIsUpdatingPrivacy(false);
+              }
+            }}
+            onUpdateThinkingEffort={async (nextEffort) => {
+              if (thinkingDisabledReason) return;
+              setIsUpdatingThinkingEffort(true);
+              try {
+                await onUpdateThinkingEffort?.(nextEffort);
+              } catch (error) {
+                alert(`Failed to update thinking effort: ${error.message || 'Unknown error'}`);
+              } finally {
+                setIsUpdatingThinkingEffort(false);
               }
             }}
           />

@@ -17,11 +17,11 @@ test('trust row wraps before switching to dense desktop columns', () => {
   const gridClass = getTrustRowGridClass();
   assert.match(gridClass, /grid-cols-1/);
   assert.match(gridClass, /sm:grid-cols-2/);
-  assert.match(gridClass, /lg:grid-cols-\[1fr_1fr_1\.25fr_1fr_auto\]/);
+  assert.match(gridClass, /xl:grid-cols-\[1fr_1fr_1\.25fr_1fr_1fr_auto\]/);
 
   const costClass = getTrustRowCostTileClass();
   assert.match(costClass, /sm:col-span-2/);
-  assert.match(costClass, /lg:col-span-1/);
+  assert.match(costClass, /xl:col-span-1/);
 });
 
 test('stage tab lists scroll at narrow widths and wrap when space allows', () => {

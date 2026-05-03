@@ -1,8 +1,13 @@
-import { AlertTriangle, DollarSign, FileText, Globe, Settings, Shield, ShieldOff, Users } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, BrainCircuit, Check, DollarSign, FileText, Globe, Settings, Shield, ShieldOff, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { getTrustRowCostTileClass, getTrustRowGridClass } from '@/utils/responsiveChatLayout';
 import { formatTrustRowState, getEffectiveBudgetWarning } from '@/utils/trustState';
+import {
+  THINKING_EFFORT_LEVELS,
+  getThinkingEffortOption,
+} from '@/utils/thinkingEffort';
 
 const toneClasses = {
   neutral: 'border-border bg-muted/30 text-foreground',
@@ -80,17 +85,31 @@ export default function TrustRow({
   onToggleWebDepth,
   onOpenAdvancedSettings,
   onUpdateConversationPrivacy,
+  onUpdateThinkingEffort,
   privacyDisabled = false,
   privacyDisabledReason,
+  thinkingDisabled = false,
+  thinkingDisabledReason,
 }) {
+  const [isThinkingMenuOpen, setIsThinkingMenuOpen] = useState(false);
   const state = formatTrustRowState({ conversation, settings, attachmentCount });
   const warning = getEffectiveBudgetWarning(state.budget.spentPct, budgetWarning?.threshold);
   const warningTone = warning?.level === 'danger' ? 'danger' : warning?.level === 'warn' ? 'warn' : 'caution';
   const privacyIcon = state.privacy.effectiveZdr ? Shield : ShieldOff;
+  const thinkingCanUpdate = Boolean(conversation?.id && onUpdateThinkingEffort) && !thinkingDisabled;
 
   const handlePrivacyToggle = () => {
     if (state.privacy.locked || privacyDisabled || !onUpdateConversationPrivacy) return;
     onUpdateConversationPrivacy(!state.privacy.effectiveZdr);
+  };
+
+  const handleThinkingSelect = (effort) => {
+    if (!thinkingCanUpdate || effort === state.thinking.value) {
+      setIsThinkingMenuOpen(false);
+      return;
+    }
+    onUpdateThinkingEffort(effort);
+    setIsThinkingMenuOpen(false);
   };
 
   return (
@@ -129,6 +148,57 @@ export default function TrustRow({
         >
           <BudgetProgress spentPct={state.budget.spentPct} tone={state.budget.tone} />
         </TrustTile>
+
+        <div className="relative">
+          <TrustTile
+            icon={BrainCircuit}
+            label="Thinking"
+            detail={`${state.thinking.label} · ${state.thinking.detail}`}
+            onClick={() => setIsThinkingMenuOpen((current) => !current)}
+            disabled={!thinkingCanUpdate}
+            tone={state.thinking.tone}
+            title={thinkingDisabled
+              ? thinkingDisabledReason || 'Thinking effort changes are temporarily disabled'
+              : 'Change thinking effort for this conversation'}
+          />
+          {isThinkingMenuOpen && thinkingCanUpdate && (
+            <div className="absolute bottom-full left-0 z-20 mb-2 w-[min(92vw,360px)] min-w-[280px] rounded-md border bg-popover p-2 text-popover-foreground shadow-lg">
+              <div className="px-2 pb-2">
+                <div className="text-xs font-semibold">Thinking effort</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Applies to future turns on supported models. Stage 3 always uses at least Medium.
+                </div>
+              </div>
+              <div className="space-y-1">
+                {THINKING_EFFORT_LEVELS.map((effort) => {
+                  const option = getThinkingEffortOption(effort);
+                  const selected = effort === state.thinking.value;
+
+                  return (
+                    <button
+                      key={effort}
+                      type="button"
+                      className={cn(
+                        'flex w-full items-start gap-2 rounded px-2 py-2 text-left text-sm hover:bg-muted',
+                        selected && 'bg-muted',
+                      )}
+                      onClick={() => handleThinkingSelect(effort)}
+                    >
+                      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+                        {selected && <Check className="h-3.5 w-3.5" />}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block font-medium">{option.label}</span>
+                        <span className="block text-xs text-muted-foreground">{option.description}</span>
+                        <span className="block text-[11px] text-muted-foreground">{option.costHint}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div
           className={cn(

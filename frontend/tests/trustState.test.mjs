@@ -127,7 +127,7 @@ test('trust row state prefers conversation ZDR metadata over global settings', (
 test('legacy conversation without ZDR metadata falls back to current settings', () => {
   const state = formatTrustRowState({
     conversation: {
-      metadata: { council_models: ['a'], chairman_model: 'chair' },
+      metadata: { council_models: ['a'], chairman_model: 'chair', default_reasoning_effort: 'high' },
       session_policy: {},
       session_usage: {},
     },
@@ -136,6 +136,9 @@ test('legacy conversation without ZDR metadata falls back to current settings', 
 
   assert.equal(state.privacy.effectiveZdr, true);
   assert.equal(state.privacy.label, 'ZDR enforced');
+  assert.equal(state.thinking.label, 'High');
+  assert.equal(state.thinking.detail, '~1.6x reasoning tokens');
+  assert.equal(state.thinking.tone, 'warn');
 });
 
 test('privacy update merge preserves local streaming messages', () => {

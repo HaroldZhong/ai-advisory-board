@@ -24,6 +24,10 @@ import { createConversationWithDefaults } from './utils/conversationCreation';
 import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
 import { rollbackFailedSendConversation } from './utils/optimisticMessages';
 import {
+  mergeConversationThinkingEffortUpdate,
+  setConversationThinkingEffortMetadata,
+} from './utils/thinkingEffort';
+import {
   appendContentDeltaToMessage,
   appendReasoningDeltaToMessage,
   applyStreamUpdateToActiveConversation,
@@ -206,6 +210,31 @@ function ConversationView({
     } catch (error) {
       setCurrentConversation((prev) => (
         setConversationPrivacyMetadata(prev, targetConversationId, previousZdr)
+      ));
+      throw error;
+    }
+  };
+
+  const handleUpdateThinkingEffort = async (thinkingEffort) => {
+    if (!conversationId || isLoading) return null;
+
+    const targetConversationId = conversationId;
+    const previousThinkingEffort = currentConversation?.id === targetConversationId
+      ? currentConversation?.metadata?.thinking_effort
+      : undefined;
+
+    setCurrentConversation((prev) => (
+      setConversationThinkingEffortMetadata(prev, targetConversationId, thinkingEffort)
+    ));
+
+    try {
+      const updated = await api.updateConversation(targetConversationId, { thinking_effort: thinkingEffort });
+      setCurrentConversation((prev) => mergeConversationThinkingEffortUpdate(prev, updated));
+      loadConversations();
+      return updated;
+    } catch (error) {
+      setCurrentConversation((prev) => (
+        setConversationThinkingEffortMetadata(prev, targetConversationId, previousThinkingEffort)
       ));
       throw error;
     }
@@ -527,6 +556,7 @@ function ConversationView({
           onSendMessage={handleSendMessage}
           onUpdateSessionPolicy={handleUpdateSessionPolicy}
           onUpdateConversationPrivacy={handleUpdateConversationPrivacy}
+          onUpdateThinkingEffort={handleUpdateThinkingEffort}
           budgetWarning={budgetWarning}
           onDismissBudgetWarning={() => setBudgetWarning(null)}
           isLoading={isLoading}
