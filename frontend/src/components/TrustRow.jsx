@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { getTrustRowCostTileClass, getTrustRowGridClass } from '@/utils/responsiveChatLayout';
 import { formatTrustRowState, getEffectiveBudgetWarning } from '@/utils/trustState';
 import {
-  THINKING_EFFORT_LEVELS,
+  getThinkingEffortLevelsForConversation,
   getThinkingEffortOption,
 } from '@/utils/thinkingEffort';
 
@@ -97,6 +97,7 @@ export default function TrustRow({
   const warningTone = warning?.level === 'danger' ? 'danger' : warning?.level === 'warn' ? 'warn' : 'caution';
   const privacyIcon = state.privacy.effectiveZdr ? Shield : ShieldOff;
   const thinkingCanUpdate = Boolean(conversation?.id && onUpdateThinkingEffort) && !thinkingDisabled;
+  const selectableThinkingEfforts = getThinkingEffortLevelsForConversation(conversation);
 
   const handlePrivacyToggle = () => {
     if (state.privacy.locked || privacyDisabled || !onUpdateConversationPrivacy) return;
@@ -170,7 +171,7 @@ export default function TrustRow({
                 </div>
               </div>
               <div className="space-y-1">
-                {THINKING_EFFORT_LEVELS.map((effort) => {
+                {selectableThinkingEfforts.map((effort) => {
                   const option = getThinkingEffortOption(effort);
                   const selected = effort === state.thinking.value;
 

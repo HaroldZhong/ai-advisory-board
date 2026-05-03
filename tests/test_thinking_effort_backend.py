@@ -23,6 +23,24 @@ async def test_create_conversation_stores_preset_thinking_effort(monkeypatch, tm
     assert conversation["metadata"]["thinking_effort"] == "high"
 
 
+@pytest.mark.asyncio
+async def test_create_conversation_caps_budget_thinking_effort(monkeypatch, tmp_path):
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+
+    conversation = await main.create_conversation(
+        main.CreateConversationRequest(
+            topic="Budget",
+            preset_id="budget",
+            thinking_effort="xhigh",
+        )
+    )
+
+    assert conversation["metadata"]["preset_id"] == "budget"
+    assert conversation["metadata"]["thinking_effort"] == "medium"
+
+
 def test_resolve_effective_thinking_effort_precedence(monkeypatch):
     main = import_module_with_api_key(monkeypatch, "backend.main")
 
@@ -44,6 +62,33 @@ def test_resolve_effective_thinking_effort_precedence(monkeypatch):
         {"metadata": {}},
         main.SendMessageRequest(content="Hi"),
     ) == "medium"
+    assert main.resolve_effective_thinking_effort(
+        {"metadata": {"preset_id": "budget", "thinking_effort": "high"}},
+        main.SendMessageRequest(content="Hi"),
+    ) == "medium"
+    assert main.resolve_effective_thinking_effort(
+        {"metadata": {"preset_id": "budget", "thinking_effort": "low"}},
+        main.SendMessageRequest(content="Hi", thinking_effort="xhigh"),
+    ) == "medium"
+
+
+@pytest.mark.asyncio
+async def test_update_conversation_caps_budget_thinking_effort(monkeypatch, tmp_path):
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-budget-effort-cap"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"preset_id": "budget", "thinking_effort": "low"},
+    )
+
+    updated = await main.update_conversation(
+        conversation_id,
+        main.ConversationUpdate(thinking_effort="high"),
+    )
+
+    assert updated["metadata"]["thinking_effort"] == "medium"
 
 
 @pytest.mark.asyncio

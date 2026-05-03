@@ -1,4 +1,10 @@
 export const THINKING_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+const THINKING_EFFORT_ORDER = Object.fromEntries(
+  THINKING_EFFORT_LEVELS.map((effort, index) => [effort, index]),
+);
+const THINKING_EFFORT_MAX_BY_PRESET = {
+  budget: 'medium',
+};
 
 const THINKING_EFFORT_OPTIONS = {
   minimal: {
@@ -41,6 +47,23 @@ export function normalizeThinkingEffort(effort, fallback = 'medium') {
   return isValidThinkingEffort(effort) ? effort : fallback;
 }
 
+export function capThinkingEffortForPreset(presetId, effort) {
+  const normalizedEffort = normalizeThinkingEffort(effort);
+  const maxEffort = THINKING_EFFORT_MAX_BY_PRESET[presetId];
+  if (!maxEffort) return normalizedEffort;
+  return THINKING_EFFORT_ORDER[normalizedEffort] > THINKING_EFFORT_ORDER[maxEffort]
+    ? maxEffort
+    : normalizedEffort;
+}
+
+export function getThinkingEffortLevelsForConversation(conversation) {
+  const presetId = conversation?.metadata?.preset_id;
+  const maxEffort = THINKING_EFFORT_MAX_BY_PRESET[presetId];
+  if (!maxEffort) return THINKING_EFFORT_LEVELS;
+  const maxOrder = THINKING_EFFORT_ORDER[maxEffort];
+  return THINKING_EFFORT_LEVELS.filter((effort) => THINKING_EFFORT_ORDER[effort] <= maxOrder);
+}
+
 export function getThinkingEffortOption(effort) {
   return THINKING_EFFORT_OPTIONS[normalizeThinkingEffort(effort)] || THINKING_EFFORT_OPTIONS.medium;
 }
@@ -55,9 +78,14 @@ export function getThinkingEffortTone(effort) {
 
 export function resolveEffectiveThinkingEffort(conversation) {
   const metadata = conversation?.metadata || {};
-  if (isValidThinkingEffort(metadata.thinking_effort)) return metadata.thinking_effort;
-  if (isValidThinkingEffort(metadata.default_reasoning_effort)) return metadata.default_reasoning_effort;
-  return 'medium';
+  const presetId = metadata.preset_id;
+  if (isValidThinkingEffort(metadata.thinking_effort)) {
+    return capThinkingEffortForPreset(presetId, metadata.thinking_effort);
+  }
+  if (isValidThinkingEffort(metadata.default_reasoning_effort)) {
+    return capThinkingEffortForPreset(presetId, metadata.default_reasoning_effort);
+  }
+  return capThinkingEffortForPreset(presetId, 'medium');
 }
 
 export function setConversationThinkingEffortMetadata(currentConversation, conversationId, effort) {
@@ -68,7 +96,7 @@ export function setConversationThinkingEffortMetadata(currentConversation, conve
   if (effort === undefined) {
     delete metadata.thinking_effort;
   } else {
-    metadata.thinking_effort = effort;
+    metadata.thinking_effort = capThinkingEffortForPreset(metadata.preset_id, effort);
   }
 
   return {

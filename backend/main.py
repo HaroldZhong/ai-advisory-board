@@ -186,9 +186,15 @@ async def create_conversation(request: CreateConversationRequest):
         metadata["zdr_enabled"] = True
 
     if request.thinking_effort is not None:
-        metadata["thinking_effort"] = validate_thinking_effort(request.thinking_effort)
+        metadata["thinking_effort"] = cap_thinking_effort_for_preset(
+            request.preset_id,
+            validate_thinking_effort(request.thinking_effort),
+        )
     elif preset is not None:
-        metadata["thinking_effort"] = preset.get("default_reasoning_effort", "medium")
+        metadata["thinking_effort"] = cap_thinking_effort_for_preset(
+            request.preset_id,
+            preset.get("default_reasoning_effort", "medium"),
+        )
 
     if request.budget_usd is not None:
         session_policy = normalize_session_policy(SessionPolicyUpdate(
@@ -247,6 +253,8 @@ VALID_EXECUTION_MODES = {"auto", "quick", "standard", "research"}
 VALID_RAG_PRESETS = {"auto", "low", "medium", "high", "max"}
 VALID_MODEL_TIERS = {"auto", "budget", "mid", "premium"}
 VALID_THINKING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+THINKING_EFFORT_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
+THINKING_EFFORT_MAX_BY_PRESET = {"budget": "medium"}
 
 
 def get_model_by_id(model_id: str) -> Optional[Dict[str, Any]]:
@@ -293,26 +301,40 @@ def validate_thinking_effort(thinking_effort: str) -> str:
     return thinking_effort
 
 
+def cap_thinking_effort_for_preset(preset_id: Optional[str], thinking_effort: str) -> str:
+    """Apply preset-specific max effort caps while preserving lower user choices."""
+    max_effort = THINKING_EFFORT_MAX_BY_PRESET.get(preset_id or "")
+    if max_effort is None:
+        return thinking_effort
+    if THINKING_EFFORT_ORDER[thinking_effort] > THINKING_EFFORT_ORDER[max_effort]:
+        return max_effort
+    return thinking_effort
+
+
 def resolve_effective_thinking_effort(
     conversation: Dict[str, Any],
     request: SendMessageRequest,
 ) -> str:
     """Resolve thinking effort for a turn: request > metadata > preset default > medium."""
-    if request.thinking_effort is not None:
-        return validate_thinking_effort(request.thinking_effort)
-
     metadata = conversation.get("metadata", {})
+    preset_id = metadata.get("preset_id")
+
+    if request.thinking_effort is not None:
+        return cap_thinking_effort_for_preset(
+            preset_id,
+            validate_thinking_effort(request.thinking_effort),
+        )
+
     stored_effort = metadata.get("thinking_effort")
     if stored_effort in VALID_THINKING_EFFORTS:
-        return stored_effort
+        return cap_thinking_effort_for_preset(preset_id, stored_effort)
 
-    preset_id = metadata.get("preset_id")
     preset = next(
         (candidate for candidate in config.MODEL_PRESETS if candidate["id"] == preset_id),
         None,
     )
     if preset is not None and preset.get("default_reasoning_effort") in VALID_THINKING_EFFORTS:
-        return preset["default_reasoning_effort"]
+        return cap_thinking_effort_for_preset(preset_id, preset["default_reasoning_effort"])
 
     return "medium"
 
@@ -696,9 +718,15 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
     if "zdr_enabled" in updates_dict and updates.zdr_enabled is not None:
         storage.update_conversation_metadata(conversation_id, {"zdr_enabled": bool(updates.zdr_enabled)})
     if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
+        metadata = conv.get("metadata", {})
         storage.update_conversation_metadata(
             conversation_id,
-            {"thinking_effort": updates.thinking_effort},
+            {
+                "thinking_effort": cap_thinking_effort_for_preset(
+                    metadata.get("preset_id"),
+                    updates.thinking_effort,
+                )
+            },
         )
 
     conv = storage.get_conversation(conversation_id)
