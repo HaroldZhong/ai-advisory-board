@@ -63,3 +63,30 @@ jobs:
 
       - name: Run deterministic frontend tests
         run: node --test frontend/tests/advancedSettingsAvailability.test.mjs frontend/tests/advancedRoutingControls.test.mjs frontend/tests/configStatus.test.mjs frontend/tests/conversationCreation.test.mjs frontend/tests/conversationOrganization.test.mjs frontend/tests/firstRunSetup.test.mjs frontend/tests/modelPresets.test.mjs frontend/tests/oneShotSignal.test.mjs frontend/tests/optimisticMessages.test.mjs frontend/tests/reasoningDisplay.test.mjs frontend/tests/reasoningMessages.test.mjs frontend/tests/responsiveChatLayout.test.mjs frontend/tests/responsiveLayout.test.mjs frontend/tests/responsiveModalLayout.test.mjs frontend/tests/thinkingEffort.test.mjs frontend/tests/trustState.test.mjs
+
+  frontend-e2e-tests:
+    name: Frontend Playwright E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        working-directory: frontend
+        run: npm run test:e2e
