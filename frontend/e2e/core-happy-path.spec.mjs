@@ -1,0 +1,337 @@
+import { expect, test } from '@playwright/test';
+
+const API_BASE = 'http://localhost:8001';
+const CONVERSATION_ID = 'e2e-private-conversation';
+const MODEL_GLM = 'z-ai/glm-5.1';
+const MODEL_QWEN = 'qwen/qwen3.5-35b-a3b';
+const MODEL_CLAUDE = 'anthropic/claude-opus-4.7';
+const MODEL_GPT = 'openai/gpt-5.5-pro';
+const MODEL_GPT_ZDR = 'openai/gpt-5.4';
+
+function json(body, status = 200) {
+  return {
+    status,
+    contentType: 'application/json',
+    headers: {
+      'access-control-allow-origin': '*',
+      'access-control-allow-headers': '*',
+      'access-control-allow-methods': 'GET,POST,PUT,DELETE,OPTIONS',
+    },
+    body: JSON.stringify(body),
+  };
+}
+
+function sse(events) {
+  return {
+    status: 200,
+    contentType: 'text/event-stream',
+    headers: {
+      'access-control-allow-origin': '*',
+      'cache-control': 'no-cache',
+    },
+    body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+  };
+}
+
+function model(id, name, { type = 'both', supportsZdr = true, input = 1, output = 2 } = {}) {
+  return {
+    id,
+    name,
+    type,
+    pricing: { input, output },
+    capabilities: ['reasoning', 'generalist'],
+    supports_zdr: supportsZdr,
+    supports_reasoning: true,
+    available: true,
+  };
+}
+
+const modelsPayload = {
+  models: [
+    model(MODEL_CLAUDE, 'Anthropic: Claude Opus 4.7', { input: 5, output: 25 }),
+    model(MODEL_GLM, 'Z.ai: GLM 5.1', { input: 1.05, output: 3.5 }),
+    model(MODEL_QWEN, 'Qwen: Qwen3.5-35B-A3B', { input: 0.6, output: 1.2 }),
+    model(MODEL_GPT, 'OpenAI: GPT-5.5 Pro', { supportsZdr: false, input: 30, output: 120 }),
+    model(MODEL_GPT_ZDR, 'OpenAI: GPT-5.4', { input: 2, output: 8 }),
+  ],
+  defaults: {
+    chairman: MODEL_CLAUDE,
+    council: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
+  },
+  presets: [
+    {
+      id: 'balanced',
+      label: 'Balanced',
+      description: 'Diverse panel across major labs. The default for most questions.',
+      chairman_model: MODEL_CLAUDE,
+      council_models: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
+      requires_zdr: false,
+      default_reasoning_effort: 'medium',
+    },
+    {
+      id: 'research',
+      label: 'Research',
+      description: 'Frontier-heavy panel for deeper synthesis.',
+      chairman_model: MODEL_GPT,
+      council_models: [MODEL_GPT, MODEL_GLM],
+      requires_zdr: false,
+      default_reasoning_effort: 'high',
+    },
+    {
+      id: 'private',
+      label: 'Private',
+      description: 'ZDR-only panel for sensitive work.',
+      chairman_model: MODEL_CLAUDE,
+      council_models: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
+      requires_zdr: true,
+      default_reasoning_effort: 'medium',
+    },
+  ],
+};
+
+function createConversation(body) {
+  return {
+    id: CONVERSATION_ID,
+    created_at: '2026-05-03T00:00:00Z',
+    title: body.topic || 'New Conversation',
+    total_cost: 0,
+    messages: [],
+    metadata: {
+      preset_id: body.preset_id,
+      zdr_enabled: body.zdr_enabled,
+      thinking_effort: 'medium',
+      chairman_model: MODEL_CLAUDE,
+      council_models: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
+    },
+    session_policy: {
+      budget_usd: body.budget_usd,
+      notify_thresholds: [0.75, 0.85, 1],
+      mode: 'auto',
+      allow_overage: false,
+    },
+    session_usage: {
+      spent_usd: 0,
+      messages: 0,
+      last_warning_level: null,
+    },
+    budget_spent_pct: 0,
+  };
+}
+
+async function installMockApi(page) {
+  let hasApiKey = false;
+  let conversation = null;
+  const requests = {
+    setup: null,
+    createConversation: null,
+    stream: null,
+  };
+
+  await page.route(`${API_BASE}/api/config/status`, (route) => {
+    route.fulfill(json({ has_api_key: hasApiKey }));
+  });
+
+  await page.route(`${API_BASE}/api/config/setup`, async (route) => {
+    requests.setup = await route.request().postDataJSON();
+    hasApiKey = true;
+    route.fulfill(json({ success: true, has_api_key: true }));
+  });
+
+  await page.route(`${API_BASE}/api/models`, (route) => {
+    route.fulfill(json(modelsPayload));
+  });
+
+  await page.route(`${API_BASE}/api/folders`, (route) => {
+    route.fulfill(json([]));
+  });
+
+  await page.route(`${API_BASE}/api/conversations`, async (route) => {
+    if (route.request().method() === 'GET') {
+      const list = conversation
+        ? [{
+            id: conversation.id,
+            title: conversation.title,
+            created_at: conversation.created_at,
+            message_count: conversation.messages.length,
+          }]
+        : [];
+      await route.fulfill(json(list));
+      return;
+    }
+
+    if (route.request().method() === 'POST') {
+      requests.createConversation = await route.request().postDataJSON();
+      conversation = createConversation(requests.createConversation);
+      await route.fulfill(json(conversation));
+      return;
+    }
+
+    await route.fulfill(json({ detail: 'Unsupported conversation method' }, 405));
+  });
+
+  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}$`), async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill(json(conversation));
+      return;
+    }
+
+    await route.fulfill(json(conversation));
+  });
+
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/message/stream`, async (route) => {
+    requests.stream = await route.request().postDataJSON();
+
+    conversation.messages = [
+      ...conversation.messages,
+      { role: 'user', content: requests.stream.content },
+      {
+        role: 'assistant',
+        stage1: [{
+          model: MODEL_GLM,
+          response: 'The subtraction leaves five.',
+          reasoning: 'Eight minus three removes three units from eight.',
+        }],
+        stage2: [{
+          model: MODEL_QWEN,
+          ranking: 'A > B',
+          parsed_ranking: ['A'],
+          reasoning: 'The first answer is concise and correct.',
+        }],
+        stage3: {
+          model: MODEL_CLAUDE,
+          response: 'The answer is 5.',
+          reasoning: 'Subtracting 3 from 8 leaves 5.',
+        },
+        metadata: {
+          label_to_model: { A: MODEL_GLM },
+          aggregate_rankings: [{ model: MODEL_GLM, average_rank: 1, rankings_count: 1 }],
+        },
+        running_cost: 0.000356,
+      },
+    ];
+    conversation.total_cost = 0.000356;
+    conversation.session_usage = {
+      spent_usd: 0.000356,
+      messages: 1,
+      last_warning_level: null,
+    };
+    conversation.budget_spent_pct = 0.000178;
+
+    await route.fulfill(sse([
+      { type: 'stage1_start' },
+      {
+        type: 'reasoning_delta',
+        data: {
+          scope: 'council',
+          stage: 'stage1',
+          model: MODEL_GLM,
+          index: 0,
+          text: 'Eight minus three removes three units from eight.',
+        },
+      },
+      {
+        type: 'stage1_complete',
+        data: [{
+          model: MODEL_GLM,
+          response: 'The subtraction leaves five.',
+        }],
+      },
+      { type: 'stage2_start' },
+      {
+        type: 'stage2_complete',
+        data: [{
+          model: MODEL_QWEN,
+          ranking: 'A > B',
+          parsed_ranking: ['A'],
+          reasoning: 'The first answer is concise and correct.',
+        }],
+        metadata: {
+          label_to_model: { A: MODEL_GLM },
+          aggregate_rankings: [{ model: MODEL_GLM, average_rank: 1, rankings_count: 1 }],
+        },
+      },
+      { type: 'stage3_start' },
+      {
+        type: 'reasoning_delta',
+        data: {
+          scope: 'council',
+          stage: 'stage3',
+          model: MODEL_CLAUDE,
+          text: 'Subtracting 3 from 8 leaves 5.',
+        },
+      },
+      {
+        type: 'stage3_complete',
+        data: {
+          model: MODEL_CLAUDE,
+          response: 'The answer is 5.',
+        },
+      },
+      {
+        type: 'complete',
+        data: {
+          turn_cost: 0.000356,
+          total_cost: 0.000356,
+          session_usage: conversation.session_usage,
+          budget_spent_pct: conversation.budget_spent_pct,
+        },
+      },
+    ]));
+  });
+
+  return requests;
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.clear();
+  });
+});
+
+test('first-run setup creates a private preset conversation and renders streamed reasoning', async ({ page }) => {
+  const requests = await installMockApi(page);
+
+  await page.goto('/app');
+
+  await expect(page.getByRole('heading', { name: 'Set Up AI Advisory Board' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Continue/ })).toBeDisabled();
+
+  await page.getByLabel('OpenRouter API key').fill('sk-or-v1-launch-hardening-key');
+  await page.getByRole('button', { name: /Continue/ }).click();
+  await page.getByText('Private routing by default').click();
+  await page.getByRole('button', { name: /Continue/ }).click();
+  await page.getByRole('button', { name: /Finish/ }).click();
+
+  await expect(page.getByRole('heading', { name: 'New conversation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Research/ })).toContainText('hidden by ZDR');
+  await page.getByRole('button', { name: /Private ZDR-only panel/ }).click();
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+  expect(requests.setup).toEqual({ api_key: 'sk-or-v1-launch-hardening-key' });
+  expect(requests.createConversation).toMatchObject({
+    preset_id: 'private',
+    zdr_enabled: true,
+    budget_usd: 2,
+    budget_allow_overage: false,
+  });
+
+  await expect(page.getByText('Private').first()).toBeVisible();
+  await expect(page.getByText('ZDR enforced')).toBeVisible();
+
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('What is 8 minus 3?');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  await expect(page.getByText('Final Council Answer')).toBeVisible();
+  await expect(page.getByText('Reasoning complete').first()).toBeVisible();
+  await expect(page.getByText('The answer is 5.')).toBeVisible();
+  await expect(page.getByText('Turn Cost:')).toBeVisible();
+  await expect(page.getByText('$0.000356')).toBeVisible();
+  await expect(page.getByText('Session cost')).toBeVisible();
+
+  expect(requests.stream).toMatchObject({
+    content: 'What is 8 minus 3?',
+    mode: 'council',
+    zdr_enabled: true,
+  });
+});
