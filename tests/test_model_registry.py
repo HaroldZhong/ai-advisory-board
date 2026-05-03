@@ -80,6 +80,16 @@ def test_presets_expose_expected_reasoning_effort_defaults(monkeypatch):
     assert by_id["private"]["default_reasoning_effort"] == "medium"
 
 
+def test_budget_preset_copy_explains_medium_effort_cap(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    by_id = {preset["id"]: preset for preset in config.MODEL_PRESETS}
+
+    budget_description = by_id["budget"]["description"].lower()
+
+    assert "medium" in budget_description
+    assert "thinking" in budget_description
+
+
 def test_private_preset_only_uses_zdr_models(monkeypatch):
     config = import_module_with_api_key(monkeypatch, "backend.config")
     by_id = {model["id"]: model for model in config.CURATED_MODELS}
