@@ -182,6 +182,51 @@ async def test_council_stage_calls_pass_thinking_effort(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stage3_caps_budget_chairman_thinking_effort_at_medium(monkeypatch):
+    council = import_module_with_api_key(monkeypatch, "backend.council")
+    captured = []
+
+    async def fake_query_model(model, messages, timeout=120.0, zdr_enabled=False, thinking_effort=None):
+        captured.append(
+            {
+                "model": model,
+                "thinking_effort": thinking_effort,
+            }
+        )
+        return {"content": "chairman response", "usage": {}}
+
+    monkeypatch.setattr(council, "query_model", fake_query_model)
+
+    stage1_results = [{"model": "model-a", "response": "First answer"}]
+    stage2_results = [{"model": "model-a", "ranking": "A"}]
+    quality_metrics = {"model-a": {"consensus_score": 1.0, "avg_rank": 1.0}}
+
+    await council.stage3_synthesize_final(
+        "Question?",
+        stage1_results,
+        stage2_results,
+        {"A": "model-a"},
+        quality_metrics,
+        chairman_model="google/gemini-2.5-flash-lite",
+        thinking_effort="high",
+    )
+    await council.stage3_synthesize_final(
+        "Question?",
+        stage1_results,
+        stage2_results,
+        {"A": "model-a"},
+        quality_metrics,
+        chairman_model="anthropic/claude-opus-4.7",
+        thinking_effort="high",
+    )
+
+    assert captured == [
+        {"model": "google/gemini-2.5-flash-lite", "thinking_effort": "medium"},
+        {"model": "anthropic/claude-opus-4.7", "thinking_effort": "high"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sync_chat_passes_resolved_thinking_effort_to_chairman(monkeypatch, tmp_path):
     main = import_module_with_api_key(monkeypatch, "backend.main")
     conversation_id = "conv-sync-thinking"
