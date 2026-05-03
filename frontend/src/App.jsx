@@ -21,6 +21,11 @@ import {
   getConfigStatusRetryDelayMs,
 } from './utils/configStatus';
 import { createConversationWithDefaults } from './utils/conversationCreation';
+import {
+  getBlockedConversationNavigationMessage,
+  shouldBlockConversationNavigation,
+  shouldBlockNewConversation,
+} from './utils/conversationNavigation';
 import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
 import { rollbackFailedSendConversation } from './utils/optimisticMessages';
 import {
@@ -115,6 +120,13 @@ function ConversationView({
   }, [conversationId]);
 
   const handleNewConversation = () => {
+    if (shouldBlockNewConversation(isLoading)) {
+      toast({
+        title: 'Response in progress',
+        description: getBlockedConversationNavigationMessage(),
+      });
+      return;
+    }
     setIsModelSelectorOpen(true);
   };
 
@@ -156,6 +168,17 @@ function ConversationView({
   };
 
   const handleSelectConversation = (id) => {
+    if (shouldBlockConversationNavigation({
+      currentConversationId: conversationId,
+      targetConversationId: id,
+      isLoading,
+    })) {
+      toast({
+        title: 'Response in progress',
+        description: getBlockedConversationNavigationMessage(),
+      });
+      return;
+    }
     navigate(`/c/${id}`);
   };
 
