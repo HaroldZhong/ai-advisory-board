@@ -1,10 +1,11 @@
 import logging
 import sys
-from pathlib import Path
+
+from .app_paths import get_logs_dir
 
 # Create logs directory if it doesn't exist
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR = get_logs_dir()
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Configure logging
 def setup_logger(name: str) -> logging.Logger:

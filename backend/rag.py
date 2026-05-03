@@ -6,14 +6,17 @@ from typing import List, Dict, Any, Optional
 from .logger import logger
 from .config import RAG_SETTINGS
 from .openrouter import query_model
+from .app_paths import get_pageindex_dir
 
 class CouncilRAG:
     """
     Reasoning-based RAG ("PageIndex") system.
     Replaces ChromaDB vector embeddings with LLM-reasoning cross-folder retrieval.
     """
-    def __init__(self, persist_path: str = "./data"):
+    def __init__(self, persist_path: Optional[str] = None):
         try:
+            if persist_path is None:
+                persist_path = str(get_pageindex_dir())
             os.makedirs(persist_path, exist_ok=True)
             self.index_file = os.path.join(persist_path, "pageindex_memory.json")
             

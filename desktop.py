@@ -7,6 +7,7 @@ import socket
 import traceback
 import uvicorn
 import webview
+from backend.app_paths import get_data_root, get_desktop_log_path
 
 # --- Determine paths ---
 def get_base_path():
@@ -18,14 +19,13 @@ def get_base_path():
     return base_path
 
 def get_app_dir():
-    """Get a writable directory next to the exe (or script) for logs/data."""
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    """Get the writable app data directory."""
+    return str(get_data_root())
 
 # --- Logging to file (critical for --noconsole builds) ---
 APP_DIR = get_app_dir()
-LOG_FILE = os.path.join(APP_DIR, "desktop.log")
+LOG_FILE = str(get_desktop_log_path())
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,7 +94,7 @@ ERROR_HTML = """
 <body>
     <div class="error">
         <h2>Server Failed to Start</h2>
-        <p>Check desktop.log for details.</p>
+        <p>Check logs/desktop.log in the app data folder for details.</p>
         <pre>{error}</pre>
     </div>
 </body>
@@ -173,7 +173,7 @@ def main():
             window.load_url(f"http://{SERVER_HOST}:{SERVER_PORT}")
         else:
             logger.error("Server port never opened.")
-            window.load_html(ERROR_HTML.format(error="Server started but port never opened. Check desktop.log."))
+            window.load_html(ERROR_HTML.format(error="Server started but port never opened. Check logs/desktop.log in the app data folder."))
     
     # Run on_loaded in a thread so it doesn't block webview.start()
     threading.Thread(target=on_loaded, daemon=True).start()

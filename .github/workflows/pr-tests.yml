@@ -30,6 +30,7 @@ jobs:
       - name: Run deterministic tests
         run: >
           uv run --group dev python -m pytest
+          tests/test_app_paths.py
           tests/test_crash_fixes.py
           tests/test_runtime_api_key_config.py
           tests/test_session_budget_cost_accounting.py

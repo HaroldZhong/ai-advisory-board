@@ -1,16 +1,18 @@
 """Configuration for the AI Advisory Board."""
 
+import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 
+from . import app_paths
 from .model_registry import load_model_registry
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
+PROJECT_ROOT = app_paths.PROJECT_ROOT
+ENV_PATH = app_paths.get_env_path()
 
+app_paths.migrate_env_file(logger=logging.getLogger("LLMCouncil.paths"))
 load_dotenv(ENV_PATH)
 
 
@@ -49,6 +51,7 @@ def save_openrouter_api_key(api_key: str) -> None:
     if not key_exists:
         new_lines.append(f"OPENROUTER_API_KEY={cleaned}\n")
 
+    ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     ENV_PATH.write_text("".join(new_lines))
     os.environ["OPENROUTER_API_KEY"] = cleaned
     OPENROUTER_API_KEY = cleaned
@@ -99,7 +102,7 @@ CHAIRMAN_MODEL = MODEL_REGISTRY["chairman_model"]
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Data directory for conversation storage
-DATA_DIR = "data/conversations"
+DATA_DIR = str(app_paths.get_conversations_dir())
 
 # Phase 1 Feature Flags
 ENABLE_QUERY_REWRITE = True  # Can flip to False if issues arise
