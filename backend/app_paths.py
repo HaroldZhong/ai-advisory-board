@@ -80,6 +80,11 @@ def get_logs_dir() -> Path:
     return get_data_root() / "logs"
 
 
+def get_exports_dir() -> Path:
+    """Return the directory used for Markdown conversation exports."""
+    return get_data_root() / "exports"
+
+
 def get_desktop_log_path() -> Path:
     return get_logs_dir() / "desktop.log"
 
