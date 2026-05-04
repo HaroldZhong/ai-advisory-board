@@ -43,6 +43,7 @@ def configure_logging() -> logging.Logger:
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8001
+APP_ROUTE = "/app"
 
 # Track server startup state
 server_error = None
@@ -136,6 +137,10 @@ def wait_for_port(host, port, timeout=30):
             time.sleep(0.3)
     return False
 
+def get_app_url(host=SERVER_HOST, port=SERVER_PORT):
+    """Return the desktop startup URL for the actual app surface."""
+    return f"http://{host}:{port}{APP_ROUTE}"
+
 def main():
     global logger, server_error
     logger = configure_logging()
@@ -175,7 +180,7 @@ def main():
         logger.info("Import succeeded, waiting for port %d...", SERVER_PORT)
         if wait_for_port(SERVER_HOST, SERVER_PORT, timeout=30):
             logger.info("Server is ready! Navigating to app...")
-            window.load_url(f"http://{SERVER_HOST}:{SERVER_PORT}")
+            window.load_url(get_app_url())
         else:
             logger.error("Server port never opened.")
             window.load_html(ERROR_HTML.format(error="Server started but port never opened. Check logs/desktop.log in the app data folder."))
