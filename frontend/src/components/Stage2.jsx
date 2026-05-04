@@ -40,7 +40,7 @@ export default function Stage2({
           <span>Peer Rankings</span>
         </h3>
         <p className="text-sm text-muted-foreground">
-          Each model evaluated all responses. Below are the individual evaluations and the extracted rankings.
+          Council models evaluate the responses below. If an evaluator is unavailable, it remains visible here.
         </p>
       </div>
 
