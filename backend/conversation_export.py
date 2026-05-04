@@ -1,13 +1,55 @@
 """Markdown export helpers for saved conversations."""
 
+from datetime import datetime, timezone
+from pathlib import Path
 import re
 from typing import Any, Dict
 
 
-def get_conversation_export_filename(title: str | None) -> str:
-    safe_title = re.sub(r"[^a-z0-9\u4e00-\u9fff]", "_", title or "conversation", flags=re.IGNORECASE)
-    safe_title = safe_title.lower() or "conversation"
+MAX_EXPORT_STEM_LENGTH = 200
+RESERVED_WINDOWS_FILENAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+
+def _fallback_export_stem(conversation_id: str | None = None) -> str:
+    safe_id = re.sub(r"[^a-zA-Z0-9]", "", conversation_id or "")[:8].lower()
+    return f"conversation_{safe_id}" if safe_id else "conversation"
+
+
+def _sanitize_export_stem(title: str | None) -> str:
+    chars = [char.lower() if char.isalnum() else "_" for char in title or ""]
+    return re.sub(r"_+", "_", "".join(chars)).strip("_")
+
+
+def get_conversation_export_filename(title: str | None, conversation_id: str | None = None) -> str:
+    safe_title = _sanitize_export_stem(title) or _fallback_export_stem(conversation_id)
+    if safe_title.lower() in RESERVED_WINDOWS_FILENAMES:
+        safe_title = f"{safe_title}_export"
+    safe_title = safe_title[:MAX_EXPORT_STEM_LENGTH].rstrip("_") or _fallback_export_stem(conversation_id)
     return f"{safe_title}.md"
+
+
+def resolve_unique_export_path(exports_dir: Path, filename: str) -> Path:
+    path = exports_dir / filename
+    if not path.exists():
+        return path
+
+    stem = path.stem
+    suffix = path.suffix
+    counter = 2
+    while True:
+        counter_suffix = f"_{counter}"
+        candidate_stem = stem[: MAX_EXPORT_STEM_LENGTH - len(counter_suffix)].rstrip("_")
+        candidate = exports_dir / f"{candidate_stem}{counter_suffix}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def _short_model_name(model: str | None, fallback: str = "Unknown") -> str:
@@ -16,9 +58,25 @@ def _short_model_name(model: str | None, fallback: str = "Unknown") -> str:
     return model.split("/", 1)[1] if "/" in model else model
 
 
+def _format_created_at(created_at: Any) -> str:
+    if not created_at:
+        return "Unknown date"
+
+    try:
+        value = str(created_at)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return f"{parsed.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    except (TypeError, ValueError):
+        return str(created_at)
+
+
 def build_conversation_markdown(conversation: Dict[str, Any]) -> str:
     title = conversation.get("title") or "Untitled Conversation"
-    created_at = conversation.get("created_at") or "Unknown date"
+    created_at = _format_created_at(conversation.get("created_at"))
     messages = conversation.get("messages") or []
     metadata = conversation.get("metadata") or {}
     total_cost = conversation.get("total_cost")

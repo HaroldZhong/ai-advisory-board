@@ -13,7 +13,11 @@ import asyncio
 
 from . import app_paths, config, storage
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, chat_with_chairman, run_tool_steward_phase
-from .conversation_export import build_conversation_markdown, get_conversation_export_filename
+from .conversation_export import (
+    build_conversation_markdown,
+    get_conversation_export_filename,
+    resolve_unique_export_path,
+)
 from .rag import CouncilRAG
 from .file_processing import extract_text_from_file, process_file, get_mime_type
 from .attachment_storage import (
@@ -674,17 +678,18 @@ async def export_conversation(conversation_id: str):
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    filename = get_conversation_export_filename(conversation.get("title"))
-    export_path = app_paths.get_exports_dir() / filename
+    filename = get_conversation_export_filename(conversation.get("title"), conversation_id)
+    export_path = resolve_unique_export_path(app_paths.get_exports_dir(), filename)
     markdown = build_conversation_markdown(conversation)
 
     try:
         app_paths.write_text_atomic(export_path, markdown)
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, UnicodeError) as exc:
         logger.error("Failed to export conversation %s to %s: %s", conversation_id, export_path, exc)
         raise HTTPException(status_code=500, detail="Failed to export conversation") from exc
 
-    return {"filename": filename, "path": str(export_path)}
+    logger.info("Exported conversation %s to %s", conversation_id, export_path)
+    return {"filename": export_path.name, "path": str(export_path)}
 
 
 @app.get("/api/conversations/{conversation_id}/session-policy")

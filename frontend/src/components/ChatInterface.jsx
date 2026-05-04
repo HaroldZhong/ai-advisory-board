@@ -72,6 +72,7 @@ export default function ChatInterface({
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdatingPrivacy, setIsUpdatingPrivacy] = useState(false);
   const [isUpdatingThinkingEffort, setIsUpdatingThinkingEffort] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [attachments, setAttachments] = useState([]);  // Uploaded attachment metadata
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -390,21 +391,24 @@ export default function ChatInterface({
   };
 
   const handleExport = async () => {
-    if (!conversation?.id) return;
+    if (!conversation?.id || isExporting) return;
 
     try {
+      setIsExporting(true);
       const result = await api.exportConversation(conversation.id);
       toast({
         title: 'Export saved',
-        description: getExportSavedDescription(result.path),
+        description: <span className="break-all">{getExportSavedDescription(result.path)}</span>,
       });
     } catch (error) {
       console.error('Failed to export conversation', error);
       toast({
         variant: 'destructive',
         title: 'Export failed',
-        description: 'Could not save the Markdown export.',
+        description: error?.message || 'Could not save the Markdown export.',
       });
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -446,9 +450,13 @@ export default function ChatInterface({
       <div className="flex items-center justify-between p-4 border-b h-14 shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10">
         <h3 className="font-semibold truncate max-w-[60%]">{conversation.title}</h3>
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" onClick={handleExport} title="Export to Markdown">
-            <Download className="mr-2 h-4 w-4" />
-            Export
+          <Button variant="ghost" size="sm" onClick={handleExport} disabled={isExporting} title="Export to Markdown">
+            {isExporting ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="mr-2 h-4 w-4" />
+            )}
+            {isExporting ? 'Exporting' : 'Export'}
           </Button>
         </div>
       </div>
