@@ -54,13 +54,14 @@ A desktop AI assistant powered by a **multi-LLM deliberative council** — multi
 The simplest way to use the AI Advisory Board — a single executable that runs everything locally.
 
 1. **Download** `AI Advisory Board.exe` from [Releases](https://github.com/HaroldZhong/ai-advisory-board/releases)
-2. **Create** a `.env` file in the same folder as the exe:
-   ```
-   OPENROUTER_API_KEY=sk-or-your-key-here
-   ```
-3. **Run** the exe — it launches a local server and opens the app in a native window
+2. **Run** the exe — it launches a local server and opens the app in a native window
+3. **Complete first-run setup** in the app: connect your OpenRouter key, choose privacy defaults, and set a starting session budget
 
 > **Get an API key**: Sign up at [OpenRouter](https://openrouter.ai/) (free tier available)
+>
+> Windows may show an unsigned-app SmartScreen warning. Choose **More info → Run anyway** if you trust the downloaded release. Windows also needs the Microsoft Edge WebView2 Runtime; most Windows 11 machines already include it.
+
+See [Installation & Packaging](docs/installation.md) for data locations, uninstall cleanup, WebView2 notes, and packaging details.
 
 ### Option B: Development Setup
 
@@ -113,9 +114,8 @@ Then open **http://localhost:5173** in your browser.
 # 1. Build the frontend
 cd frontend && npm run build && cd ..
 
-# 2. Build the exe (requires pyinstaller + pywebview)
-pip install pyinstaller pywebview
-python build_exe.py
+# 2. Build the exe
+uv run --group packaging python build_exe.py
 
 # Output: dist/AI Advisory Board.exe
 ```
@@ -254,12 +254,21 @@ build_exe.py      # PyInstaller build script
 
 ## 📁 Data Storage
 
+Installed desktop builds store user data in the per-user app data directory. On Windows this resolves to:
+
+```text
+%LOCALAPPDATA%\HaroldZhong\AI Advisory Board\
+```
+
+Development checkouts keep data project-local by default. Set `AAB_DATA_DIR` to override either mode for testing or portable setups.
+
 | What | Where | Format |
 |------|-------|--------|
-| Conversations | `data/conversations/` | JSON per conversation |
-| PageIndex Memory | `data/pageindex/` | JSON reasoning index |
-| Attachments | `data/attachments/` | Binary files + metadata |
-| Logs | `logs/app.log` | Rotating log file |
+| API key | `.env` under the app data root | dotenv |
+| Conversations | `data/conversations/` under the app data root | JSON per conversation |
+| PageIndex Memory | `data/pageindex_memory.json` under the app data root | JSON reasoning index |
+| Attachments | `data/conversations/attachments/` under the app data root | Binary files + metadata |
+| Logs | `logs/app.log` and `logs/desktop.log` under the app data root | Rotating log files |
 
 ---
 
@@ -271,12 +280,12 @@ Set a spending limit per conversation. The system automatically adjusts:
 
 | Budget Spent | RAG Context | Behavior |
 |-------------|-------------|----------|
-| ≤70% | Auto | Full quality |
-| 70–85% | Medium (8k) | Standard |
+| ≤75% | Auto | Full quality |
+| 75–85% | Medium (8k) | Standard |
 | 85–100% | Low (4k) | Quick mode |
-| >100% | Minimal | Quick mode |
+| ≥100% | Low (4k) | New turns are blocked when enforcement is enabled |
 
-**Quality floor**: Always responds, always includes ≥1 RAG chunk — no hard budget stops.
+New first-run and preset-created budgets are enforced at 100%. Raise the cap from the budget modal to continue sending new turns.
 
 ---
 
