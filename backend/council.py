@@ -198,18 +198,28 @@ Now provide your evaluation and ranking:"""
     # Format results
     stage2_results = []
     for model, response in responses.items():
-        if response is not None:
-            full_text = response.get('content', '')
-            parsed = parse_ranking_from_text(full_text)
-            result = {
+        if response is None:
+            logger.warning("Stage 2 evaluator %s did not return a ranking", model)
+            stage2_results.append({
                 "model": model,
-                "ranking": full_text,
-                "parsed_ranking": parsed,
-                "usage": response.get('usage', {})
-            }
-            if response.get("reasoning_details"):
-                result["reasoning"] = response.get("reasoning_details")
-            stage2_results.append(result)
+                "ranking": f"{model} did not return a Stage 2 evaluation.",
+                "parsed_ranking": [],
+                "usage": {},
+                "status": "unavailable",
+            })
+            continue
+
+        full_text = response.get('content', '')
+        parsed = parse_ranking_from_text(full_text)
+        result = {
+            "model": model,
+            "ranking": full_text,
+            "parsed_ranking": parsed,
+            "usage": response.get('usage', {})
+        }
+        if response.get("reasoning_details"):
+            result["reasoning"] = response.get("reasoning_details")
+        stage2_results.append(result)
 
     return stage2_results, label_to_model
 
