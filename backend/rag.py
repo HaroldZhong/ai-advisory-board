@@ -1,26 +1,42 @@
 import json
 import os
 import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from .logger import logger
 from .config import RAG_SETTINGS
 from .openrouter import query_model
+from .app_paths import get_pageindex_dir, write_text_atomic
 
 class CouncilRAG:
     """
     Reasoning-based RAG ("PageIndex") system.
     Replaces ChromaDB vector embeddings with LLM-reasoning cross-folder retrieval.
     """
-    def __init__(self, persist_path: str = "./data"):
+    def __init__(self, persist_path: Optional[str] = None):
+        self.enabled = False
+        self.store = {}
+        self.index_file = ""
         try:
+            if persist_path is None:
+                persist_path = str(get_pageindex_dir())
             os.makedirs(persist_path, exist_ok=True)
             self.index_file = os.path.join(persist_path, "pageindex_memory.json")
             
             # Load existing JSON index
             if os.path.exists(self.index_file):
-                with open(self.index_file, 'r', encoding='utf-8') as f:
-                    self.store = json.load(f)
+                try:
+                    with open(self.index_file, 'r', encoding='utf-8') as f:
+                        self.store = json.load(f)
+                except json.JSONDecodeError:
+                    backup_path = self._backup_corrupt_index()
+                    logger.exception(
+                        "[RAG] Corrupt PageIndex store moved to %s; starting empty store",
+                        backup_path,
+                    )
+                    self.store = {}
             else:
                 self.store = {}
                 
@@ -31,12 +47,23 @@ class CouncilRAG:
             self.enabled = False
             self.store = {}
 
+    def _backup_corrupt_index(self) -> str:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        backup_path = f"{self.index_file}.corrupt-{timestamp}"
+        os.replace(self.index_file, backup_path)
+        return backup_path
+
     def _save_store(self):
+        if not self.enabled:
+            return
         try:
-            with open(self.index_file, 'w', encoding='utf-8') as f:
-                json.dump(self.store, f, indent=2)
-        except Exception as e:
-            logger.error("[RAG] Failed to save PageIndex store: %s", e)
+            write_text_atomic(Path(self.index_file), json.dumps(self.store, indent=2))
+        except (OSError, RuntimeError) as e:
+            logger.exception(
+                "[RAG] Failed to persist PageIndex store; disabling persistence for this process: %s",
+                e,
+            )
+            self.enabled = False
 
     def refresh_hybrid_index(self) -> None:
         """Legacy compatibility method. No longer needed for reasoning RAG."""
@@ -49,8 +76,9 @@ class CouncilRAG:
         if conversation_id in self.store:
             del self.store[conversation_id]
             self._save_store()
-            logger.info("[RAG] Purged PageIndex memories for conversation %s", conversation_id)
-            return True
+            if self.enabled:
+                logger.info("[RAG] Purged PageIndex memories for conversation %s", conversation_id)
+            return self.enabled
         return False
         
     def update_conversation_folder(self, conversation_id: str, new_folder_id: str):
@@ -60,7 +88,8 @@ class CouncilRAG:
         if conversation_id in self.store:
             self.store[conversation_id]["folder_id"] = new_folder_id
             self._save_store()
-            logger.info("[RAG] Updated PageIndex folder routing for conversation %s to %s", conversation_id, new_folder_id)
+            if self.enabled:
+                logger.info("[RAG] Updated PageIndex folder routing for conversation %s to %s", conversation_id, new_folder_id)
 
     def index_session(
         self, 
@@ -98,7 +127,8 @@ class CouncilRAG:
             }
             self.store[conversation_id]["turns"].append(turn_memory)
             self._save_store()
-            logger.info("[PHASE1] Indexed turn %d for conv=%s into PageIndex", turn_index, conversation_id)
+            if self.enabled:
+                logger.info("[PHASE1] Indexed turn %d for conv=%s into PageIndex", turn_index, conversation_id)
 
     def index_document(self, conversation_id: str, filename: str, text: str, max_chars: int = 8000):
         """
@@ -119,7 +149,8 @@ class CouncilRAG:
         }
         self.store[conversation_id]["turns"].append(doc_memory)
         self._save_store()
-        logger.info("[RAG] Indexed document '%s' (%d chars) for conv=%s", filename, len(truncated), conversation_id)
+        if self.enabled:
+            logger.info("[RAG] Indexed document '%s' (%d chars) for conv=%s", filename, len(truncated), conversation_id)
 
     def retrieve(
         self,

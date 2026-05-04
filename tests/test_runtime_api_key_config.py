@@ -1,4 +1,6 @@
 import importlib
+import logging
+import os
 import sys
 
 import pytest
@@ -39,6 +41,55 @@ def test_config_imports_without_api_key(monkeypatch):
 
     assert config.get_openrouter_api_key() is None
     assert config.has_openrouter_api_key() is False
+
+
+def test_config_import_continues_when_env_migration_fails(monkeypatch, caplog):
+    from backend import app_paths
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    unload_backend_modules("backend.config")
+    monkeypatch.setattr(
+        app_paths,
+        "migrate_env_file",
+        lambda logger=None: (_ for _ in ()).throw(RuntimeError("locked")),
+    )
+    caplog.set_level(logging.ERROR, logger="LLMCouncil.paths")
+
+    config = importlib.import_module("backend.config")
+
+    assert config.ENV_PATH == app_paths.get_env_path()
+    assert "Failed to migrate legacy .env" in caplog.text
+
+
+def test_save_openrouter_api_key_uses_atomic_write(monkeypatch, tmp_path):
+    config = import_without_api_key(monkeypatch, "backend.config")
+    env_path = tmp_path / ".env"
+    calls = []
+
+    def fake_write(path, content, **kwargs):
+        calls.append((path, content))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    monkeypatch.setattr(config, "ENV_PATH", env_path)
+    monkeypatch.setattr(config.app_paths, "write_text_atomic", fake_write)
+
+    config.save_openrouter_api_key(" sk-or-new ")
+
+    assert calls == [(env_path, "OPENROUTER_API_KEY=sk-or-new\n")]
+    assert os.environ["OPENROUTER_API_KEY"] == "sk-or-new"
+    assert config.OPENROUTER_API_KEY == "sk-or-new"
+
+
+def test_save_openrouter_api_key_preserves_other_env_lines(monkeypatch, tmp_path):
+    config = import_without_api_key(monkeypatch, "backend.config")
+    env_path = tmp_path / ".env"
+    env_path.write_text("OTHER=value\nOPENROUTER_API_KEY=sk-or-old\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ENV_PATH", env_path)
+
+    config.save_openrouter_api_key("sk-or-new")
+
+    assert env_path.read_text(encoding="utf-8") == "OTHER=value\nOPENROUTER_API_KEY=sk-or-new\n"
 
 
 @pytest.mark.asyncio

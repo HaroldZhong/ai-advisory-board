@@ -2,9 +2,16 @@ import logging
 import sys
 from pathlib import Path
 
-# Create logs directory if it doesn't exist
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+from .app_paths import get_logs_dir
+
+
+class AppFileHandler(logging.FileHandler):
+    """File handler that creates the app log directory only when first opened."""
+
+    def _open(self):
+        Path(self.baseFilename).parent.mkdir(parents=True, exist_ok=True)
+        return super()._open()
+
 
 # Configure logging
 def setup_logger(name: str) -> logging.Logger:
@@ -25,7 +32,7 @@ def setup_logger(name: str) -> logging.Logger:
         logger.addHandler(console_handler)
         
         # File Handler
-        file_handler = logging.FileHandler(LOG_DIR / "app.log", encoding='utf-8')
+        file_handler = AppFileHandler(get_logs_dir() / "app.log", encoding='utf-8', delay=True)
         file_handler.setLevel(logging.INFO)
         file_formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

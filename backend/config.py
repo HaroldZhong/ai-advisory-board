@@ -1,16 +1,29 @@
 """Configuration for the AI Advisory Board."""
 
+import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 
+from . import app_paths
 from .model_registry import load_model_registry
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_PATH = PROJECT_ROOT / ".env"
+PROJECT_ROOT = app_paths.PROJECT_ROOT
+ENV_PATH = app_paths.get_env_path()
 
+paths_logger = logging.getLogger("LLMCouncil.paths")
+try:
+    app_paths.migrate_env_file(logger=paths_logger)
+except RuntimeError:
+    paths_logger.exception("Failed to migrate legacy .env; continuing without migrated key")
+paths_logger.info(
+    "Using app data root=%s env_path=%s frozen=%s override_set=%s",
+    app_paths.get_data_root(),
+    ENV_PATH,
+    app_paths.is_frozen(),
+    bool(os.getenv(app_paths.DATA_DIR_ENV)),
+)
 load_dotenv(ENV_PATH)
 
 
@@ -40,7 +53,10 @@ def save_openrouter_api_key(api_key: str) -> None:
 
     new_lines = []
     for line in lines:
-        if line.startswith("OPENROUTER_API_KEY="):
+        stripped = line.lstrip()
+        key_part = stripped.removeprefix("export ").lstrip()
+        env_name = key_part.split("=", 1)[0].strip() if "=" in key_part else ""
+        if env_name == "OPENROUTER_API_KEY":
             new_lines.append(f"OPENROUTER_API_KEY={cleaned}\n")
             key_exists = True
         else:
@@ -49,7 +65,7 @@ def save_openrouter_api_key(api_key: str) -> None:
     if not key_exists:
         new_lines.append(f"OPENROUTER_API_KEY={cleaned}\n")
 
-    ENV_PATH.write_text("".join(new_lines))
+    app_paths.write_text_atomic(ENV_PATH, "".join(new_lines))
     os.environ["OPENROUTER_API_KEY"] = cleaned
     OPENROUTER_API_KEY = cleaned
 
@@ -99,7 +115,7 @@ CHAIRMAN_MODEL = MODEL_REGISTRY["chairman_model"]
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Data directory for conversation storage
-DATA_DIR = "data/conversations"
+DATA_DIR = str(app_paths.get_conversations_dir())
 
 # Phase 1 Feature Flags
 ENABLE_QUERY_REWRITE = True  # Can flip to False if issues arise
