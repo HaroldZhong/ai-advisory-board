@@ -88,6 +88,7 @@ archive/
 
 # PyInstaller Build
 *.spec
+!packaging/ai-advisory-board.spec
 build/
 dist/
 app_icon.ico
