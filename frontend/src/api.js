@@ -64,6 +64,20 @@ export const api = {
   },
 
   /**
+   * Export a conversation to Markdown on the backend and return the saved path.
+   */
+  async exportConversation(conversationId) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/export`,
+      { method: 'POST' }
+    );
+    if (!response.ok) {
+      throw await buildApiError(response, 'Failed to export conversation');
+    }
+    return response.json();
+  },
+
+  /**
    * Get session budget policy and usage for a conversation.
    */
   async getSessionPolicy(conversationId) {
