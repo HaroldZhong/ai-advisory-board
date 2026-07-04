@@ -185,15 +185,18 @@ async def test_stream_council_emits_reasoning_events_for_each_stage(monkeypatch,
     async def fake_run_tool_steward_phase(*args, **kwargs):
         return evidence_pack, {}
 
-    async def fake_stage1_collect_responses(*args, **kwargs):
-        return [
-            {
-                "model": "model-a",
-                "response": "Stage 1 visible",
-                "reasoning": "Stage 1 reasoning",
-                "usage": {},
-            }
-        ]
+    # stage1_collect_responses_progressive is the pipeline seam (P3-T6): an
+    # async generator yielding ("model_complete", index, result) per model
+    # then ("complete", stage1_results, None) with the full list.
+    async def fake_stage1_collect_responses_progressive(*args, **kwargs):
+        result = {
+            "model": "model-a",
+            "response": "Stage 1 visible",
+            "reasoning": "Stage 1 reasoning",
+            "usage": {},
+        }
+        yield "model_complete", 0, result
+        yield "complete", [result], None
 
     async def fake_stage2_collect_rankings(*args, **kwargs):
         return [
@@ -226,7 +229,7 @@ async def test_stream_council_emits_reasoning_events_for_each_stage(monkeypatch,
     )
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_run_tool_steward_phase)
-    monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1_collect_responses)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_collect_responses_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2_collect_rankings)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3_synthesize_final)
     monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)

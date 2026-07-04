@@ -146,16 +146,22 @@ async def run_turn(
                 })
             yield {"type": "steward_complete", "data": evidence_pack.model_dump(), "usage": steward_usage}
 
-            # Stage 1: Collect responses (use llm_content with attachments)
+            # Stage 1: Collect responses progressively (use llm_content with
+            # attachments) so model cards can render as each one finishes
+            # instead of all waiting on the slowest (audit §11, P3-W5).
             yield {"type": "stage1_start"}
-            stage1_results = await main.stage1_collect_responses(
+            stage1_results = []
+            async for kind, index, result in main.stage1_collect_responses_progressive(
                 llm_content,
                 models=council_models,
                 evidence_pack=evidence_pack,
                 zdr_enabled=zdr_enabled,
                 thinking_effort=thinking_effort,
-            )
-            for index, result in enumerate(stage1_results):
+            ):
+                if kind == "complete":
+                    stage1_results = index  # (kind, stage1_results, None)
+                    continue
+                # kind == "model_complete"
                 for event in main.build_reasoning_stream_events(
                     result,
                     scope="council",
@@ -165,6 +171,7 @@ async def run_turn(
                     index=index,
                 ):
                     yield event
+                yield {"type": "stage1_model_complete", "data": result, "index": index}
             yield {"type": "stage1_complete", "data": stage1_results}
 
             if not stage1_results:

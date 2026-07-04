@@ -62,6 +62,7 @@ jobs:
           tests/test_stage2_evaluator_fallback.py
           tests/test_openrouter_timeout.py
           tests/test_utf8_file_io.py
+          tests/test_progressive_stage1.py
           -q
 
   windows-tests:
