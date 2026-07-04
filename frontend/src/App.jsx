@@ -336,6 +336,7 @@ function ConversationView({
         onConfirm={handleModelConfirm}
         defaultBudgetUsd={settings.defaultSessionBudgetUsd}
         zdrAvailable={isZdrAvailableForProvider(providerKind)}
+        providerKind={providerKind}
       />
       {showAnalytics && (
         <AnalyticsDashboard onClose={onCloseAnalytics} />
