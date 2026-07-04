@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.rag import CouncilRAG
+from backend.rag import CouncilRAG, score_topic_overlap
 from backend import rag as rag_module
 from backend import storage
 
@@ -106,7 +106,7 @@ def test_rag_save_store_skips_when_persistence_disabled(tmp_path, monkeypatch):
     assert calls == []
 
 
-async def _retrieve_and_capture_memory_section(rag, monkeypatch, max_tokens):
+async def _retrieve_and_capture_memory_section(rag, monkeypatch, max_tokens, query="current question"):
     captured_kwargs = {}
 
     async def fake_query_model(*args, **kwargs):
@@ -116,7 +116,7 @@ async def _retrieve_and_capture_memory_section(rag, monkeypatch, max_tokens):
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
 
-    await rag.retrieve_async("current question", "current", max_tokens=max_tokens)
+    await rag.retrieve_async(query, "current", max_tokens=max_tokens)
 
     prompt = captured_kwargs["messages"][0]["content"]
     return prompt.split("USER MEMORY LOGS:\n", 1)[1]
@@ -226,3 +226,264 @@ async def test_retrieve_defaults_to_legacy_60k_cap_when_max_tokens_none(tmp_path
     assert memory_section.startswith(header)
     assert memory_section.endswith(big_memory[-1:])
     assert len(memory_section) <= 60000 + len(header) + 2
+
+
+# --- P5-T4: topic-overlap pre-filter (score_topic_overlap is a pure, module-level function) ---
+
+
+def test_score_topic_overlap_counts_shared_tokens():
+    assert score_topic_overlap("tell me about our budget", ["budget", "planning"]) == 1
+
+
+def test_score_topic_overlap_is_case_insensitive():
+    assert score_topic_overlap("what about RAG systems", ["rag", "retrieval"]) == 1
+
+
+def test_score_topic_overlap_zero_when_topics_empty_or_missing():
+    assert score_topic_overlap("anything", []) == 0
+    assert score_topic_overlap("anything", None) == 0
+
+
+def test_score_topic_overlap_zero_when_no_overlap():
+    assert score_topic_overlap("cooking recipes", ["finance", "budget"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_retrieve_filters_to_overlapping_turns_only(tmp_path, monkeypatch):
+    """P5-T4: when the query overlaps at least one turn's stored topics,
+    only the overlapping turn(s) should reach the extraction prompt."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": ["cooking", "recipes"], "memory": "cooking memory"},
+                {"turn": 1, "topics": ["budget", "finance"], "memory": "budget memory"},
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget"
+    )
+
+    assert "Turn: 1" in memory_section
+    assert "budget memory" in memory_section
+    assert "Turn: 0" not in memory_section
+    assert "cooking memory" not in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_falls_back_to_all_turns_when_nothing_overlaps(tmp_path, monkeypatch):
+    """Quality floor: if no stored turn's topics overlap the query at all,
+    the filter must not shrink the result below today's behavior -- fall
+    back to every turn, same as if no filter existed."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": ["cooking", "recipes"], "memory": "cooking memory"},
+                {"turn": 1, "topics": ["budget", "finance"], "memory": "budget memory"},
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="completely unrelated astronomy question"
+    )
+
+    assert "Turn: 0" in memory_section
+    assert "cooking memory" in memory_section
+    assert "Turn: 1" in memory_section
+    assert "budget memory" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_filter_composes_with_block_boundary_budget_cap(tmp_path, monkeypatch):
+    """Ordering: the topic filter runs BEFORE the P5-T1 char-budget cap, so a
+    tight budget applies only to the already-filtered (relevant) turns, not
+    to the full unfiltered set."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": ["budget"], "memory": "oldest " + "a" * 100},
+                {"turn": 1, "topics": ["budget"], "memory": "middle " + "b" * 100},
+                {"turn": 2, "topics": ["cooking"], "memory": "newest " + "c" * 100},
+            ],
+        },
+    }
+
+    max_tokens = 40  # cap = min(60_000, 40 * 4) = 160 chars: fits ~1 of the 2 filtered blocks
+    cap = max_tokens * 4
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, max_tokens, query="what was our budget plan"
+    )
+
+    # The cooking turn (no topic overlap) must never appear: filtered out
+    # before the cap even runs.
+    assert "Turn: 2" not in memory_section
+    assert len(memory_section) <= cap
+    # Of the two overlapping (budget) turns, the newest survives the cap.
+    assert "Turn: 1" in memory_section
+    assert "Turn: 0" not in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_always_includes_document_memories_regardless_of_topic_filter(tmp_path, monkeypatch):
+    """Codex P2: document memories (index_document) store topics derived only
+    from the filename (["document:{filename}"]), which can't be trusted as a
+    relevance signal -- the extraction model inspects the document body
+    itself instead. So when a session turn's topics DO overlap the query
+    (triggering the filter), an unrelated-filename document must still ride
+    along unconditionally, not get filtered out alongside non-overlapping
+    turns."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": ["budget"], "memory": "budget memory"},
+                {
+                    "turn": -1,
+                    "topics": ["document:quarterly_report.pdf"],
+                    "memory": "[Uploaded Document: quarterly_report.pdf]\ndocument body text",
+                },
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget"
+    )
+
+    assert "budget memory" in memory_section
+    assert "document body text" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_keeps_document_memory_when_filename_does_not_match_query(tmp_path, monkeypatch):
+    """Explicit fallback check for a document-only store: even though the
+    general fallback (no turn overlaps) would already keep everything, this
+    pins down that a document whose filename shares nothing with the query
+    is still surfaced -- the extraction model, not the filter, judges its
+    relevance."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {
+                    "turn": -1,
+                    "topics": ["document:random_notes.txt"],
+                    "memory": "[Uploaded Document: random_notes.txt]\nunrelated filename document body",
+                },
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget plan"
+    )
+
+    assert "unrelated filename document body" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_preserves_original_order_so_cap_keeps_newer_matching_turn(tmp_path, monkeypatch):
+    """Codex round 3: unioning document entries AFTER the filtered session
+    turns made every document look newest to the P5-T1 char-budget cap
+    (which walks reversed(memory_blocks) to keep the NEWEST blocks), so an
+    older document could evict a newer, topic-matching turn that should have
+    survived instead. The filter must preserve original relative order:
+    document indexed FIRST (older), topic-matching turn indexed AFTER
+    (newer); with a cap that only fits one block, the newer matching turn
+    must survive and the older document must be dropped -- the reverse of
+    what the pre-fix append-documents-last ordering produced."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {
+                    "turn": -1,
+                    "topics": ["document:old_notes.txt"],
+                    "memory": "[Uploaded Document: old_notes.txt]\n" + "d" * 100,
+                },
+                {"turn": 0, "topics": ["budget"], "memory": "newer budget turn " + "t" * 100},
+            ],
+        },
+    }
+
+    max_tokens = 40  # cap = min(60_000, 40 * 4) = 160 chars: fits only one of the two blocks
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, max_tokens, query="what was our budget"
+    )
+
+    assert "newer budget turn" in memory_section
+    assert "old_notes.txt" not in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_keeps_topicless_turns_eligible_alongside_a_matching_turn(tmp_path, monkeypatch):
+    """Codex round 4: extract_topics can legitimately return [] on a timeout
+    or error, so a session turn can have empty/missing topics through no
+    fault of its own. Such a turn is unjudgeable, not irrelevant -- it must
+    stay eligible (fail open, same rationale as documents) even when another
+    turn DOES score an overlap and would otherwise trigger the filter."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": [], "memory": "topicless memory"},
+                {"turn": 1, "topics": ["budget"], "memory": "budget memory"},
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget"
+    )
+
+    assert "topicless memory" in memory_section
+    assert "budget memory" in memory_section
+
+
+# --- P5-T4: store hygiene (warn, never auto-evict) ---
+
+
+def test_save_store_warns_when_over_size_threshold(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(rag_module, "STORE_SIZE_WARNING_BYTES", 100)
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "conv-old": {"folder_id": "root", "turns": [{"turn": 0, "memory": "x" * 80}]},
+        "conv-new": {"folder_id": "root", "turns": [{"turn": 0, "memory": "y" * 80}]},
+    }
+
+    with caplog.at_level("WARNING"):
+        rag._save_store()
+
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("conv-old" in message for message in warnings)
+    # No auto-eviction: both conversations must still be present afterward.
+    assert set(rag.store.keys()) == {"conv-old", "conv-new"}
+
+
+def test_save_store_does_not_warn_below_size_threshold(tmp_path, caplog):
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {"conv-small": {"folder_id": "root", "turns": [{"turn": 0, "memory": "small"}]}}
+
+    with caplog.at_level("WARNING"):
+        rag._save_store()
+
+    assert not any("PageIndex store size" in r.message for r in caplog.records)
