@@ -51,11 +51,14 @@ async def run_turn(
         if has_attachments:
             attachment_context = main.build_llm_context(request.attachment_ids)
             logger.info(f"[ATTACH] Built context from {len(request.attachment_ids)} attachments ({len(attachment_context)} chars)")
-            # Index documents into PageIndex for cross-conversation retrieval
-            for att_id in request.attachment_ids:
-                att_text = main.get_attachment_text(att_id)
-                if att_text:
-                    main.rag_system.index_document(conversation_id, att_id, att_text)
+            # Index documents into PageIndex for cross-conversation retrieval.
+            # Skip entirely for ZDR turns (audit §12, Decision #5): PageIndex
+            # memory is cross-conversation, so ZDR content must never enter it.
+            if not zdr_enabled:
+                for att_id in request.attachment_ids:
+                    att_text = main.get_attachment_text(att_id)
+                    if att_text:
+                        main.rag_system.index_document(conversation_id, att_id, att_text)
 
         # Combine user content with attachment context for LLM
         # User sees only their message, LLM sees message + attachments
@@ -259,8 +262,10 @@ async def run_turn(
             turn_index = main.get_turn_index(updated_conversation) - 1
 
             # Index for RAG with enhanced metadata. Skip when the council
-            # produced no result: error text must not become a memory.
-            if stage3_result.get("model") != "error":
+            # produced no result: error text must not become a memory. Also
+            # skip entirely for ZDR turns (audit §12, Decision #5): PageIndex
+            # memory is cross-conversation, so ZDR content must never enter it.
+            if stage3_result.get("model") != "error" and not zdr_enabled:
                 logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
 
                 # Extract topics from question + final answer
