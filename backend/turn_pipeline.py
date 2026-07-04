@@ -54,7 +54,17 @@ async def run_turn(
             # Index documents into PageIndex for cross-conversation retrieval.
             # Skip entirely for ZDR turns (audit §12, Decision #5): PageIndex
             # memory is cross-conversation, so ZDR content must never enter it.
-            if not zdr_enabled:
+            # Re-check fresh metadata (not just the pre-flight zdr_enabled) to
+            # shrink the runtime-purge race (backend/main.py's
+            # update_conversation) to the indexing call itself: a ZDR flip
+            # landing between pre-flight and this point would otherwise have
+            # index_document write AFTER the purge already ran. A flip
+            # landing mid-loop, between this check and a given att_id's
+            # write, is still only cleaned up if it arrives after that write;
+            # the residual window is milliseconds on a local single-user app
+            # and is accepted.
+            fresh_zdr = bool(main.storage.get_conversation(conversation_id).get("metadata", {}).get("zdr_enabled"))
+            if not zdr_enabled and not fresh_zdr:
                 for att_id in request.attachment_ids:
                     att_text = main.get_attachment_text(att_id)
                     if att_text:

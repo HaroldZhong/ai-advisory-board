@@ -574,6 +574,55 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
 
 
 @pytest.mark.asyncio
+async def test_council_turn_skips_document_indexing_when_zdr_enabled_before_attachment_loop(monkeypatch, tmp_path):
+    """Codex P1, round 5 (symmetric to the mid-turn index_session case): the
+    attachment-index loop is the FIRST thing run_turn does, so a ZDR flip
+    landing between the request's pre-flight zdr_enabled capture and this
+    loop's start must also be caught. build_llm_context is the call
+    immediately before the loop; simulate the flip happening there via real
+    storage.update_conversation_metadata, and assert index_document is never
+    called even though the turn's local zdr_enabled is still False."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-zdr-flipped-before-attachments"
+    main.storage.create_conversation(conversation_id)  # starts non-ZDR
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+
+    def flipping_build_llm_context(attachment_ids):
+        # Simulate the user flipping ZDR on via PUT /api/conversations/{id}
+        # right as this turn starts: real storage metadata now says
+        # zdr_enabled=True, but this turn's zdr_enabled local variable was
+        # already captured as False during pre-flight.
+        main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
+        return "[Attachment] secret contents"
+
+    monkeypatch.setattr(main, "build_llm_context", flipping_build_llm_context)
+    monkeypatch.setattr(main, "get_attachment_text", lambda attachment_id: "secret contents")
+    monkeypatch.setattr(
+        main,
+        "prepare_message_attachments",
+        lambda conversation_id, attachment_ids: [{"attachment_id": aid} for aid in attachment_ids],
+    )
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(
+            content="Sensitive question",
+            mode="council",
+            attachment_ids=["att-1"],
+        ),
+    )
+
+    rag_system.index_document.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_startup_cleanup_removes_metadata_zdr_conversations(monkeypatch, tmp_path):
     """Decision #5's one-time startup sweep: any conversation already flagged
     zdr_enabled=True in metadata must have its memory-store entries purged when
