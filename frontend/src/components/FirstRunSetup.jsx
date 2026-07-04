@@ -1,5 +1,15 @@
-import { useMemo, useState } from 'react';
-import { ArrowLeft, ArrowRight, CheckCircle2, DollarSign, KeyRound, Loader2, ShieldCheck } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  CheckCircle2,
+  DollarSign,
+  KeyRound,
+  Loader2,
+  ShieldCheck,
+  Wifi,
+} from 'lucide-react';
 
 import { api } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -17,6 +27,7 @@ import {
   FIRST_RUN_BUDGET_PRESETS,
   buildFirstRunSettings,
   looksLikeOpenRouterKey,
+  mapConnectivityResult,
 } from '@/utils/firstRunSetup';
 import {
   getResponsiveModalBodyClass,
@@ -48,23 +59,45 @@ function ChoiceButton({ selected, children, className = '', ...props }) {
   );
 }
 
-export default function FirstRunSetup({ isOpen, onComplete }) {
+export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
   const [step, setStep] = useState(0);
   const [apiKey, setApiKey] = useState('');
   const [zdrChoice, setZdrChoice] = useState(null);
   const [budgetUsd, setBudgetUsd] = useState(2);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [connectionResult, setConnectionResult] = useState(null);
 
   const trimmedApiKey = apiKey.trim();
   const keyIsValid = looksLikeOpenRouterKey(trimmedApiKey);
   const currentStep = STEPS[step];
+  const latestApiKeyRef = useRef(trimmedApiKey);
+  latestApiKeyRef.current = trimmedApiKey;
 
   const canContinue = useMemo(() => {
     if (currentStep.id === 'connect') return keyIsValid;
     if (currentStep.id === 'privacy') return Boolean(zdrChoice);
     return true;
   }, [currentStep.id, keyIsValid, zdrChoice]);
+
+  const handleTestConnection = async () => {
+    const testedKey = trimmedApiKey;
+    setIsTestingConnection(true);
+    setConnectionResult(null);
+    let result;
+    try {
+      const body = await api.getConnectivity(testedKey);
+      result = mapConnectivityResult(body);
+    } catch {
+      result = mapConnectivityResult(null);
+    }
+    // Discard if the key changed while the probe was in flight.
+    if (latestApiKeyRef.current === testedKey) {
+      setConnectionResult(result);
+    }
+    setIsTestingConnection(false);
+  };
 
   const handleNext = async () => {
     setError('');
@@ -86,9 +119,9 @@ export default function FirstRunSetup({ isOpen, onComplete }) {
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={() => {}}>
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onDismiss?.(); }}>
       <DialogContent
-        className={cn(getResponsiveModalContentClass('form'), 'flex flex-col [&>button]:hidden')}
+        className={cn(getResponsiveModalContentClass('form'), 'flex flex-col')}
         aria-describedby="first-run-description"
       >
         <DialogHeader className="shrink-0">
@@ -131,7 +164,10 @@ export default function FirstRunSetup({ isOpen, onComplete }) {
                     id="openrouter-api-key"
                     type="password"
                     value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
+                    onChange={(event) => {
+                      setApiKey(event.target.value);
+                      setConnectionResult(null);
+                    }}
                     placeholder="sk-or-v1-..."
                     autoFocus
                     autoComplete="off"
@@ -144,6 +180,50 @@ export default function FirstRunSetup({ isOpen, onComplete }) {
                   <p className="text-sm text-destructive" role="alert">
                     Enter an OpenRouter key that starts with sk-or-.
                   </p>
+                )}
+
+                {trimmedApiKey && keyIsValid && (
+                  <div className="space-y-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleTestConnection}
+                      disabled={isTestingConnection}
+                    >
+                      {isTestingConnection ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Testing connection
+                        </>
+                      ) : (
+                        <>
+                          <Wifi className="mr-2 h-4 w-4" />
+                          Test connection
+                        </>
+                      )}
+                    </Button>
+
+                    {connectionResult && (
+                      <p
+                        className={cn('flex items-start gap-2 text-sm', {
+                          'text-green-600': connectionResult.status === 'connected',
+                          'text-amber-600': connectionResult.status === 'key_unchecked',
+                          'text-destructive':
+                            connectionResult.status === 'bad_key' || connectionResult.status === 'blocked',
+                        })}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {connectionResult.status === 'connected' ? (
+                          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                        ) : (
+                          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                        )}
+                        {connectionResult.message}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             )}

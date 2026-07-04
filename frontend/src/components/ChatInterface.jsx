@@ -19,6 +19,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
 import { getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
+import { predictNextMessageMode } from '../utils/modePrediction';
 import { toast } from '@/hooks/use-toast';
 import { getExportSavedDescription } from '@/utils/conversationExport';
 
@@ -88,7 +89,8 @@ export default function ChatInterface({
 
   const sessionPolicy = conversation?.session_policy || {};
   const sessionBudget = sessionPolicy.budget_usd ?? null;
-  const nextMessageMode = conversation?.messages?.length > 0 ? 'chat' : 'council';
+  // Display-only prediction; routing itself is backend-owned (mode "auto").
+  const nextMessageMode = predictNextMessageMode({ messageCount: conversation?.messages?.length || 0 });
   const effectiveZdr = resolveEffectiveZdr(conversation, settings);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
   const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;

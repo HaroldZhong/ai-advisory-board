@@ -4,6 +4,7 @@ import { streamReducer } from '../utils/streamReducer';
 import { applyStreamUpdateToActiveConversation } from '../utils/reasoningMessages';
 import { rollbackFailedSendConversation } from '../utils/optimisticMessages';
 import { normalizeAdvancedSettingsForMode } from '../utils/advancedSettingsAvailability';
+import { predictNextMessageMode } from '../utils/modePrediction';
 import { resolveEffectiveZdr } from '../utils/trustState';
 import { toast } from './use-toast';
 import { formatStreamErrorMessage } from '../utils/streamErrors';
@@ -71,14 +72,17 @@ export function useStreamingConversation({
         }));
       }
 
-      // Determine mode: if after truncation we're at msg index 0, it's council mode
-      const effectiveMsgCount = editIndex >= 0 ? editIndex : currentConversation.messages.length;
-      const isFollowUp = effectiveMsgCount > 0;
-      const mode = isFollowUp ? 'chat' : 'council';
-      const requestSettings = normalizeAdvancedSettingsForMode(settings, mode);
+      // Routing is backend-owned: the request always carries mode "auto" and
+      // prepare_turn resolves it edit-aware. The prediction below only picks
+      // the optimistic skeleton and which advanced settings apply.
+      const predictedMode = predictNextMessageMode({
+        messageCount: currentConversation.messages.length,
+        editIndex,
+      });
+      const requestSettings = normalizeAdvancedSettingsForMode(settings, predictedMode);
       requestSettings.zdrEnabled = resolveEffectiveZdr(currentConversation, settings);
 
-      if (mode === 'council') {
+      if (predictedMode === 'council') {
         const assistantMessage = {
           role: 'assistant',
           stage1: null,
@@ -157,7 +161,7 @@ export function useStreamingConversation({
           });
           setIsLoading(false);
         }
-      }, mode, attachmentIds, {
+      }, 'auto', attachmentIds, {
         enabled: settings.webSearchEnabled,
         depth: settings.webSearchDepth,
         customInstructions: requestSettings.customInstructions,

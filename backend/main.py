@@ -605,6 +605,22 @@ def ensure_local_setup_request(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Setup is only available from localhost")
 
 
+class ConnectivityCheckRequest(BaseModel):
+    """Optional candidate key to validate before it's saved (first-run 'Test connection')."""
+    api_key: Optional[str] = None
+
+
+@app.post("/api/config/connectivity")
+async def post_connectivity_status(data: ConnectivityCheckRequest, request: Request):
+    """Same probe as GET, but validates a caller-supplied key instead of the saved one.
+
+    Carries a secret in the body, so it gets the same localhost guard as /api/config/setup.
+    """
+    ensure_local_setup_request(request)
+    from .openrouter_client import check_connectivity
+    return await check_connectivity(api_key=data.api_key or None)
+
+
 @app.post("/api/config/setup")
 async def setup_config(data: dict, request: Request):
     """Save the OpenRouter API key to .env file."""
@@ -796,11 +812,20 @@ def prepare_turn(conversation_id: str, request: SendMessageRequest):
     zdr_enabled = resolve_effective_zdr(conversation, request)
     thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
-    # Determine mode
+    # Determine mode. Auto-resolution must use the EFFECTIVE message count —
+    # a pending edit_index truncation makes an edit-back-to-message-0 send
+    # effectively first, so it routes to council like the original send did.
     is_first_message = len(conversation["messages"]) == 0
+    # Clamp: truncate_messages keeps messages[:edit_index], so a stale
+    # edit_index beyond the stored count leaves min(edit_index, len) messages.
+    effective_message_count = (
+        min(request.edit_index, len(conversation["messages"]))
+        if request.edit_index >= 0
+        else len(conversation["messages"])
+    )
     mode = request.mode
     if mode == "auto":
-        mode = "council" if is_first_message else "chat"
+        mode = "council" if effective_message_count == 0 else "chat"
     validate_advanced_settings_for_mode(mode, request)
     ensure_budget_allows_new_turn(conversation_id, conversation)
 
