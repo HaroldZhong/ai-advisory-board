@@ -67,3 +67,20 @@ async def test_probe_reports_bad_key_via_key_endpoint(monkeypatch):
         "reachable": True, "key_valid": False, "error_kind": "auth",
         "detail": "Reached openrouter.ai but the API key was rejected. Check your key.",
     }
+
+
+@pytest.mark.asyncio
+async def test_probe_tolerates_relay_without_key_endpoint(monkeypatch):
+    """Relays set via OPENROUTER_BASE_URL often lack /key: reachable, key unknown, no error."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": []})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(openrouter_client, "_probe_transport", httpx.MockTransport(handler))
+    monkeypatch.setattr("backend.config.get_openrouter_api_key", lambda: "sk-or-anything")
+    result = await openrouter_client.check_connectivity()
+    assert result["reachable"] is True
+    assert result["key_valid"] is None
+    assert result["error_kind"] is None
+    assert "key status unknown" in result["detail"]
