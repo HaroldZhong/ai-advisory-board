@@ -11,10 +11,11 @@ Reference: https://openrouter.ai/docs/guides/overview/multimodal/pdfs
 import base64
 import httpx
 from typing import Dict, Any, Optional, Literal
-from .config import get_openrouter_api_key
+from .config import get_openrouter_api_key, OPENROUTER_API_URL
 from .logger import logger
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Derived from OPENROUTER_BASE_URL so relay/proxy overrides cover PDF extraction too.
+OPENROUTER_URL = OPENROUTER_API_URL
 
 # PDF Processing engines
 PDFEngine = Literal["pdf-text", "mistral-ocr", "native"]
