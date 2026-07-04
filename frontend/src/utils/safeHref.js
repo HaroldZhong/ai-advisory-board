@@ -14,3 +14,14 @@ export function isSafeHref(href) {
   if (!match) return true; // relative URL, #anchor, or //protocol-relative
   return ALLOWED_SCHEMES.has(match[1].toLowerCase());
 }
+
+/**
+ * Stricter check for image sources (audit section 7): only http(s) images
+ * are allowed. Unlike isSafeHref, relative URLs, mailto links, and bare
+ * anchors are rejected too -- data:/file:/blob: images are the main risk.
+ */
+export function isSafeImageSrc(src) {
+  if (!isSafeHref(src)) return false;
+  const cleaned = src.replace(/[\u0000-\u0020]/g, '');
+  return /^https?:/i.test(cleaned);
+}

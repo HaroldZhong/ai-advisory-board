@@ -1,8 +1,9 @@
+import { memo } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import ReasoningSection from './ReasoningSection';
 import { Card } from "@/components/ui/card";
 
-export default function Stage3({
+function Stage3({
   finalResponse,
   messageKey = 'message',
   showReasoningByDefault = false,
@@ -40,3 +41,5 @@ export default function Stage3({
     </div>
   );
 }
+
+export default memo(Stage3);

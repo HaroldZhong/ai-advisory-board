@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import ReasoningSection from './ReasoningSection';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { getStageTabListClass } from "@/utils/responsiveChatLayout";
 
-export default function Stage1({ responses, messageKey = 'message', showReasoningByDefault = false }) {
+function Stage1({ responses, messageKey = 'message', showReasoningByDefault = false }) {
   const [activeTab, setActiveTab] = useState(0);
 
   if (!responses || responses.length === 0) {
@@ -56,3 +56,5 @@ export default function Stage1({ responses, messageKey = 'message', showReasonin
     </div>
   );
 }
+
+export default memo(Stage1);
