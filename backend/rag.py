@@ -108,15 +108,15 @@ class CouncilRAG:
                 del self.store[conversation_id]
                 orphans_removed += 1
                 continue
-            if not isinstance(conversation, dict):
-                # None (missing file) or a valid-JSON-but-wrong-type record
-                # (e.g. a conversation file holding "[]"): either way there's
-                # no metadata to trust, so treat it the same as unreadable and
-                # fail closed rather than letting .get() raise below.
+            if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict):
+                # None (missing file), a valid-JSON-but-wrong-type record
+                # (e.g. a conversation file holding "[]"), or malformed
+                # metadata (e.g. "metadata": null): no metadata to trust,
+                # so fail closed rather than letting .get() raise below.
                 del self.store[conversation_id]
                 orphans_removed += 1
                 continue
-            if conversation.get("metadata", {}).get("zdr_enabled") is True:
+            if conversation["metadata"].get("zdr_enabled") is True:
                 del self.store[conversation_id]
                 zdr_removed += 1
 
@@ -197,7 +197,7 @@ class CouncilRAG:
         # purge in update_conversation. Per-message ZDR (request flag, not
         # visible in metadata) is enforced by the pipeline-level guards.
         conversation = get_conversation(conversation_id)
-        if not isinstance(conversation, dict) or conversation.get("metadata", {}).get("zdr_enabled"):
+        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
             logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
             return
 
@@ -237,7 +237,7 @@ class CouncilRAG:
         # purge in update_conversation. Per-message ZDR (request flag, not
         # visible in metadata) is enforced by the pipeline-level guards.
         conversation = get_conversation(conversation_id)
-        if not isinstance(conversation, dict) or conversation.get("metadata", {}).get("zdr_enabled"):
+        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
             logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
             return
 

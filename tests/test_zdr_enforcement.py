@@ -1,4 +1,5 @@
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -888,3 +889,37 @@ async def test_enabling_zdr_at_runtime_actually_removes_store_entries(monkeypatc
     )
 
     assert conversation_id not in real_rag.store
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_entries_with_malformed_metadata(monkeypatch, tmp_path):
+    """Fail closed: a conversation record whose metadata is not a dict (e.g.
+    "metadata": null from a partial migration) is removed during the startup
+    sweep instead of crashing CouncilRAG construction (Codex round 7)."""
+    import json
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-normal")
+    conversation_path = Path(storage.get_conversation_path("conv-null-meta"))
+    conversation_path.parent.mkdir(parents=True, exist_ok=True)
+    conversation_path.write_text(
+        json.dumps({"id": "conv-null-meta", "messages": [], "metadata": None}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-null-meta": {"folder_id": "root", "turns": [{"turn": 0, "memory": "suspect"}]},
+        "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal"}]},
+    }
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-null-meta" not in rag.store
+    assert "conv-normal" in rag.store
