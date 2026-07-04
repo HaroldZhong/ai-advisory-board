@@ -40,6 +40,7 @@ jobs:
           tests/test_advanced_settings_backend_wiring.py
           tests/test_attachment_retention_controls.py
           tests/test_model_registry.py
+          tests/test_council_all_fail.py
           tests/test_conversation_creation_defaults.py
           tests/test_conversation_organization.py
           tests/test_metadata_smoke.py

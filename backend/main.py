@@ -865,37 +865,41 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         updated_conversation = storage.get_conversation(conversation_id)
         turn_index = get_turn_index(updated_conversation) - 1
 
-        # Index the session for RAG with enhanced metadata
-        logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
-        
-        # Extract topics from question + final answer
-        from .council import extract_topics, calculate_quality_metrics
-        combined_text = request.content + " " + stage3_result.get('response', '')
-        topics = await extract_topics(
-            combined_text,
-            max_topics=3,
-            zdr_enabled=zdr_enabled,
-        )
-        
-        # Calculate quality metrics from Stage 2 rankings
-        quality_metrics = calculate_quality_metrics(
-            stage2_results=stage2_results,
-            label_to_model=metadata["label_to_model"],
-        )
-        
-        rag_system.index_session(
-            conversation_id,
-            turn_index,
-            request.content,
-            stage1_results,
-            stage2_results,
-            stage3_result,
-            topics,
-            quality_metrics,
-        )
-        
-        # Refresh hybrid index after indexing
-        rag_system.refresh_hybrid_index()
+        # Index the session for RAG with enhanced metadata.
+        # Skip when the council produced no result (all models failed):
+        # error metadata has no label_to_model, and the error text must not
+        # be indexed as a memory.
+        if stage3_result.get("model") != "error":
+            logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
+
+            # Extract topics from question + final answer
+            from .council import extract_topics, calculate_quality_metrics
+            combined_text = request.content + " " + stage3_result.get('response', '')
+            topics = await extract_topics(
+                combined_text,
+                max_topics=3,
+                zdr_enabled=zdr_enabled,
+            )
+
+            # Calculate quality metrics from Stage 2 rankings
+            quality_metrics = calculate_quality_metrics(
+                stage2_results=stage2_results,
+                label_to_model=metadata["label_to_model"],
+            )
+
+            rag_system.index_session(
+                conversation_id,
+                turn_index,
+                request.content,
+                stage1_results,
+                stage2_results,
+                stage3_result,
+                topics,
+                quality_metrics,
+            )
+
+            # Refresh hybrid index after indexing
+            rag_system.refresh_hybrid_index()
 
         # Return the complete response with metadata
         return {
