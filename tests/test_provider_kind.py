@@ -808,6 +808,160 @@ def test_enhance_attachment_rejects_zdr_off_openrouter(monkeypatch):
     importlib.reload(main)
 
 
+# ---------------------------------------------------------------------------
+# PR2: minimal custom model id entry for openai-compatible providers.
+# create_conversation accepts any non-empty chairman/council id that isn't in
+# the curated registry when the provider isn't OpenRouter; registry HITS
+# still go through the existing utility/search type checks on every provider
+# kind, and OpenRouter-kind behavior stays byte-identical.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_conversation_accepts_unknown_ids_when_openai_compatible(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(
+        topic="Test",
+        chairman_model="llama3.1",
+        council_members=["llama3.1", "mistral-nemo", "custom/local-model"],
+    )
+
+    conversation = await main.create_conversation(request)
+
+    assert conversation["metadata"]["chairman_model"] == "llama3.1"
+    assert conversation["metadata"]["council_models"] == [
+        "llama3.1", "mistral-nemo", "custom/local-model",
+    ]
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_unknown_chairman_on_openrouter(monkeypatch, tmp_path):
+    """Same request as above 400s on the default (OpenRouter) provider kind."""
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(topic="Test", chairman_model="llama3.1")
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(request)
+
+    assert exc.value.status_code == 400
+    assert "Invalid chairman model" in exc.value.detail
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_unknown_council_members_on_openrouter(monkeypatch, tmp_path):
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(
+        topic="Test",
+        council_members=["llama3.1", "mistral-nemo", "another-unknown"],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(request)
+
+    assert exc.value.status_code == 400
+    assert "Invalid council models" in exc.value.detail
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_still_rejects_utility_type_when_openai_compatible(monkeypatch, tmp_path):
+    """A REGISTRY HIT that is utility/search-typed must still 400 on any
+    provider kind — the relaxed check only applies to ids that aren't in the
+    curated registry at all."""
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    utility_model_id = next(
+        m["id"] for m in main.config.CURATED_MODELS if m.get("type") == "utility"
+    )
+    request = main.CreateConversationRequest(topic="Test", chairman_model=utility_model_id)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(request)
+
+    assert exc.value.status_code == 400
+    assert "internal utility model" in exc.value.detail
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_empty_chairman_id_when_openai_compatible(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(topic="Test", chairman_model="   ")
+
+    conversation = await main.create_conversation(request)
+
+    # A whitespace-only chairman_model is stripped to None upstream (existing
+    # behavior: falls through to the config default), not stored as-is.
+    assert conversation["metadata"].get("chairman_model") != "   "
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_empty_council_id_when_openai_compatible(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(
+        topic="Test",
+        council_members=["llama3.1", "   ", "mistral-nemo"],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(request)
+
+    assert exc.value.status_code == 400
+    assert "Invalid council models" in exc.value.detail
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_full_chat_turn_with_unknown_chairman_id_succeeds_openai_compatible(monkeypatch, tmp_path):
+    """End-to-end: an unknown chairman id makes it through create_conversation
+    and a full chat turn, with cost falling back to the existing
+    calculate_cost behavior (unknown model -> 0) rather than crashing."""
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    conversation_id = "conv-custom-model-turn"
+    _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, {
+        "chairman_model": "llama3.1",
+    })
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "response", "usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result is not None
+    assert result["turn_cost"] == 0.0
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
 def test_enhance_attachment_zdr_not_blocked_on_openrouter(monkeypatch):
     from fastapi.testclient import TestClient
 

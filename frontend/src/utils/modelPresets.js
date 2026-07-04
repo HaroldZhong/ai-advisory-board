@@ -2,6 +2,16 @@ export function modelById(models) {
   return new Map((models || []).map((model) => [model.id, model]));
 }
 
+// A saved model id "still resolves" if it's in the loaded registry, OR — for
+// openai-compatible providers only — it's a non-empty custom id the registry
+// never knew about in the first place (PR2: minimal custom model entry).
+// OpenRouter kind keeps the old behavior: unknown ids are dropped.
+export function isSelectableModelId(id, models, providerKind) {
+  if (!id) return false;
+  if ((models || []).some((model) => model.id === id)) return true;
+  return providerKind === 'openai-compatible' && id.trim().length > 0;
+}
+
 export function isPresetAvailableForZdr(preset, models) {
   if (!preset) return false;
   const byId = modelById(models);
