@@ -264,6 +264,14 @@ async def check_connectivity() -> Dict[str, Any]:
                 result["key_valid"] = False
                 result["error_kind"] = "auth"
                 result["detail"] = "Reached openrouter.ai but the API key was rejected. Check your key."
+            elif e.response.status_code in (404, 405, 501):
+                # OpenAI-compatible relays (OPENROUTER_BASE_URL) often don't
+                # implement OpenRouter's /key endpoint. Reachability is already
+                # proven; key validity just can't be checked here — not an error.
+                result["detail"] = (
+                    "Network OK. This endpoint does not support key validation; "
+                    "key status unknown."
+                )
             else:
                 result["error_kind"] = "other"
                 result["detail"] = f"Key check returned HTTP {e.response.status_code}."
