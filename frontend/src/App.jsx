@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Routes, Route, useParams, useNavigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams, useNavigate, useLocation } from 'react-router-dom';
 import LandingPage from './landing/LandingPage';
+import { isLandingOnly } from './utils/appMode';
 import Sidebar, { SidebarContent } from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
@@ -621,14 +622,16 @@ function AppContent() {
   const location = useLocation();
   const { updateSettings } = useSettings();
   const isAppRoute = location.pathname === '/app' || location.pathname.startsWith('/c/');
+  const landingOnly = isLandingOnly();
 
   // Load models on mount for pricing
   useEffect(() => {
+    if (landingOnly) return;
     api.getModels().then(data => setAvailableModels(data.models)).catch(console.error);
-  }, []);
+  }, [landingOnly]);
 
   useEffect(() => {
-    if (!isAppRoute) return undefined;
+    if (!isAppRoute || landingOnly) return undefined;
 
     let cancelled = false;
     let retryTimer = null;
@@ -668,10 +671,11 @@ function AppContent() {
         window.clearTimeout(retryTimer);
       }
     };
-  }, [isAppRoute, configStatusRetryTick]);
+  }, [isAppRoute, landingOnly, configStatusRetryTick]);
 
   // Load conversations and folders on mount
   useEffect(() => {
+    if (landingOnly) return;
     const loadData = async () => {
       try {
         const [convs, flds] = await Promise.all([
@@ -743,54 +747,60 @@ function AppContent() {
           path="/"
           element={<LandingPage />}
         />
-        <Route
-          path="/app"
-          element={
-            <ConversationView
-              conversations={conversations}
-              onConversationsChange={setConversations}
-              availableModels={availableModels}
-              onShowAnalytics={() => setShowAnalytics(true)}
-              showAnalytics={showAnalytics}
-              onCloseAnalytics={() => setShowAnalytics(false)}
-              folders={folders}
-              onCreateFolder={handleCreateFolder}
-              onRenameFolder={handleRenameFolder}
-              onDeleteFolder={handleDeleteFolder}
-              onRenameConversation={handleRenameConversation}
-              onDeleteConversation={handleDeleteConversation}
-              onMoveConversation={handleMoveConversation}
-              openModelPickerSignal={openModelPickerSignal}
-              lastConsumedModelPickerSignal={lastConsumedModelPickerSignal}
-              onConsumeModelPickerSignal={setLastConsumedModelPickerSignal}
+        {landingOnly ? (
+          <Route path="*" element={<Navigate to="/" replace />} />
+        ) : (
+          <>
+            <Route
+              path="/app"
+              element={
+                <ConversationView
+                  conversations={conversations}
+                  onConversationsChange={setConversations}
+                  availableModels={availableModels}
+                  onShowAnalytics={() => setShowAnalytics(true)}
+                  showAnalytics={showAnalytics}
+                  onCloseAnalytics={() => setShowAnalytics(false)}
+                  folders={folders}
+                  onCreateFolder={handleCreateFolder}
+                  onRenameFolder={handleRenameFolder}
+                  onDeleteFolder={handleDeleteFolder}
+                  onRenameConversation={handleRenameConversation}
+                  onDeleteConversation={handleDeleteConversation}
+                  onMoveConversation={handleMoveConversation}
+                  openModelPickerSignal={openModelPickerSignal}
+                  lastConsumedModelPickerSignal={lastConsumedModelPickerSignal}
+                  onConsumeModelPickerSignal={setLastConsumedModelPickerSignal}
+                />
+              }
             />
-          }
-        />
-        <Route
-          path="/c/:conversationId"
-          element={
-            <ConversationView
-              conversations={conversations}
-              onConversationsChange={setConversations}
-              availableModels={availableModels}
-              onShowAnalytics={() => setShowAnalytics(true)}
-              showAnalytics={showAnalytics}
-              onCloseAnalytics={() => setShowAnalytics(false)}
-              folders={folders}
-              onCreateFolder={handleCreateFolder}
-              onRenameFolder={handleRenameFolder}
-              onDeleteFolder={handleDeleteFolder}
-              onRenameConversation={handleRenameConversation}
-              onDeleteConversation={handleDeleteConversation}
-              onMoveConversation={handleMoveConversation}
-              openModelPickerSignal={openModelPickerSignal}
-              lastConsumedModelPickerSignal={lastConsumedModelPickerSignal}
-              onConsumeModelPickerSignal={setLastConsumedModelPickerSignal}
+            <Route
+              path="/c/:conversationId"
+              element={
+                <ConversationView
+                  conversations={conversations}
+                  onConversationsChange={setConversations}
+                  availableModels={availableModels}
+                  onShowAnalytics={() => setShowAnalytics(true)}
+                  showAnalytics={showAnalytics}
+                  onCloseAnalytics={() => setShowAnalytics(false)}
+                  folders={folders}
+                  onCreateFolder={handleCreateFolder}
+                  onRenameFolder={handleRenameFolder}
+                  onDeleteFolder={handleDeleteFolder}
+                  onRenameConversation={handleRenameConversation}
+                  onDeleteConversation={handleDeleteConversation}
+                  onMoveConversation={handleMoveConversation}
+                  openModelPickerSignal={openModelPickerSignal}
+                  lastConsumedModelPickerSignal={lastConsumedModelPickerSignal}
+                  onConsumeModelPickerSignal={setLastConsumedModelPickerSignal}
+                />
+              }
             />
-          }
-        />
+          </>
+        )}
       </Routes>
-      {isAppRoute && !configStatus.loading && showFirstRunSetup && (
+      {!landingOnly && isAppRoute && !configStatus.loading && showFirstRunSetup && (
         <FirstRunSetup isOpen={showFirstRunSetup} onComplete={handleFirstRunComplete} />
       )}
     </>
