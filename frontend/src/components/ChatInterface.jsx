@@ -109,17 +109,23 @@ export default function ChatInterface({
   // Granular busy flags (P3-T8 item 2): a single isLoading used to disable
   // the whole composer area, including controls with no real conflict with
   // an in-flight stream. Only sending a NEW turn (and its textarea/attach
-  // toggle) needs to wait on isLoading — privacy and thinking effort each
-  // already track their own busy state and shouldn't be blocked just
-  // because a response happens to be streaming. The attach button DOES
-  // still need isUploading (Codex review, round 2 item 2): handleFileUpload
-  // validates the 10-file cap against a stale `attachments.length` snapshot
-  // taken at call time, so a second upload starting before the first one's
-  // state updates land could slip past the cap.
+  // toggle) needs to wait on isLoading — thinking effort tracks its own busy
+  // state and carries no per-turn promise, so it isn't blocked just because
+  // a response happens to be streaming. The attach button DOES still need
+  // isUploading (Codex review, round 2 item 2): handleFileUpload validates
+  // the 10-file cap against a stale `attachments.length` snapshot taken at
+  // call time, so a second upload starting before the first one's state
+  // updates land could slip past the cap. Privacy is DELIBERATELY still
+  // blocked by isLoading (Codex review, round 4 — see
+  // getPrivacyToggleDisabledReason's isStreaming param): prepare_turn
+  // resolves zdr_enabled once per turn, so flipping the toggle mid-stream
+  // would show "ZDR enforced" while the in-flight turn keeps its captured
+  // (possibly non-ZDR) routing.
   const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
   const attachDisabled = isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
   const composerDisabled = sendDisabled;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
+    isStreaming: isLoading,
     isUploading,
     isUpdatingPrivacy,
     // Only the ENABLE direction is blocked off-provider — an explicit

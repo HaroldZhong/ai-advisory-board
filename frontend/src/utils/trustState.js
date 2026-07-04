@@ -152,13 +152,21 @@ export function setConversationPrivacyMetadata(currentConversation, conversation
 }
 
 export function getPrivacyToggleDisabledReason({
+  isStreaming = false,
   isUploading = false,
   isUpdatingPrivacy = false,
   isEnablingUnavailable = false,
 } = {}) {
-  // A streaming turn no longer blocks this toggle (P3-T8 item 2): privacy
-  // changes apply going forward and only conflict with an upload or another
-  // in-flight privacy update, both of which already track their own state.
+  // Deliberate partial revert of P3-T8 item 2 (Codex review, round 4):
+  // prepare_turn resolves zdr_enabled ONCE per turn, so an in-flight turn
+  // keeps its captured routing regardless of what the metadata says by the
+  // time it finishes. Memory writes are safe either way (the #71 ZDR write
+  // barrier), but flipping the toggle mid-stream would show "ZDR enforced"
+  // while the CURRENT turn is still routed under the old setting — a
+  // per-turn privacy promise the UI must not appear to break. Thinking
+  // effort has no such promise (it only applies to future turns), so it
+  // stays enabled mid-stream.
+  if (isStreaming) return 'Wait for the current response to finish';
   if (isUploading) return 'Privacy changes are disabled while attachments are uploading';
   if (isUpdatingPrivacy) return 'Privacy update is being saved';
   if (isEnablingUnavailable) return 'Requires OpenRouter';

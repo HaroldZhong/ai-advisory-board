@@ -249,10 +249,23 @@ test('privacy toggle is disabled for active data-routing operations', () => {
   );
 });
 
-test('privacy toggle is NOT disabled just because a stream is running (P3-T8 item 2)', () => {
-  // isLoading/isStreaming is no longer an accepted key at all — a stream by
-  // itself must not block this toggle, only an active upload or privacy save.
-  assert.equal(getPrivacyToggleDisabledReason({ isLoading: true }), null);
+test('privacy toggle is blocked while a turn is streaming (Codex review, P3-T8 round 4)', () => {
+  // Deliberate partial revert of round 2's "usable mid-stream" change:
+  // prepare_turn resolves zdr_enabled ONCE per turn, so flipping this
+  // mid-stream would show "ZDR enforced" while the in-flight turn keeps
+  // its already-captured routing — a per-turn promise the UI must not
+  // appear to break. Plan detail loses to privacy correctness here.
+  assert.match(
+    getPrivacyToggleDisabledReason({ isStreaming: true }),
+    /Wait for the current response to finish/,
+  );
+});
+
+test('privacy toggle streaming guard takes priority over other busy reasons', () => {
+  assert.match(
+    getPrivacyToggleDisabledReason({ isStreaming: true, isUploading: true, isUpdatingPrivacy: true }),
+    /Wait for the current response to finish/,
+  );
 });
 
 test('privacy toggle blocks enabling ZDR off-provider but not disabling it', () => {
