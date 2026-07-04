@@ -59,6 +59,9 @@ def _setup_council_fakes(monkeypatch, main):
 
 
 def _setup_chat_fakes(monkeypatch, main):
+    async def fake_title(*args, **kwargs):
+        return "Title"
+
     async def fake_rewrite_query(*args, **kwargs):
         return "rewritten"
 
@@ -70,6 +73,8 @@ def _setup_chat_fakes(monkeypatch, main):
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    # Chat-first turns start a title task now — never let tests hit the network.
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
     monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
 
 
