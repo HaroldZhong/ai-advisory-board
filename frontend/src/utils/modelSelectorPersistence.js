@@ -12,6 +12,7 @@ export const MODEL_SELECTOR_STORAGE_KEY = 'aab.modelSelector.lastSelection';
 
 const DEFAULTS = Object.freeze({
   conversationMode: 'chat',
+  activeTab: 'presets',
   selectedPresetId: 'balanced',
   selectedCouncil: [],
   selectedChairman: '',
@@ -36,6 +37,11 @@ export function deserializeModelSelectorSelection(raw) {
 
   return {
     conversationMode: parsed.conversationMode === 'council' ? 'council' : DEFAULTS.conversationMode,
+    // Which tab (Presets vs Custom) was active when the selection was saved
+    // (Codex review, P3-T8 round 3): without this, a saved custom council
+    // reopened on the Presets tab and handleConfirm silently created a
+    // preset conversation instead of honoring the saved custom ids.
+    activeTab: parsed.activeTab === 'custom' ? 'custom' : DEFAULTS.activeTab,
     selectedPresetId: typeof parsed.selectedPresetId === 'string' && parsed.selectedPresetId
       ? parsed.selectedPresetId
       : DEFAULTS.selectedPresetId,
@@ -50,11 +56,11 @@ export function deserializeModelSelectorSelection(raw) {
 
 /** Serialize only the known fields — unknown fields on the input are dropped, not round-tripped. */
 export function serializeModelSelectorSelection(selection) {
-  const { conversationMode, selectedPresetId, selectedCouncil, selectedChairman } = {
+  const { conversationMode, activeTab, selectedPresetId, selectedCouncil, selectedChairman } = {
     ...DEFAULTS,
     ...selection,
   };
-  return JSON.stringify({ conversationMode, selectedPresetId, selectedCouncil, selectedChairman });
+  return JSON.stringify({ conversationMode, activeTab, selectedPresetId, selectedCouncil, selectedChairman });
 }
 
 export function readModelSelectorSelection(storage) {

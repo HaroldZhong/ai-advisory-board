@@ -107,7 +107,7 @@ export default function ModelSelector({
   // it on every reopen too, since this dialog stays mounted and toggles via
   // the Dialog's `open` prop rather than mounting fresh each time.
   const [conversationMode, setConversationMode] = useState(() => readModelSelectorSelection().conversationMode);
-  const [activeTab, setActiveTab] = useState('presets');
+  const [activeTab, setActiveTab] = useState(() => readModelSelectorSelection().activeTab);
   const [selectedPresetId, setSelectedPresetId] = useState(() => readModelSelectorSelection().selectedPresetId);
   const [selectedCouncil, setSelectedCouncil] = useState(() => readModelSelectorSelection().selectedCouncil);
   const [selectedChairman, setSelectedChairman] = useState(() => readModelSelectorSelection().selectedChairman);
@@ -122,7 +122,6 @@ export default function ModelSelector({
     setError(null);
     const saved = readModelSelectorSelection();
     setConversationMode(saved.conversationMode);
-    setActiveTab('presets');
     setCustomRole('council');
     setActiveProvider('all');
     setZdrEnabled(resolveInitialZdrPreference(settings));
@@ -159,6 +158,17 @@ export default function ModelSelector({
             : savedCouncilStillValid
               ? saved.selectedCouncil
               : presetSelection.council.map((model) => model.id),
+        );
+        // Only actually land on the Custom tab if its saved ids still
+        // resolve to real models — an initialCouncil/initialChairman prop
+        // from the caller means "start on custom" too, otherwise a stale
+        // custom selection falls back to Presets rather than showing empty.
+        setActiveTab(
+          initialCouncil.length > 0 || initialChairman
+            ? 'custom'
+            : saved.activeTab === 'custom' && (savedCouncilStillValid || savedChairmanStillValid)
+              ? 'custom'
+              : 'presets',
         );
       })
       .catch((err) => {
@@ -254,6 +264,7 @@ export default function ModelSelector({
     // modelSelectorPersistence.js.
     writeModelSelectorSelection({
       conversationMode,
+      activeTab,
       selectedPresetId,
       selectedCouncil,
       selectedChairman,
