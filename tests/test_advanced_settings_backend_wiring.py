@@ -11,25 +11,38 @@ def import_module_with_api_key(monkeypatch, module_name):
 
 
 def stub_sync_council_dependencies(main, monkeypatch, captured=None):
+    """Stub the council pipeline at its stage seams (turn_pipeline.run_turn
+    dispatches through backend.main, so patching main covers both endpoints)."""
+    from backend.tools.types import EvidencePack
+
     async def fake_generate_conversation_title(*args, **kwargs):
         return "Council title"
 
-    async def fake_run_full_council(*args, **kwargs):
-        from backend.tools.types import EvidencePack
+    async def fake_run_tool_steward_phase(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="Run the council"), None
 
+    async def fake_stage1(*args, **kwargs):
+        return [{"model": "model-a", "response": "Answer A", "usage": {}}]
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
         if captured is not None:
             captured.update(kwargs)
-        stage1 = [{"model": "model-a", "response": "Answer A", "usage": {}}]
-        stage2 = [{"model": "model-a", "parsed_ranking": ["Response A"], "usage": {}}]
-        stage3 = {"model": "chair", "response": "Final answer", "usage": {}}
-        metadata = {"label_to_model": {"Response A": "model-a"}}
-        return stage1, stage2, stage3, metadata, EvidencePack(run_id="run-1", query="Run the council")
+        return {"model": "chair", "response": "Final answer", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
         return ["planning"]
 
     monkeypatch.setattr(main, "generate_conversation_title", fake_generate_conversation_title)
-    monkeypatch.setattr(main, "run_full_council", fake_run_full_council)
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_run_tool_steward_phase)
+    monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
     monkeypatch.setattr("backend.council.calculate_quality_metrics", Mock(return_value={"model-a": {}}))
     monkeypatch.setattr(
