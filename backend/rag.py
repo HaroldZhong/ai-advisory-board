@@ -290,15 +290,21 @@ class CouncilRAG:
         conversation_id: str,
         max_tokens: int = None,
         zdr_enabled: bool = False,
-    ) -> str:
-        """Async version of retrieve to support the litellm calls properly."""
+    ) -> tuple[str, Dict[str, Any]]:
+        """Async version of retrieve to support the litellm calls properly.
+
+        Returns (context, usage): usage is the extraction call's token usage
+        (audit §12) so callers can account for its cost in turn_cost/session
+        budget, which was previously invisible. Empty dict when no extraction
+        call ran (e.g. nothing to retrieve) or it failed.
+        """
         result = await self.retrieve_with_stats_async(
             query,
             conversation_id,
             max_tokens,
             zdr_enabled=zdr_enabled,
         )
-        return result["context"]
+        return result["context"], result.get("usage", {})
         
     def retrieve_with_stats(self, query: str, conversation_id: str, max_tokens: int = None) -> Dict[str, Any]:
         """Backward compat, returns empty since reasoning implies async LLM calls"""
@@ -318,26 +324,26 @@ class CouncilRAG:
         and ask it to extract relevant context facts for the current query.
         """
         if not self.enabled or not self.store:
-            return {"context": "", "used_tokens": 0, "pieces": 0}
-            
+            return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
+
         # 1. Gather all memories EXCEPT the current conversation
         # This prevents the RAG from repeating the short-term history which the chat already has.
         other_convs = {
-            cid: data for cid, data in self.store.items() 
+            cid: data for cid, data in self.store.items()
             if cid != conversation_id
         }
-        
+
         if not other_convs:
-            return {"context": "", "used_tokens": 0, "pieces": 0}
-            
+            return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
+
         # Flatten into a prompt-friendly string
         memory_blocks = []
         for cid, data in other_convs.items():
             for turn in data["turns"]:
                 memory_blocks.append(f"[Memory from Chat: {cid} | Turn: {turn['turn']}]\n{turn['memory']}")
-                
+
         if not memory_blocks:
-            return {"context": "", "used_tokens": 0, "pieces": 0}
+            return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
 
         # Limit the history string to roughly max_tokens or 60,000 chars to avoid overloading standard OpenRouter context.
         # chars≈tokens×4 heuristic; effective cap never exceeds the legacy 60k ceiling.
@@ -385,18 +391,26 @@ class CouncilRAG:
                 timeout=15.0,
                 zdr_enabled=zdr_enabled,
             )
-            
+
+            # Surface the extraction call's usage regardless of outcome (audit
+            # §12): this call burns UTILITY_MODEL tokens on every chat turn
+            # and its cost was previously invisible to turn_cost/session
+            # budget. Empty/None-safe: query_model always returns a dict with
+            # a "usage" key, but tolerate a bare mock/None in tests too.
+            usage = (response or {}).get("usage") or {}
+
             extracted_context = response.get("content", "").strip() if response else "NO_RELEVANT_CONTEXT"
             if "NO_RELEVANT_CONTEXT" in extracted_context or not extracted_context:
                 logger.info("[RAG] PageIndex reasoned no context was relevant.")
-                return {"context": "", "used_tokens": 0, "pieces": 0}
-                
+                return {"context": "", "used_tokens": 0, "pieces": 0, "usage": usage}
+
             logger.info("[RAG] PageIndex retrieved context successfully.")
             return {
-                "context": extracted_context, 
-                "used_tokens": int(len(extracted_context.split()) * 1.3), 
-                "pieces": extracted_context.count("[Memory from")
+                "context": extracted_context,
+                "used_tokens": int(len(extracted_context.split()) * 1.3),
+                "pieces": extracted_context.count("[Memory from"),
+                "usage": usage,
             }
         except Exception as e:
             logger.error("[RAG] Reasoning Engine Error: %s", e, exc_info=True)
-            return {"context": "", "used_tokens": 0, "pieces": 0}
+            return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}

@@ -214,7 +214,7 @@ async def test_sync_chat_uses_advanced_settings_for_rag_and_chairman(monkeypatch
 
     async def fake_retrieve_async(*args, **kwargs):
         captured_rag.update(kwargs)
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_chairman.update(kwargs)
@@ -262,7 +262,7 @@ async def test_stream_chat_uses_advanced_settings_for_rag_and_chairman(monkeypat
 
     async def fake_retrieve_async(*args, **kwargs):
         captured_rag.update(kwargs)
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_chairman.update(kwargs)

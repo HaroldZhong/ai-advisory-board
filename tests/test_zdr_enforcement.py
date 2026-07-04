@@ -202,7 +202,7 @@ async def test_sync_chat_passes_zdr_to_chairman(monkeypatch, tmp_path):
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -238,7 +238,7 @@ async def test_sync_chat_uses_conversation_zdr_metadata(monkeypatch, tmp_path):
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -274,7 +274,7 @@ async def test_stream_chat_passes_zdr_to_chairman(monkeypatch, tmp_path):
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -313,7 +313,7 @@ async def test_stream_chat_uses_conversation_zdr_metadata(monkeypatch, tmp_path)
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -370,9 +370,9 @@ async def test_reasoning_rag_passes_zdr_to_openrouter(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
 
-    result = await rag.retrieve_async("current question", "current", zdr_enabled=True)
+    context, usage = await rag.retrieve_async("current question", "current", zdr_enabled=True)
 
-    assert result == "Relevant prior memory"
+    assert context == "Relevant prior memory"
     assert captured_kwargs["zdr_enabled"] is True
 
 

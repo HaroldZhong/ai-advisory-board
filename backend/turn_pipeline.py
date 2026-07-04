@@ -424,13 +424,18 @@ async def run_turn(
                 yield {"type": "web_search_complete", "data": {"context": chat_web_context[:500], "citations": search_result.get("citations", []), "model": search_result.get("model", "")}}
 
             # Retrieve context via PageIndex reasoning RAG
-            rag_context = await main.rag_system.retrieve_async(
+            rag_context, rag_usage = await main.rag_system.retrieve_async(
                 rewritten_query,
                 conversation_id,
                 max_tokens=run_plan.rag_max_tokens,
                 zdr_enabled=zdr_enabled,
             )
             logger.info(f"[CHAT] RAG context retrieved ({len(rag_context)} chars), calling chairman...")
+            # Account for the extraction call's cost (audit §12): it burns
+            # UTILITY_MODEL tokens on every chat turn but was previously
+            # invisible to turn_cost/session budget.
+            if rag_usage:
+                extra_usage_records.append({"model": config.UTILITY_MODEL, "usage": rag_usage})
 
             # Chat with chairman (using original query + attachment context)
             effective_chairman_model = (

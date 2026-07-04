@@ -36,7 +36,7 @@ async def test_stream_chat_emits_reasoning_and_content_events(monkeypatch, tmp_p
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         return {
@@ -98,7 +98,7 @@ async def test_sync_chat_persists_reasoning(monkeypatch, tmp_path):
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         return {
@@ -136,7 +136,7 @@ async def test_stream_chat_delta_events_use_default_chairman_model(monkeypatch, 
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         return {
