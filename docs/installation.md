@@ -124,7 +124,10 @@ OpenRouter connection (or your API key), not a model download.
   OpenAI-compatible relay (default: `https://openrouter.ai/api/v1`).
 - **Diagnose:** `GET http://127.0.0.1:8001/api/config/connectivity` reports
   whether the backend can reach OpenRouter and whether your API key is valid
-  (network / key). Credit problems are reported at chat time, not by this probe.
+  (network / key). Key validation requires the endpoint to implement
+  OpenRouter's `/key` route — a generic relay without it reports "key status
+  unknown" while reachability is still checked. Credit problems are reported
+  at chat time, not by this probe.
 - **Logs:** check `logs/app.log` under the app data folder
   (`%LOCALAPPDATA%\HaroldZhong\AI Advisory Board\` on Windows). On the old
   v1.0.0 build, `desktop.log` is next to the `.exe` instead.
