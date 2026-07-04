@@ -7,6 +7,37 @@ from .config import OPENROUTER_API_URL, get_openrouter_api_key
 from .logger import logger
 
 
+def connect_timeout_for(total_timeout: float) -> float:
+    """Connect deadline strictly below the wall-clock timeout, so a blocked
+    network raises ConnectTimeout (kind=network) before asyncio.wait_for
+    cancels the request (kind=timeout). Some callers pass timeout=10.0."""
+    return min(10.0, total_timeout / 2)
+
+
+def classify_openrouter_error(exc: Exception) -> str:
+    """Map an exception from an OpenRouter call to a coarse failure kind."""
+    # NetworkError covers Connect/Read/Write/CloseError; ProxyError is a
+    # separate TransportError subclass (failed tunnel = network problem too).
+    if isinstance(exc, (httpx.NetworkError, httpx.ProxyError, httpx.ConnectTimeout)):
+        return "network"
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, asyncio.TimeoutError)):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code == 401:
+            return "auth"
+        # 403 is NOT auth: OpenRouter documents it as moderation/guardrail
+        # blocks (input flagged), so it must not point operators at key fixes.
+        if code == 403:
+            return "other"
+        if code == 402:
+            return "quota"
+        if code == 408:  # OpenRouter documents 408 as request timeout
+            return "timeout"
+        return "other"
+    return "other"
+
+
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
@@ -47,7 +78,9 @@ async def query_model(
         payload["reasoning"] = {"effort": thinking_effort}
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=connect_timeout_for(timeout))
+        ) as client:
             response = await asyncio.wait_for(
                 client.post(
                     OPENROUTER_API_URL,
@@ -76,11 +109,11 @@ async def query_model(
                 'usage': usage
             }
 
-    except asyncio.TimeoutError:
-        logger.error(f"OpenRouter request to {model} timed out after {timeout:.1f}s")
-        return None
     except Exception as e:
-        logger.error(f"Error querying model {model}: {e}")
+        logger.error(
+            "OpenRouter call failed model=%s kind=%s error=%s",
+            model, classify_openrouter_error(e), e,
+        )
         return None
 
 
