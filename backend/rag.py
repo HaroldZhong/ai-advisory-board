@@ -236,10 +236,32 @@ class CouncilRAG:
         if not memory_blocks:
             return {"context": "", "used_tokens": 0, "pieces": 0}
 
-        # Limit the history string generically to roughly max_tokens or 60,000 chars to avoid overloading standard OpenRouter context
+        # Limit the history string to roughly max_tokens or 60,000 chars to avoid overloading standard OpenRouter context.
+        # chars≈tokens×4 heuristic; effective cap never exceeds the legacy 60k ceiling.
+        # Trim on block boundaries (not raw chars) so every kept block keeps its
+        # "[Memory from Chat: ...]" citation header intact and citable.
+        cap = min(60000, max_tokens * 4) if max_tokens else 60000
         memory_text = "\n\n".join(memory_blocks)
-        if len(memory_text) > 60000:
-            memory_text = memory_text[-60000:]
+        if len(memory_text) > cap:
+            kept = []
+            total = 0
+            for block in reversed(memory_blocks):
+                added = len(block) + (2 if kept else 0)  # account for "\n\n" join
+                if total + added > cap:
+                    break
+                kept.append(block)
+                total += added
+            if not kept:
+                # Single newest block alone exceeds cap: keep it but slice its
+                # content tail and re-attach the header so it stays citable.
+                # This can overshoot `cap` by the header's length; acceptable.
+                header, _, content = memory_blocks[-1].partition("\n")
+                header_line = header + "\n"
+                tail_budget = max(cap - len(header_line) - 1, 0)
+                # content[-0:] would slice the WHOLE string, defeating the cap; guard it.
+                tail = content[-tail_budget:] if tail_budget > 0 else ""
+                kept = [header_line + "…" + tail]
+            memory_text = "\n\n".join(reversed(kept))
             
         # 2. Reasoning Extraction step
         no_context_token = "NO_RELEVANT_CONTEXT"
