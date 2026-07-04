@@ -31,6 +31,7 @@ jobs:
         run: >
           uv run --group dev python -m pytest
           tests/test_app_paths.py
+          tests/test_desktop_error_format.py
           tests/test_crash_fixes.py
           tests/test_runtime_api_key_config.py
           tests/test_rag_persistence.py
