@@ -7,6 +7,7 @@ const MODEL_QWEN = 'qwen/qwen3.5-35b-a3b';
 const MODEL_CLAUDE = 'anthropic/claude-opus-4.7';
 const MODEL_GPT = 'openai/gpt-5.5-pro';
 const MODEL_GPT_ZDR = 'openai/gpt-5.4';
+const SLOW_KEY = 'sk-or-v1-slow-probe-key';
 
 function json(body, status = 200) {
   return {
@@ -137,7 +138,10 @@ async function installMockApi(page) {
     route.fulfill(json({ success: true, has_api_key: true }));
   });
 
-  await page.route(`${API_BASE}/api/config/connectivity`, (route) => {
+  await page.route(`${API_BASE}/api/config/connectivity`, async (route) => {
+    const body = route.request().postDataJSON?.() ?? null;
+    const delayMs = body?.api_key === SLOW_KEY ? 300 : 0;
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     route.fulfill(json({ reachable: true, key_valid: true, error_kind: null, detail: '' }));
   });
 
@@ -360,4 +364,20 @@ test('first-run setup can be dismissed and lands on the landing page', async ({ 
 
   await expect(page.getByRole('heading', { name: 'Set Up AI Advisory Board' })).not.toBeVisible();
   await expect(page).toHaveURL('/');
+});
+
+test('editing the key mid-probe discards the stale connection result', async ({ page }) => {
+  await installMockApi(page);
+
+  await page.goto('/app');
+
+  await page.getByLabel('OpenRouter API key').fill(SLOW_KEY);
+  await page.getByRole('button', { name: 'Test connection' }).click();
+
+  // Edit the key while the (deliberately slow) probe for SLOW_KEY is still in flight.
+  await page.getByLabel('OpenRouter API key').fill('sk-or-v1-edited-mid-flight');
+
+  // Give the slow probe time to resolve; its result must be discarded, not shown.
+  await page.waitForTimeout(500);
+  await expect(page.getByText('Connected to OpenRouter.')).not.toBeVisible();
 });

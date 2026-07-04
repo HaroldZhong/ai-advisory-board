@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -72,6 +72,8 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
   const trimmedApiKey = apiKey.trim();
   const keyIsValid = looksLikeOpenRouterKey(trimmedApiKey);
   const currentStep = STEPS[step];
+  const latestApiKeyRef = useRef(trimmedApiKey);
+  latestApiKeyRef.current = trimmedApiKey;
 
   const canContinue = useMemo(() => {
     if (currentStep.id === 'connect') return keyIsValid;
@@ -80,16 +82,21 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
   }, [currentStep.id, keyIsValid, zdrChoice]);
 
   const handleTestConnection = async () => {
+    const testedKey = trimmedApiKey;
     setIsTestingConnection(true);
     setConnectionResult(null);
+    let result;
     try {
-      const body = await api.getConnectivity(trimmedApiKey);
-      setConnectionResult(mapConnectivityResult(body));
+      const body = await api.getConnectivity(testedKey);
+      result = mapConnectivityResult(body);
     } catch {
-      setConnectionResult(mapConnectivityResult(null));
-    } finally {
-      setIsTestingConnection(false);
+      result = mapConnectivityResult(null);
     }
+    // Discard if the key changed while the probe was in flight.
+    if (latestApiKeyRef.current === testedKey) {
+      setConnectionResult(result);
+    }
+    setIsTestingConnection(false);
   };
 
   const handleNext = async () => {
