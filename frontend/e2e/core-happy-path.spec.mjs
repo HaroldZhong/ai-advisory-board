@@ -303,6 +303,13 @@ test('first-run setup creates a private preset conversation and renders streamed
   await page.getByLabel('OpenRouter API key').fill('sk-or-v1-launch-hardening-key');
   await page.getByRole('button', { name: 'Test connection' }).click();
   await expect(page.getByText('Connected to OpenRouter.')).toBeVisible();
+
+  // Editing the key after a successful test must clear the stale result.
+  await page.getByLabel('OpenRouter API key').fill('sk-or-v1-launch-hardening-key-edited');
+  await expect(page.getByText('Connected to OpenRouter.')).not.toBeVisible();
+
+  await page.getByRole('button', { name: 'Test connection' }).click();
+  await expect(page.getByText('Connected to OpenRouter.')).toBeVisible();
   await page.getByRole('button', { name: /Continue/ }).click();
   await page.getByText('Private routing by default').click();
   await page.getByRole('button', { name: /Continue/ }).click();
@@ -314,7 +321,7 @@ test('first-run setup creates a private preset conversation and renders streamed
   await page.getByRole('button', { name: 'Start conversation' }).click();
 
   await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
-  expect(requests.setup).toEqual({ api_key: 'sk-or-v1-launch-hardening-key' });
+  expect(requests.setup).toEqual({ api_key: 'sk-or-v1-launch-hardening-key-edited' });
   expect(requests.createConversation).toMatchObject({
     preset_id: 'private',
     zdr_enabled: true,

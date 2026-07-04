@@ -605,6 +605,22 @@ def ensure_local_setup_request(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Setup is only available from localhost")
 
 
+class ConnectivityCheckRequest(BaseModel):
+    """Optional candidate key to validate before it's saved (first-run 'Test connection')."""
+    api_key: Optional[str] = None
+
+
+@app.post("/api/config/connectivity")
+async def post_connectivity_status(data: ConnectivityCheckRequest, request: Request):
+    """Same probe as GET, but validates a caller-supplied key instead of the saved one.
+
+    Carries a secret in the body, so it gets the same localhost guard as /api/config/setup.
+    """
+    ensure_local_setup_request(request)
+    from .openrouter_client import check_connectivity
+    return await check_connectivity(api_key=data.api_key or None)
+
+
 @app.post("/api/config/setup")
 async def setup_config(data: dict, request: Request):
     """Save the OpenRouter API key to .env file."""

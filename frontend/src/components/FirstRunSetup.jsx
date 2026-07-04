@@ -83,7 +83,7 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
     setIsTestingConnection(true);
     setConnectionResult(null);
     try {
-      const body = await api.getConnectivity();
+      const body = await api.getConnectivity(trimmedApiKey);
       setConnectionResult(mapConnectivityResult(body));
     } catch {
       setConnectionResult(mapConnectivityResult(null));
@@ -157,7 +157,10 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
                     id="openrouter-api-key"
                     type="password"
                     value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
+                    onChange={(event) => {
+                      setApiKey(event.target.value);
+                      setConnectionResult(null);
+                    }}
                     placeholder="sk-or-v1-..."
                     autoFocus
                     autoComplete="off"
