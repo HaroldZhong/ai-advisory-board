@@ -113,7 +113,7 @@ export function useStreamingConversation({
       }
 
       const knownEventTypes = new Set([
-        'stage1_start', 'stage1_complete',
+        'stage1_start', 'stage1_model_complete', 'stage1_complete',
         'stage2_start', 'stage2_complete',
         'stage3_start', 'stage3_complete',
         'chat_start', 'chat_response',
