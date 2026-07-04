@@ -7,9 +7,6 @@ def build(repo_root: Optional[Path] = None) -> int:
 
     root = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parent
 
-    # CANARY (temporary, will be reverted): prove windows-build-smoke bites.
-    return 1
-
     # Ensure frontend is built first
     frontend_dist = root / "frontend" / "dist"
     if not frontend_dist.exists():
