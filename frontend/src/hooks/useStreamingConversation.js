@@ -4,7 +4,7 @@ import { streamReducer } from '../utils/streamReducer';
 import { applyStreamUpdateToActiveConversation } from '../utils/reasoningMessages';
 import { rollbackFailedSendConversation } from '../utils/optimisticMessages';
 import { normalizeAdvancedSettingsForMode } from '../utils/advancedSettingsAvailability';
-import { predictNextMessageMode } from '../utils/modePrediction';
+import { resolveSendMode } from '../utils/modePrediction';
 import { resolveEffectiveZdr } from '../utils/trustState';
 import { toast } from './use-toast';
 import { formatStreamErrorMessage } from '../utils/streamErrors';
@@ -38,7 +38,8 @@ export function useStreamingConversation({
 }) {
   const [isLoading, setIsLoading] = useState(false);
 
-  const sendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
+  const sendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1, options = {}) => {
+    const { mode: explicitMode } = options;
     const targetConversationId = conversationId;
     if (!targetConversationId) return;
 
@@ -72,10 +73,12 @@ export function useStreamingConversation({
         }));
       }
 
-      // Routing is backend-owned: the request always carries mode "auto" and
-      // prepare_turn resolves it edit-aware. The prediction below only picks
-      // the optimistic skeleton and which advanced settings apply.
-      const predictedMode = predictNextMessageMode({
+      // Routing is backend-owned: without an explicit override the request
+      // carries mode "auto" and prepare_turn resolves it edit-aware. An
+      // armed "Ask the council" send (P3-T4) passes an explicit mode that
+      // wins on both the wire and the optimistic skeleton below, mirroring
+      // prepare_turn's "explicit request.mode wins" rule.
+      const predictedMode = resolveSendMode(explicitMode, {
         messageCount: currentConversation.messages.length,
         editIndex,
         defaultMode: currentConversation?.metadata?.default_mode,
@@ -162,7 +165,7 @@ export function useStreamingConversation({
           });
           setIsLoading(false);
         }
-      }, 'auto', attachmentIds, {
+      }, explicitMode || 'auto', attachmentIds, {
         enabled: settings.webSearchEnabled,
         depth: settings.webSearchDepth,
         customInstructions: requestSettings.customInstructions,

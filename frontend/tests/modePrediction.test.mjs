@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { predictNextMessageMode } from '../src/utils/modePrediction.js';
+import { predictNextMessageMode, resolveSendMode } from '../src/utils/modePrediction.js';
 
 test('empty conversation predicts council', () => {
   assert.equal(predictNextMessageMode({ messageCount: 0 }), 'council');
@@ -48,6 +48,26 @@ test('defaultMode "council" mirrors the legacy effective-count rule on first mes
 
 test('defaultMode "council" mirrors the legacy effective-count rule on follow-up', () => {
   assert.equal(predictNextMessageMode({ messageCount: 4, defaultMode: 'council' }), 'chat');
+});
+
+test('resolveSendMode: an explicit council override wins on a mid-conversation turn (P3-T4)', () => {
+  assert.equal(
+    resolveSendMode('council', { messageCount: 4 }),
+    'council',
+  );
+});
+
+test('resolveSendMode: an explicit chat override wins even on a first message', () => {
+  assert.equal(
+    resolveSendMode('chat', { messageCount: 0 }),
+    'chat',
+  );
+});
+
+test('resolveSendMode: with no explicit override, falls back to the prediction', () => {
+  assert.equal(resolveSendMode(undefined, { messageCount: 4 }), 'chat');
+  assert.equal(resolveSendMode(null, { messageCount: 0 }), 'council');
+  assert.equal(resolveSendMode('', { messageCount: 0, defaultMode: 'chat' }), 'chat');
 });
 
 test('the streaming hook sends mode auto and never a locally computed mode', () => {

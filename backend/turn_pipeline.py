@@ -45,6 +45,21 @@ async def _finish_title_task(main, conversation_id: str, title_task):
     yield {"type": "title_complete", "data": {"title": title}}
 
 
+def _compose_llm_content(base: str, attachment_context: str, custom_instructions: str) -> str:
+    """Wrap a model-facing query with attachment context and custom instructions.
+
+    Shared by the initial (pre-rewrite) composition and the mid-conversation
+    council rewrite (P3-T4/owner decision #3), which replays the SAME
+    wrapping around the rewritten query instead of request.content.
+    """
+    content = base
+    if attachment_context:
+        content = f"{base}\n\n{attachment_context}"
+    if custom_instructions.strip():
+        content = f"[User Instructions]\n{custom_instructions.strip()}\n\n{content}"
+    return content
+
+
 async def run_turn(
     conversation_id: str,
     request: Any,
@@ -80,15 +95,9 @@ async def run_turn(
                 if att_text:
                     main.rag_system.index_document(conversation_id, att_id, att_text)
 
-        # Combine user content with attachment context for LLM
-        # User sees only their message, LLM sees message + attachments
-        llm_content = request.content
-        if attachment_context:
-            llm_content = f"{request.content}\n\n{attachment_context}"
-
-        # Prepend custom instructions as a persona prefix
-        if request.custom_instructions.strip():
-            llm_content = f"[User Instructions]\n{request.custom_instructions.strip()}\n\n{llm_content}"
+        # Combine user content with attachment context and custom instructions
+        # for the LLM. User sees only their message, LLM sees the composed content.
+        llm_content = _compose_llm_content(request.content, attachment_context, request.custom_instructions)
 
         extra_usage_records = []
 
@@ -135,7 +144,25 @@ async def run_turn(
         if mode == "council":
             title_task = _start_title_task(main, needs_title, request.content, zdr_enabled)
 
-            # Stage 0a: Web Search (if enabled)
+            # Ask the council on any turn (P3-T4, owner decision #3): a
+            # mid-conversation council run resolves the follow-up into ONE
+            # self-contained, rewritten query and hands that SAME text to
+            # all four consumers below (tool steward, Stage 1, Stage 2,
+            # Stage 3). The persisted user message keeps the original text
+            # (already stored above). First-turn council has no history to
+            # resolve, so it skips the rewrite — identical to today.
+            council_query = request.content
+            if current_conversation.get("messages"):
+                from .council import rewrite_query
+                council_query = await rewrite_query(
+                    request.content,
+                    current_conversation["messages"],
+                    zdr_enabled=zdr_enabled,
+                )
+                llm_content = _compose_llm_content(council_query, attachment_context, request.custom_instructions)
+
+            # Stage 0a: Web Search (if enabled). Grounds on the literal
+            # question the user typed, not the rewritten one — leave as-is.
             web_context = ""
             if request.web_search_enabled:
                 from .web_search import web_search_stage0
@@ -160,7 +187,7 @@ async def run_turn(
 
             yield {"type": "steward_start"}
             evidence_pack, steward_usage = await main.run_tool_steward_phase(
-                request.content,
+                council_query,
                 run_id,
                 chairman_model=chairman_model,
                 zdr_enabled=zdr_enabled,
@@ -213,7 +240,7 @@ async def run_turn(
                 # Stage 2: Collect rankings
                 yield {"type": "stage2_start"}
                 stage2_results, label_to_model = await main.stage2_collect_rankings(
-                    request.content,
+                    council_query,
                     stage1_results,
                     models=council_models,
                     zdr_enabled=zdr_enabled,
@@ -239,7 +266,7 @@ async def run_turn(
                 # Stage 3: Synthesize final answer with confidence
                 yield {"type": "stage3_start"}
                 stage3_result = await main.stage3_synthesize_final(
-                    request.content,
+                    council_query,
                     stage1_results,
                     stage2_results,
                     label_to_model,
