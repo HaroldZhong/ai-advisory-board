@@ -343,6 +343,7 @@ function AppContent() {
   const configStatusRetryAttempt = useRef(0);
   const hasShownConfigStatusError = useRef(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const { updateSettings } = useSettings();
   const isAppRoute = location.pathname === '/app' || location.pathname.startsWith('/c/');
   const landingOnly = isLandingOnly();
@@ -463,6 +464,11 @@ function AppContent() {
     setOpenModelPickerSignal((value) => value + 1);
   };
 
+  const handleFirstRunDismiss = () => {
+    setShowFirstRunSetup(false);
+    navigate('/', { replace: true });
+  };
+
   return (
     <>
       <Routes>
@@ -524,7 +530,11 @@ function AppContent() {
         )}
       </Routes>
       {!landingOnly && isAppRoute && !configStatus.loading && showFirstRunSetup && (
-        <FirstRunSetup isOpen={showFirstRunSetup} onComplete={handleFirstRunComplete} />
+        <FirstRunSetup
+          isOpen={showFirstRunSetup}
+          onComplete={handleFirstRunComplete}
+          onDismiss={handleFirstRunDismiss}
+        />
       )}
     </>
   );

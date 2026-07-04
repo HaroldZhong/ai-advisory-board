@@ -211,11 +211,14 @@ def clear_cache():
     logger.info("[OpenRouter] Cache cleared")
 
 
-async def check_connectivity() -> Dict[str, Any]:
+async def check_connectivity(api_key: Optional[str] = None) -> Dict[str, Any]:
     """Two-stage probe: (1) unauthenticated GET /models proves network
     reachability only (it serves 200 without credentials); (2) if a key is
     configured, authenticated GET /key validates it (401/403 = bad key).
     Credit exhaustion is NOT detectable here; it surfaces at chat time.
+
+    `api_key`, if given, is validated instead of the configured key — lets
+    the first-run UI check a just-typed key before it's saved.
     """
     from .openrouter import classify_openrouter_error
     from . import config
@@ -247,7 +250,7 @@ async def check_connectivity() -> Dict[str, Any]:
             return result
 
         # Stage 2: key validity (only meaningful once reachable)
-        api_key = config.get_openrouter_api_key()
+        api_key = api_key or config.get_openrouter_api_key()
         if api_key is None:
             result["detail"] = "Network OK. No API key configured yet."
             return result

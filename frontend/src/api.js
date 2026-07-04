@@ -235,6 +235,26 @@ export const api = {
   },
 
   /**
+   * Check connectivity to OpenRouter and validity of a key.
+   * Pass apiKey to validate a not-yet-saved key (first-run "Test connection");
+   * omit it to check the currently configured key.
+   * @returns {Promise<{reachable: boolean, key_valid: boolean|null, error_kind: string|null, detail: string}>}
+   */
+  async getConnectivity(apiKey) {
+    const response = apiKey
+      ? await fetch(`${API_BASE}/api/config/connectivity`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: apiKey }),
+        })
+      : await fetch(`${API_BASE}/api/config/connectivity`);
+    if (!response.ok) {
+      throw new Error('Failed to check connectivity');
+    }
+    return response.json();
+  },
+
+  /**
    * Save OpenRouter API Key
    */
   async setupConfig(apiKey) {
