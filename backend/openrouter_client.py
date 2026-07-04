@@ -11,6 +11,11 @@ OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 OPENROUTER_ZDR_ENDPOINTS_URL = f"{OPENROUTER_BASE_URL}/endpoints/zdr"
 CACHE_TTL_SECONDS = 3600  # 1 hour cache
 
+# Injection point for tests (httpx.MockTransport); None = real network.
+_probe_transport = None
+
+OPENROUTER_KEY_URL = f"{OPENROUTER_BASE_URL}/key"
+
 # In-memory cache
 _cache: Dict[str, Any] = {
     "models": None,
@@ -204,3 +209,75 @@ def clear_cache():
     global _cache
     _cache = {"models": None, "last_fetched": 0}
     logger.info("[OpenRouter] Cache cleared")
+
+
+async def check_connectivity() -> Dict[str, Any]:
+    """Two-stage probe: (1) unauthenticated GET /models proves network
+    reachability only (it serves 200 without credentials); (2) if a key is
+    configured, authenticated GET /key validates it (401/403 = bad key).
+    Credit exhaustion is NOT detectable here; it surfaces at chat time.
+    """
+    from .openrouter import classify_openrouter_error
+    from . import config
+
+    result = {"reachable": False, "key_valid": None, "error_kind": None, "detail": ""}
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(10.0, connect=8.0), transport=_probe_transport
+    ) as client:
+        # Stage 1: reachability. ANY HTTP response proves the endpoint is
+        # reachable — some relays gate /models behind auth (401/403), which
+        # still means the network path works. Only transport errors fail here.
+        try:
+            await client.get(OPENROUTER_MODELS_URL)
+            result["reachable"] = True
+        except Exception as e:
+            kind = classify_openrouter_error(e)
+            details = {
+                "network": (
+                    "Could not reach openrouter.ai. If you are behind a firewall "
+                    "or in a region where openrouter.ai is blocked, set HTTPS_PROXY "
+                    "or OPENROUTER_BASE_URL."
+                ),
+                "timeout": "openrouter.ai did not respond in time. Check your network or proxy.",
+            }
+            logger.warning("[OpenRouter] Reachability probe failed kind=%s: %s", kind, e)
+            result["error_kind"] = kind
+            result["detail"] = details.get(kind, f"Unexpected error: {e}")
+            return result
+
+        # Stage 2: key validity (only meaningful once reachable)
+        api_key = config.get_openrouter_api_key()
+        if api_key is None:
+            result["detail"] = "Network OK. No API key configured yet."
+            return result
+
+        try:
+            response = await client.get(
+                OPENROUTER_KEY_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            response.raise_for_status()
+            result["key_valid"] = True
+            result["detail"] = "ok"
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                result["key_valid"] = False
+                result["error_kind"] = "auth"
+                result["detail"] = "Reached openrouter.ai but the API key was rejected. Check your key."
+            elif e.response.status_code in (404, 405, 501):
+                # OpenAI-compatible relays (OPENROUTER_BASE_URL) often don't
+                # implement OpenRouter's /key endpoint. Reachability is already
+                # proven; key validity just can't be checked here — not an error.
+                result["detail"] = (
+                    "Network OK. This endpoint does not support key validation; "
+                    "key status unknown."
+                )
+            else:
+                result["error_kind"] = "other"
+                result["detail"] = f"Key check returned HTTP {e.response.status_code}."
+        except Exception as e:
+            result["error_kind"] = classify_openrouter_error(e)
+            result["detail"] = f"Key check failed: {e}"
+
+    return result
