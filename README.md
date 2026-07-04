@@ -1,6 +1,6 @@
 # AI Advisory Board
 
-A desktop AI assistant powered by a **multi-LLM deliberative council** — multiple AI models debate, rank, and synthesize answers to deliver higher-quality responses than any single model alone. Features **persistent memory (PageIndex RAG)**, **web search**, **document processing**, and **custom personas**.
+A desktop AI assistant powered by a **multi-LLM deliberative council** — multiple AI models debate, rank, and synthesize answers to deliver higher-quality responses than any single model alone. Features **reasoning-based persistent memory**, **web search**, **document processing**, and **custom personas**.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -16,9 +16,9 @@ A desktop AI assistant powered by a **multi-LLM deliberative council** — multi
 - **Stage 2 — Rank**: Models anonymously evaluate and rank all responses
 - **Stage 3 — Synthesize**: Chairman model creates a final answer based on rankings and deliberation, with a confidence score (HIGH/MEDIUM/LOW)
 
-### Memory & Retrieval (PageIndex RAG)
+### Memory & Retrieval (Reasoning-Based Memory)
 
-- **Persistent Memory**: Conversations are indexed and retrievable across sessions
+- **Persistent Memory**: Council turns are stored and a fast LLM extracts relevant context across conversations
 - **Document Indexing**: Uploaded files are automatically indexed for future retrieval
 - **Query Rewriting**: Automatic coreference resolution for natural follow-ups
 
@@ -33,7 +33,7 @@ A desktop AI assistant powered by a **multi-LLM deliberative council** — multi
 - **Drag & Drop**: Drop files directly into the chat
 - **Supported Formats**: PDF, DOCX, PPTX, XLSX, CSV, TXT, Markdown, HTML, JSON, and images
 - **Vision**: Images are analyzed using vision models
-- **PageIndex Integration**: Extracted text is automatically indexed for cross-chat retrieval
+- **Reasoning Memory Integration**: Extracted text is automatically indexed for cross-chat retrieval
 
 ### Advanced Features
 
@@ -133,7 +133,7 @@ User Query
     ↓
 Query Rewriting (resolve coreferences)
     ↓
-PageIndex RAG Retrieval (persistent memory)
+Reasoning Memory Retrieval (persistent memory)
     ↓
 Custom Instructions (persona prefix)
     ↓
@@ -143,7 +143,7 @@ Stage 2: Anonymous peer ranking
     ↓
 Stage 3: Chairman synthesis + confidence
     ↓
-Index session into PageIndex
+Index session into reasoning memory
     ↓
 Display to user
 ```
@@ -211,7 +211,7 @@ backend/
 ├── main.py                  # API endpoints, streaming, routing
 ├── council.py               # 3-stage council orchestration
 ├── openrouter.py            # OpenRouter API client
-├── rag.py                   # PageIndex RAG system
+├── rag.py                   # Reasoning-based memory system
 ├── storage.py               # JSON-based conversation storage
 ├── config.py                # Models, RAG, and budget configuration
 ├── web_search.py            # Perplexity web search integration
@@ -221,7 +221,6 @@ backend/
 ├── rag_utils.py             # Query rewriting utilities
 ├── budget_policy.py         # Budget-aware routing
 ├── logger.py                # Structured logging
-├── pageindex/               # PageIndex reasoning RAG engine
 └── tools/                   # Tool calling infrastructure
 ```
 
@@ -268,7 +267,7 @@ Development checkouts keep data project-local by default. Set `AAB_DATA_DIR` to 
 |------|-------|--------|
 | API key | `.env` under the app data root | dotenv |
 | Conversations | `data/conversations/` under the app data root | JSON per conversation |
-| PageIndex Memory | `data/pageindex_memory.json` under the app data root | JSON reasoning index |
+| Reasoning Memory | `data/pageindex_memory.json` under the app data root | JSON reasoning index |
 | Attachments | `data/conversations/attachments/` under the app data root | Binary files + metadata |
 | Logs | `logs/app.log` and `logs/desktop.log` under the app data root | Rotating log files |
 
@@ -301,7 +300,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 - **Original Concept**: [llm-council](https://github.com/karpathy/llm-council) by Andrej Karpathy
 - **APIs**: [OpenRouter](https://openrouter.ai/) for unified LLM access
-- **RAG**: [PageIndex](https://github.com/VectifyAI/PageIndex) reasoning-based retrieval
+- **Memory design**: reasoning-based retrieval approach inspired by [PageIndex](https://github.com/VectifyAI/PageIndex)
 - **UI**: [shadcn/ui](https://ui.shadcn.com/) + [Tailwind CSS](https://tailwindcss.com/)
 
 ---

@@ -31,6 +31,7 @@ jobs:
         run: >
           uv run --group dev python -m pytest
           tests/test_app_paths.py
+          tests/test_desktop_error_format.py
           tests/test_crash_fixes.py
           tests/test_runtime_api_key_config.py
           tests/test_rag_persistence.py
@@ -81,7 +82,7 @@ jobs:
           python-version-file: .python-version
 
       - name: Run deterministic tests
-        run: uv run --group dev python -m pytest tests/ -q --ignore=tests/verify_upload.py
+        run: uv run --group dev python -m pytest tests/ -q
 
   windows-build-smoke:
     name: Windows PyInstaller build smoke
@@ -135,7 +136,7 @@ jobs:
           node-version: 24
 
       - name: Run deterministic frontend tests
-        run: node --test frontend/tests/advancedSettingsAvailability.test.mjs frontend/tests/advancedRoutingControls.test.mjs frontend/tests/configStatus.test.mjs frontend/tests/conversationCreation.test.mjs frontend/tests/conversationNavigation.test.mjs frontend/tests/conversationOrganization.test.mjs frontend/tests/firstRunSetup.test.mjs frontend/tests/modelPresets.test.mjs frontend/tests/oneShotSignal.test.mjs frontend/tests/optimisticMessages.test.mjs frontend/tests/reasoningDisplay.test.mjs frontend/tests/reasoningMessages.test.mjs frontend/tests/responsiveChatLayout.test.mjs frontend/tests/responsiveLayout.test.mjs frontend/tests/responsiveModalLayout.test.mjs frontend/tests/thinkingEffort.test.mjs frontend/tests/trustState.test.mjs frontend/tests/streamErrors.test.mjs frontend/tests/safeHref.test.mjs frontend/tests/landingOnly.test.mjs
+        run: node --test frontend/tests/advancedSettingsAvailability.test.mjs frontend/tests/advancedRoutingControls.test.mjs frontend/tests/configStatus.test.mjs frontend/tests/conversationCreation.test.mjs frontend/tests/conversationNavigation.test.mjs frontend/tests/conversationOrganization.test.mjs frontend/tests/firstRunSetup.test.mjs frontend/tests/modelPresets.test.mjs frontend/tests/oneShotSignal.test.mjs frontend/tests/optimisticMessages.test.mjs frontend/tests/reasoningDisplay.test.mjs frontend/tests/reasoningMessages.test.mjs frontend/tests/responsiveChatLayout.test.mjs frontend/tests/responsiveLayout.test.mjs frontend/tests/responsiveModalLayout.test.mjs frontend/tests/streamReducer.test.mjs frontend/tests/thinkingEffort.test.mjs frontend/tests/trustState.test.mjs frontend/tests/streamErrors.test.mjs frontend/tests/safeHref.test.mjs frontend/tests/landingOnly.test.mjs
 
   frontend-e2e-tests:
     name: Frontend Playwright E2E
