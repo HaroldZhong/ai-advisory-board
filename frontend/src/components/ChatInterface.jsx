@@ -109,11 +109,15 @@ export default function ChatInterface({
   // Granular busy flags (P3-T8 item 2): a single isLoading used to disable
   // the whole composer area, including controls with no real conflict with
   // an in-flight stream. Only sending a NEW turn (and its textarea/attach
-  // toggle) needs to wait on isLoading — uploads, privacy, and thinking
-  // effort each already track their own busy state and shouldn't be
-  // blocked just because a response happens to be streaming.
+  // toggle) needs to wait on isLoading — privacy and thinking effort each
+  // already track their own busy state and shouldn't be blocked just
+  // because a response happens to be streaming. The attach button DOES
+  // still need isUploading (Codex review, round 2 item 2): handleFileUpload
+  // validates the 10-file cap against a stale `attachments.length` snapshot
+  // taken at call time, so a second upload starting before the first one's
+  // state updates land could slip past the cap.
   const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
-  const attachDisabled = isUpdatingPrivacy || budgetCapBlock.blocked;
+  const attachDisabled = isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
   const composerDisabled = sendDisabled;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
     isUploading,

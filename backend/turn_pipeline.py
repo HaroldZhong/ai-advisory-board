@@ -115,6 +115,7 @@ async def run_turn(
             attachment_cleanup = main.delete_truncated_message_attachments(
                 conversation_id,
                 request.edit_index,
+                keep_ids=set(request.attachment_ids),
             )
             main.storage.truncate_messages(conversation_id, request.edit_index)
             # Re-fetch conversation after truncation

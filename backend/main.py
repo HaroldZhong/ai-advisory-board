@@ -451,14 +451,27 @@ def prepare_message_attachments(
 def delete_truncated_message_attachments(
     conversation_id: str,
     keep_count: int,
+    keep_ids: Optional[set] = None,
 ) -> Dict[str, Any]:
-    """Release attachments referenced only by messages removed during edit/regenerate."""
+    """Release attachments referenced only by messages removed during edit/regenerate.
+
+    keep_ids: attachment ids being resent with the edited message (Codex
+    review, P3-T8 round 2 item 1). Without this, an edit/regenerate that
+    resends an attachment id only ever referenced by the truncated tail
+    raced with prepare_message_attachments: this function deleted the
+    attachment's files, then the resend tried to relink an id whose files
+    were already gone. Skip deleting those ids here — they're about to be
+    relinked to the SAME conversation, not actually removed from it.
+    """
     conversation = storage.get_conversation(conversation_id)
     if not conversation:
         return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": []}
 
     removed_messages = conversation.get("messages", [])[keep_count:]
-    attachment_ids = collect_attachment_ids_from_messages(removed_messages)
+    attachment_ids = [
+        attachment_id for attachment_id in collect_attachment_ids_from_messages(removed_messages)
+        if not keep_ids or attachment_id not in keep_ids
+    ]
     results = [
         delete_attachment(attachment_id, conversation_id=conversation_id)
         for attachment_id in attachment_ids
