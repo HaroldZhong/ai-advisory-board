@@ -90,9 +90,10 @@ export default function TrustRow({
   privacyDisabledReason,
   thinkingDisabled = false,
   thinkingDisabledReason,
+  zdrAvailable = true,
 }) {
   const [isThinkingMenuOpen, setIsThinkingMenuOpen] = useState(false);
-  const state = formatTrustRowState({ conversation, settings, attachmentCount });
+  const state = formatTrustRowState({ conversation, settings, attachmentCount, zdrAvailable });
   const warning = getEffectiveBudgetWarning(state.budget.spentPct, budgetWarning?.threshold);
   const warningTone = warning?.level === 'danger' ? 'danger' : warning?.level === 'warn' ? 'warn' : 'caution';
   const privacyIcon = state.privacy.effectiveZdr ? Shield : ShieldOff;

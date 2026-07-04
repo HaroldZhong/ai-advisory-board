@@ -68,6 +68,7 @@ export default function ChatInterface({
   onUpdateThinkingEffort,
   budgetWarning,
   isLoading,
+  zdrAvailable = true,
 }) {
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -94,13 +95,17 @@ export default function ChatInterface({
     messageCount: conversation?.messages?.length || 0,
     defaultMode: conversation?.metadata?.default_mode,
   });
-  const effectiveZdr = resolveEffectiveZdr(conversation, settings);
+  const effectiveZdr = resolveEffectiveZdr(conversation, settings, zdrAvailable);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
   const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
     isLoading,
     isUploading,
     isUpdatingPrivacy,
+    // Only the ENABLE direction is blocked off-provider — an explicit
+    // conversation-level ZDR (effectiveZdr already true) must still be
+    // disable-able so the user can consciously turn it off.
+    isEnablingUnavailable: !zdrAvailable && !effectiveZdr,
   });
   const thinkingDisabledReason = isLoading
     ? 'Thinking effort changes apply to future turns and are disabled while a response is streaming'
@@ -677,6 +682,7 @@ export default function ChatInterface({
             privacyDisabledReason={privacyDisabledReason}
             thinkingDisabled={Boolean(thinkingDisabledReason)}
             thinkingDisabledReason={thinkingDisabledReason}
+            zdrAvailable={zdrAvailable}
             onUpdateConversationPrivacy={async (nextZdr) => {
               if (privacyDisabledReason) return;
               setIsUpdatingPrivacy(true);

@@ -35,6 +35,7 @@ export function useStreamingConversation({
   availableModels,
   loadConversations,
   settings,
+  zdrAvailable = true,
 }) {
   const [isLoading, setIsLoading] = useState(false);
 
@@ -81,7 +82,7 @@ export function useStreamingConversation({
         defaultMode: currentConversation?.metadata?.default_mode,
       });
       const requestSettings = normalizeAdvancedSettingsForMode(settings, predictedMode);
-      requestSettings.zdrEnabled = resolveEffectiveZdr(currentConversation, settings);
+      requestSettings.zdrEnabled = resolveEffectiveZdr(currentConversation, settings, zdrAvailable);
 
       if (predictedMode === 'council') {
         const assistantMessage = {

@@ -201,6 +201,7 @@ function ConversationView({
     availableModels,
     loadConversations,
     settings,
+    zdrAvailable: isZdrAvailableForProvider(providerKind),
   });
 
   const handleUpdateSessionPolicy = async (policyUpdate) => {
@@ -317,6 +318,7 @@ function ConversationView({
           budgetWarning={budgetWarning}
           onDismissBudgetWarning={() => setBudgetWarning(null)}
           isLoading={isLoading}
+          zdrAvailable={isZdrAvailableForProvider(providerKind)}
         />
       </main>
 

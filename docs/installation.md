@@ -148,8 +148,11 @@ and let the app infer it) to disable OpenRouter-only behavior:
 - Model catalog pricing still shows curated figures when the endpoint doesn't
   report its own.
 
-Pointing at a local server (e.g. Ollama or LM Studio) works the same way:
-`OPENROUTER_BASE_URL=http://localhost:11434/v1`, any non-empty API key, and
-model ids that match what the local server actually serves. Full local-model
-UX (model discovery, capability detection) is out of scope — you're
-responsible for choosing ids the target server understands.
+Pointing at a local server (e.g. Ollama or LM Studio) uses the same
+`OPENROUTER_BASE_URL=http://localhost:11434/v1` plus any non-empty API key —
+but be aware the model picker only ever offers the curated models baked into
+`backend/model_registry.json`, and conversation creation rejects any model id
+not in that registry. To use a local model today you have to manually add its
+id to that registry file yourself (advanced, unsupported by the UI). First-class
+local-model support (discovering and picking whatever the local server
+actually serves) is a planned follow-up, not implemented yet.
