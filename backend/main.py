@@ -20,7 +20,7 @@ from .conversation_export import (
     resolve_unique_export_path,
 )
 from .rag import CouncilRAG
-from .file_processing import extract_text_from_file, process_file, get_mime_type
+from .file_processing import process_file, get_mime_type
 from .attachment_storage import (
     create_attachment, get_attachment, update_attachment_status,
     save_attachment_text, get_attachment_text, build_llm_context,
@@ -921,27 +921,6 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
         }
     )
 
-
-
-@app.post("/api/upload")
-async def upload_file(
-    file: UploadFile = File(...),
-    use_zdr: bool = False,
-):
-    """
-    Legacy: Upload a file, extract text (or describe image), and return the content.
-    Use /api/attachments for new implementation.
-    """
-    result = await extract_text_from_file(file, zdr_enabled=use_zdr)
-    
-    if result["error"]:
-        raise HTTPException(status_code=400, detail=result["error"])
-        
-    return {
-        "text": result["text"],
-        "filename": file.filename,
-        "truncated": result["truncated"]
-    }
 
 
 # =============================================================================
