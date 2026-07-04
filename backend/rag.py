@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,32 @@ from .logger import logger
 from .config import RAG_SETTINGS, UTILITY_MODEL
 from .openrouter import query_model
 from .app_paths import get_pageindex_dir, write_text_atomic
+
+# Store hygiene (P5-T4): warn, don't auto-evict, once the serialized store
+# crosses this size. Destroying memory silently is an owner decision, not
+# something this module should do on its own.
+STORE_SIZE_WARNING_BYTES = 5 * 1024 * 1024  # 5 MB
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> set:
+    """Lowercase, alphanumeric-token split. Shared by the query and topics
+    sides of the overlap score so matching is case-insensitive by construction."""
+    return set(_WORD_RE.findall(text.lower()))
+
+
+def score_topic_overlap(query: str, topics: List[str]) -> int:
+    """Case-insensitive token-overlap score between a query and a turn's
+    stored topics (P5-T4 retrieval pre-filter). Pure and testable in
+    isolation: not a search engine, just a relevance pre-filter ahead of the
+    existing budget cap. Returns the count of overlapping tokens (0 if
+    `topics` is empty/missing or nothing overlaps)."""
+    if not topics:
+        return 0
+    query_tokens = _tokenize(query)
+    topic_tokens = _tokenize(" ".join(topics))
+    return len(query_tokens & topic_tokens)
 
 
 def get_conversation(conversation_id: str):
@@ -139,14 +166,37 @@ class CouncilRAG:
     def _save_store(self):
         if not self.enabled:
             return
+        serialized = json.dumps(self.store, indent=2)
+        self._warn_if_store_too_large(serialized)
         try:
-            write_text_atomic(Path(self.index_file), json.dumps(self.store, indent=2))
+            write_text_atomic(Path(self.index_file), serialized)
         except (OSError, RuntimeError) as e:
             logger.exception(
                 "[RAG] Failed to persist PageIndex store; disabling persistence for this process: %s",
                 e,
             )
             self.enabled = False
+
+    def _warn_if_store_too_large(self, serialized: str) -> None:
+        """Store hygiene (P5-T4): warn once the serialized store crosses
+        STORE_SIZE_WARNING_BYTES. Deliberately NO auto-eviction here --
+        destroying memory silently is an owner choice, not something this
+        module should decide on its own; this only surfaces the problem.
+        "Oldest" is approximated by dict insertion order (self.store isn't
+        timestamped per-conversation), which is good enough for an operator
+        to go look at growth over time.
+        """
+        size = len(serialized.encode("utf-8"))
+        if size <= STORE_SIZE_WARNING_BYTES:
+            return
+        oldest_ids = list(self.store.keys())[:5]
+        logger.warning(
+            "[RAG] PageIndex store size is %d bytes (over the %d byte warning threshold); "
+            "oldest conversation ids: %s. No automatic eviction is performed.",
+            size,
+            STORE_SIZE_WARNING_BYTES,
+            oldest_ids,
+        )
 
     def refresh_hybrid_index(self) -> None:
         """Legacy compatibility method. No longer needed for reasoning RAG."""
@@ -336,11 +386,21 @@ class CouncilRAG:
         if not other_convs:
             return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
 
+        # 1b. Topic pre-filter (P5-T4, audit §12): scoring every stored turn
+        # against the query's tokens and keeping only the ones that overlap
+        # cuts down how much irrelevant history gets stuffed into the
+        # extraction prompt. This is a pre-filter, not a search engine: if
+        # NOTHING overlaps, fall back to ALL turns so the filter can never
+        # return less context than before it existed (quality floor).
+        all_turns = [(cid, turn) for cid, data in other_convs.items() for turn in data["turns"]]
+        scored_turns = [(cid, turn) for cid, turn in all_turns if score_topic_overlap(query, turn.get("topics")) > 0]
+        turns_to_use = scored_turns or all_turns
+
         # Flatten into a prompt-friendly string
-        memory_blocks = []
-        for cid, data in other_convs.items():
-            for turn in data["turns"]:
-                memory_blocks.append(f"[Memory from Chat: {cid} | Turn: {turn['turn']}]\n{turn['memory']}")
+        memory_blocks = [
+            f"[Memory from Chat: {cid} | Turn: {turn['turn']}]\n{turn['memory']}"
+            for cid, turn in turns_to_use
+        ]
 
         if not memory_blocks:
             return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
