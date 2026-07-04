@@ -26,6 +26,8 @@ async def test_run_full_council_all_models_fail_returns_five_tuple(monkeypatch):
     assert stage3["model"] == "error"
     assert "failed" in stage3["response"].lower()
     assert isinstance(metadata, dict)
+    assert metadata["label_to_model"] == {}
+    assert "steward_usage" in metadata, "steward cost must survive the all-fail path"
     assert isinstance(evidence_pack, EvidencePack)
 
 
