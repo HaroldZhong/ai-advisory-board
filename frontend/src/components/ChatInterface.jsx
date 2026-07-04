@@ -86,6 +86,8 @@ export default function ChatInterface({
   const [isDragging, setIsDragging] = useState(false);
   const [editingIndex, setEditingIndex] = useState(-1);
   const [editingContent, setEditingContent] = useState('');
+  const [askCouncil, setAskCouncil] = useState(false);
+  const [showCouncilConfirm, setShowCouncilConfirm] = useState(false);
   const { settings, updateSettings } = useSettings();
 
   const sessionPolicy = conversation?.session_policy || {};
@@ -95,6 +97,10 @@ export default function ChatInterface({
     messageCount: conversation?.messages?.length || 0,
     defaultMode: conversation?.metadata?.default_mode,
   });
+  // "Ask the council" (P3-T4) only makes sense when the next send would
+  // otherwise run chat — i.e. a default_mode="chat" conversation, or a
+  // legacy/council-default conversation mid-thread (past its first turn).
+  const canAskCouncil = nextMessageMode === 'chat';
   const effectiveZdr = resolveEffectiveZdr(conversation, settings, zdrAvailable);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
   const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
@@ -272,18 +278,28 @@ export default function ChatInterface({
     }
     if (composerDisabled) return;
 
+    // Armed "Ask the council" send: require an explicit confirm first
+    // (P3-T4 — a council run costs more and takes longer than chat).
+    if (askCouncil && !showCouncilConfirm) {
+      setShowCouncilConfirm(true);
+      return;
+    }
+
     // Collect attachment IDs to send with the message
     const attachmentIds = attachments.map(a => a.attachment_id);
     const submittedInput = input;
     const submittedAttachments = attachments;
+    const sendOptions = askCouncil ? { mode: 'council' } : {};
 
     // Send message with attachment IDs (context built server-side)
     setInput('');
     setAttachments([]);
     setSendError(null);
+    setAskCouncil(false);
+    setShowCouncilConfirm(false);
 
     try {
-      await onSendMessage(submittedInput, attachmentIds, submittedAttachments);
+      await onSendMessage(submittedInput, attachmentIds, submittedAttachments, -1, sendOptions);
     } catch (error) {
       if (error?.status === 409) {
         setInput(submittedInput);
@@ -297,6 +313,11 @@ export default function ChatInterface({
     if (textareaRef.current) {
       textareaRef.current.style.height = '44px';
     }
+  };
+
+  const handleCouncilConfirmCancel = () => {
+    setShowCouncilConfirm(false);
+    setAskCouncil(false);
   };
 
   const handleKeyDown = (e) => {
@@ -484,10 +505,21 @@ export default function ChatInterface({
               <p>Ask a question to consult the AI Advisory Board</p>
             </div>
           ) : (
-            conversation.messages.map((msg, index) => (
+            conversation.messages.map((msg, index) => {
+              // No schema change: a user message doesn't record which mode it
+              // triggered, so the "council" badge is derived from the message
+              // that follows it having a stage3 result (P3-T4).
+              const triggeredCouncil = msg.role === 'user' && Boolean(conversation.messages[index + 1]?.stage3);
+              return (
               <div key={`${conversation.id}-msg-${index}-${msg.role}`} className={cn("flex flex-col gap-2", msg.role === 'user' ? "items-end" : "items-start")}>
-                <div className={cn("text-xs text-muted-foreground", msg.role === 'user' ? "text-right" : "text-left")}>
-                  {msg.role === 'user' ? 'You' : 'AI Advisory Board'}
+                <div className={cn("flex items-center gap-1.5 text-xs text-muted-foreground", msg.role === 'user' ? "flex-row-reverse" : "text-left")}>
+                  <span>{msg.role === 'user' ? 'You' : 'AI Advisory Board'}</span>
+                  {triggeredCouncil && (
+                    <span className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground">
+                      <Users className="h-2.5 w-2.5" />
+                      Council
+                    </span>
+                  )}
                 </div>
 
                 {msg.role === 'user' ? (
@@ -656,7 +688,8 @@ export default function ChatInterface({
                   </Card>
                 )}
               </div>
-            ))
+              );
+            })
           )}
           {isLoading && (
             <div className="flex justify-start">
@@ -731,6 +764,42 @@ export default function ChatInterface({
                 enhanceDisabled={isUpdatingPrivacy}
                 effectiveZdr={effectiveZdr}
               />
+            </div>
+          )}
+
+          {canAskCouncil && (
+            <div className="mb-2 flex items-center gap-2">
+              <Button
+                type="button"
+                variant={askCouncil ? 'default' : 'outline'}
+                size="sm"
+                aria-pressed={askCouncil}
+                disabled={composerDisabled}
+                onClick={() => {
+                  setAskCouncil((prev) => !prev);
+                  setShowCouncilConfirm(false);
+                }}
+              >
+                <Users className="mr-2 h-3.5 w-3.5" />
+                Ask the council
+              </Button>
+            </div>
+          )}
+
+          {showCouncilConfirm && (
+            <div
+              role="alert"
+              className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
+            >
+              <span>Council run uses every council model — costs more and takes 2–5 min.</span>
+              <div className="flex gap-2">
+                <Button type="button" variant="ghost" size="sm" onClick={handleCouncilConfirmCancel}>
+                  Cancel
+                </Button>
+                <Button type="button" size="sm" onClick={handleSubmit}>
+                  Confirm
+                </Button>
+              </div>
             </div>
           )}
 
