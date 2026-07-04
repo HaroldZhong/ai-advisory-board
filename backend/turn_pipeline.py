@@ -52,19 +52,15 @@ async def run_turn(
             attachment_context = main.build_llm_context(request.attachment_ids)
             logger.info(f"[ATTACH] Built context from {len(request.attachment_ids)} attachments ({len(attachment_context)} chars)")
             # Index documents into PageIndex for cross-conversation retrieval.
-            # Skip entirely for ZDR turns (audit §12, Decision #5): PageIndex
-            # memory is cross-conversation, so ZDR content must never enter it.
-            # Re-check fresh metadata (not just the pre-flight zdr_enabled) to
-            # shrink the runtime-purge race (backend/main.py's
-            # update_conversation) to the indexing call itself: a ZDR flip
-            # landing between pre-flight and this point would otherwise have
-            # index_document write AFTER the purge already ran. A flip
-            # landing mid-loop, between this check and a given att_id's
-            # write, is still only cleaned up if it arrives after that write;
-            # the residual window is milliseconds on a local single-user app
-            # and is accepted.
-            fresh_zdr = bool(main.storage.get_conversation(conversation_id).get("metadata", {}).get("zdr_enabled"))
-            if not zdr_enabled and not fresh_zdr:
+            # Skip for effective-turn ZDR (audit §12, Decision #5): covers the
+            # per-message flag, which isn't visible in conversation metadata
+            # and so can't be checked by rag.py's write barrier below. This is
+            # a cheap early skip, not the authoritative guard against a
+            # metadata flip racing this turn -- CouncilRAG.index_document's
+            # own write barrier re-checks CURRENT metadata synchronously
+            # immediately before it mutates the store, closing that race at
+            # the root regardless of how many awaits happen in between.
+            if not zdr_enabled:
                 for att_id in request.attachment_ids:
                     att_text = main.get_attachment_text(att_id)
                     if att_text:
@@ -280,22 +276,16 @@ async def run_turn(
 
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
-            # skip entirely for ZDR turns (audit §12, Decision #5): PageIndex
-            # memory is cross-conversation, so ZDR content must never enter it.
-            # Re-check FRESH metadata (updated_conversation, just refetched
-            # above) in addition to the pre-flight zdr_enabled: if the user
-            # flipped ZDR on via PUT /api/conversations/{id} while this turn
-            # was running, update_conversation already purged this
-            # conversation's existing memories, and this stale-zdr_enabled
-            # turn must not re-add fresh ones after that purge (TOCTOU).
-            # The earlier attachment-loop index_document call is inherently
-            # covered even without a recheck there: if ZDR flips after those
-            # writes land, the runtime purge in update_conversation deletes
-            # them along with everything else for this conversation.
-            turn_zdr_enabled = zdr_enabled or bool(
-                updated_conversation.get("metadata", {}).get("zdr_enabled")
-            )
-            if stage3_result.get("model") != "error" and not turn_zdr_enabled:
+            # skip for effective-turn ZDR (audit §12, Decision #5): covers the
+            # per-message flag, which isn't visible in conversation metadata
+            # and so can't be checked by rag.py's write barrier below. This is
+            # a cheap early skip, not the authoritative guard against a
+            # metadata flip racing this turn (e.g. across the extract_topics
+            # await just below) -- CouncilRAG.index_session's own write
+            # barrier re-checks CURRENT metadata synchronously immediately
+            # before it mutates the store, closing that race at the root
+            # regardless of how many awaits happen in between.
+            if stage3_result.get("model") != "error" and not zdr_enabled:
                 logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
 
                 # Extract topics from question + final answer

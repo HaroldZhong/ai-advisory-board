@@ -190,7 +190,17 @@ class CouncilRAG:
         """
         if not self.enabled:
             return
-            
+
+        # ZDR write barrier: never index a conversation whose CURRENT metadata
+        # says ZDR. Synchronous check-then-write (no await window) closes the
+        # runtime-flip race for good; flips after the write are handled by the
+        # purge in update_conversation. Per-message ZDR (request flag, not
+        # visible in metadata) is enforced by the pipeline-level guards.
+        conversation = get_conversation(conversation_id)
+        if not isinstance(conversation, dict) or conversation.get("metadata", {}).get("zdr_enabled"):
+            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
+            return
+
         # Ensure conversation exists in store
         if conversation_id not in self.store:
             self.store[conversation_id] = {
@@ -219,6 +229,16 @@ class CouncilRAG:
         Truncates to max_chars to keep the reasoning store manageable.
         """
         if not self.enabled or not text.strip():
+            return
+
+        # ZDR write barrier: never index a conversation whose CURRENT metadata
+        # says ZDR. Synchronous check-then-write (no await window) closes the
+        # runtime-flip race for good; flips after the write are handled by the
+        # purge in update_conversation. Per-message ZDR (request flag, not
+        # visible in metadata) is enforced by the pipeline-level guards.
+        conversation = get_conversation(conversation_id)
+        if not isinstance(conversation, dict) or conversation.get("metadata", {}).get("zdr_enabled"):
+            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
             return
 
         if conversation_id not in self.store:

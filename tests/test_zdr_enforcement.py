@@ -474,17 +474,22 @@ async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch, tmp_path):
-    """Codex P1 TOCTOU: a turn starts with the pre-flight zdr_enabled=False
-    captured before the council ran. If the user flips ZDR on via
-    PUT /api/conversations/{id} while the turn is still in flight,
-    update_conversation purges this conversation's existing memories
-    immediately. The turn must re-check FRESH metadata at indexing time (not
-    just the stale pre-flight value) so it doesn't re-add memories right
-    after that purge."""
+    """Codex P1 TOCTOU, closed at the root in round 6: a turn starts with the
+    pre-flight zdr_enabled=False captured before the council ran. If the user
+    flips ZDR on via PUT /api/conversations/{id} while the turn is still in
+    flight, update_conversation purges this conversation's existing memories
+    immediately. CouncilRAG.index_session's own ZDR write barrier re-checks
+    CURRENT metadata synchronously right before it mutates the store, so it
+    must not re-add memories after that purge -- this uses a REAL CouncilRAG
+    (wrapped for call-observability) so the write barrier actually runs,
+    rather than a bare mock that would bypass it entirely."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
-    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    rag_module = importlib.import_module("backend.rag")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
     conversation_id = "conv-zdr-flipped-mid-turn"
     main.storage.create_conversation(conversation_id)  # starts non-ZDR
+    monkeypatch.setattr(rag_module, "get_conversation", main.storage.get_conversation)
+    real_rag = rag_module.CouncilRAG(persist_path=str(tmp_path / "pageindex"))
 
     from backend.tools.types import EvidencePack
 
@@ -517,8 +522,8 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
         return ["topic"]
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
-        index_document=Mock(),
+        index_session=Mock(wraps=real_rag.index_session),
+        index_document=Mock(wraps=real_rag.index_document),
         refresh_hybrid_index=Mock(),
     )
 
@@ -535,7 +540,8 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
         main.SendMessageRequest(content="Sensitive question", mode="council"),
     )
 
-    rag_system.index_session.assert_not_called()
+    rag_system.index_session.assert_called_once()  # the pipeline-level early skip doesn't fire (pre-flight was False)
+    assert conversation_id not in real_rag.store  # but the write barrier inside index_session refused to store it
 
 
 @pytest.mark.asyncio
@@ -575,21 +581,27 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
 
 @pytest.mark.asyncio
 async def test_council_turn_skips_document_indexing_when_zdr_enabled_before_attachment_loop(monkeypatch, tmp_path):
-    """Codex P1, round 5 (symmetric to the mid-turn index_session case): the
-    attachment-index loop is the FIRST thing run_turn does, so a ZDR flip
-    landing between the request's pre-flight zdr_enabled capture and this
-    loop's start must also be caught. build_llm_context is the call
-    immediately before the loop; simulate the flip happening there via real
-    storage.update_conversation_metadata, and assert index_document is never
-    called even though the turn's local zdr_enabled is still False."""
+    """Codex P1, round 5/6 (symmetric to the mid-turn index_session case,
+    closed at the root): the attachment-index loop is the FIRST thing
+    run_turn does, so a ZDR flip landing between the request's pre-flight
+    zdr_enabled capture and this loop's start must also be caught.
+    build_llm_context is the call immediately before the loop; simulate the
+    flip happening there via real storage.update_conversation_metadata.
+    CouncilRAG.index_document's own ZDR write barrier re-checks CURRENT
+    metadata synchronously right before it mutates the store, so this uses a
+    REAL CouncilRAG (wrapped for call-observability) rather than a bare mock
+    that would bypass the barrier entirely."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
-    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    rag_module = importlib.import_module("backend.rag")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
     conversation_id = "conv-zdr-flipped-before-attachments"
     main.storage.create_conversation(conversation_id)  # starts non-ZDR
+    monkeypatch.setattr(rag_module, "get_conversation", main.storage.get_conversation)
+    real_rag = rag_module.CouncilRAG(persist_path=str(tmp_path / "pageindex"))
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
-        index_document=Mock(),
+        index_session=Mock(wraps=real_rag.index_session),
+        index_document=Mock(wraps=real_rag.index_document),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -619,7 +631,8 @@ async def test_council_turn_skips_document_indexing_when_zdr_enabled_before_atta
         ),
     )
 
-    rag_system.index_document.assert_not_called()
+    rag_system.index_document.assert_called_once()  # the pipeline-level early skip doesn't fire (pre-flight was False)
+    assert conversation_id not in real_rag.store  # but the write barrier inside index_document refused to store it
 
 
 @pytest.mark.asyncio
