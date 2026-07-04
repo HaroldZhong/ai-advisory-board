@@ -552,6 +552,7 @@ function AppContent() {
           isOpen={showFirstRunSetup}
           onComplete={handleFirstRunComplete}
           onDismiss={handleFirstRunDismiss}
+          providerKind={configStatus.providerKind}
         />
       )}
     </>

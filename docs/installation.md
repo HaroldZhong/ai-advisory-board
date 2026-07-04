@@ -155,4 +155,6 @@ but be aware the model picker only ever offers the curated models baked into
 not in that registry. To use a local model today you have to manually add its
 id to that registry file yourself (advanced, unsupported by the UI). First-class
 local-model support (discovering and picking whatever the local server
-actually serves) is a planned follow-up, not implemented yet.
+actually serves) is a planned follow-up, not implemented yet. The first-run
+setup screen accepts any non-empty key when `LLM_PROVIDER_KIND=openai-compatible`,
+instead of requiring OpenRouter's `sk-or-` key format.
