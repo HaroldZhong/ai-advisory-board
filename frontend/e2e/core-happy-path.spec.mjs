@@ -331,7 +331,8 @@ test('first-run setup creates a private preset conversation and renders streamed
 
   expect(requests.stream).toMatchObject({
     content: 'What is 8 minus 3?',
-    mode: 'council',
+    // Routing is backend-owned (P3-T1): the wire always carries "auto".
+    mode: 'auto',
     zdr_enabled: true,
   });
 });
