@@ -113,8 +113,11 @@ CHAIRMAN_MODEL = MODEL_REGISTRY["chairman_model"]
 
 # OpenRouter API endpoint. Override the base to route through an
 # OpenAI-compatible relay/proxy (e.g. where openrouter.ai is blocked).
-OPENROUTER_BASE_URL = os.getenv(
-    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+# Blank/whitespace values fall back to the default (an optional env var
+# left empty must not produce a scheme-less URL).
+OPENROUTER_BASE_URL = (
+    os.getenv("OPENROUTER_BASE_URL", "").strip()
+    or "https://openrouter.ai/api/v1"
 ).rstrip("/")
 OPENROUTER_API_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
 

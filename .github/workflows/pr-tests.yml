@@ -68,7 +68,7 @@ jobs:
           node-version: 24
 
       - name: Run deterministic frontend tests
-        run: node --test frontend/tests/advancedSettingsAvailability.test.mjs frontend/tests/advancedRoutingControls.test.mjs frontend/tests/configStatus.test.mjs frontend/tests/conversationCreation.test.mjs frontend/tests/conversationNavigation.test.mjs frontend/tests/conversationOrganization.test.mjs frontend/tests/firstRunSetup.test.mjs frontend/tests/modelPresets.test.mjs frontend/tests/oneShotSignal.test.mjs frontend/tests/optimisticMessages.test.mjs frontend/tests/reasoningDisplay.test.mjs frontend/tests/reasoningMessages.test.mjs frontend/tests/responsiveChatLayout.test.mjs frontend/tests/responsiveLayout.test.mjs frontend/tests/responsiveModalLayout.test.mjs frontend/tests/thinkingEffort.test.mjs frontend/tests/trustState.test.mjs
+        run: node --test frontend/tests/advancedSettingsAvailability.test.mjs frontend/tests/advancedRoutingControls.test.mjs frontend/tests/configStatus.test.mjs frontend/tests/conversationCreation.test.mjs frontend/tests/conversationNavigation.test.mjs frontend/tests/conversationOrganization.test.mjs frontend/tests/firstRunSetup.test.mjs frontend/tests/modelPresets.test.mjs frontend/tests/oneShotSignal.test.mjs frontend/tests/optimisticMessages.test.mjs frontend/tests/reasoningDisplay.test.mjs frontend/tests/reasoningMessages.test.mjs frontend/tests/responsiveChatLayout.test.mjs frontend/tests/responsiveLayout.test.mjs frontend/tests/responsiveModalLayout.test.mjs frontend/tests/thinkingEffort.test.mjs frontend/tests/trustState.test.mjs frontend/tests/streamErrors.test.mjs frontend/tests/safeHref.test.mjs
 
   frontend-e2e-tests:
     name: Frontend Playwright E2E

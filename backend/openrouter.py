@@ -7,18 +7,33 @@ from .config import OPENROUTER_API_URL, get_openrouter_api_key
 from .logger import logger
 
 
+def connect_timeout_for(total_timeout: float) -> float:
+    """Connect deadline strictly below the wall-clock timeout, so a blocked
+    network raises ConnectTimeout (kind=network) before asyncio.wait_for
+    cancels the request (kind=timeout). Some callers pass timeout=10.0."""
+    return min(10.0, total_timeout / 2)
+
+
 def classify_openrouter_error(exc: Exception) -> str:
     """Map an exception from an OpenRouter call to a coarse failure kind."""
-    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+    # NetworkError covers Connect/Read/Write/CloseError; ProxyError is a
+    # separate TransportError subclass (failed tunnel = network problem too).
+    if isinstance(exc, (httpx.NetworkError, httpx.ProxyError, httpx.ConnectTimeout)):
         return "network"
     if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, asyncio.TimeoutError)):
         return "timeout"
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
-        if code in (401, 403):
+        if code == 401:
             return "auth"
+        # 403 is NOT auth: OpenRouter documents it as moderation/guardrail
+        # blocks (input flagged), so it must not point operators at key fixes.
+        if code == 403:
+            return "other"
         if code == 402:
             return "quota"
+        if code == 408:  # OpenRouter documents 408 as request timeout
+            return "timeout"
         return "other"
     return "other"
 
@@ -64,7 +79,7 @@ async def query_model(
 
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=10.0)
+            timeout=httpx.Timeout(timeout, connect=connect_timeout_for(timeout))
         ) as client:
             response = await asyncio.wait_for(
                 client.post(

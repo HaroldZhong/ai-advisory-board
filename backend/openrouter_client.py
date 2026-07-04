@@ -225,10 +225,11 @@ async def check_connectivity() -> Dict[str, Any]:
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(10.0, connect=8.0), transport=_probe_transport
     ) as client:
-        # Stage 1: reachability
+        # Stage 1: reachability. ANY HTTP response proves the endpoint is
+        # reachable — some relays gate /models behind auth (401/403), which
+        # still means the network path works. Only transport errors fail here.
         try:
-            response = await client.get(OPENROUTER_MODELS_URL)
-            response.raise_for_status()
+            await client.get(OPENROUTER_MODELS_URL)
             result["reachable"] = True
         except Exception as e:
             kind = classify_openrouter_error(e)

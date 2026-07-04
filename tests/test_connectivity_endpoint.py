@@ -84,3 +84,20 @@ async def test_probe_tolerates_relay_without_key_endpoint(monkeypatch):
     assert result["key_valid"] is None
     assert result["error_kind"] is None
     assert "key status unknown" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_probe_treats_auth_gated_models_endpoint_as_reachable(monkeypatch):
+    """Relays that require auth on /models still prove reachability; key check proceeds."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(401, json={"error": "auth required"})
+        if request.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {"label": "ok"}})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(openrouter_client, "_probe_transport", httpx.MockTransport(handler))
+    monkeypatch.setattr("backend.config.get_openrouter_api_key", lambda: "sk-or-good")
+    result = await openrouter_client.check_connectivity()
+    assert result["reachable"] is True
+    assert result["key_valid"] is True
