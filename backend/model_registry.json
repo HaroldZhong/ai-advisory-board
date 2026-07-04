@@ -2,7 +2,7 @@
   "updated_at": "2026-07-04",
   "source": "https://openrouter.ai/api/v1/models",
   "zdr_source": "https://openrouter.ai/api/v1/endpoints/zdr",
-  "chairman_model": "anthropic/claude-opus-4.7",
+  "chairman_model": "anthropic/claude-opus-4.8",
   "council_models": [
     "google/gemini-3.1-pro-preview",
     "anthropic/claude-sonnet-4.6",
@@ -16,13 +16,14 @@
       "id": "balanced",
       "label": "Balanced",
       "description": "Diverse panel across major labs. The default for most questions.",
-      "chairman_model": "anthropic/claude-opus-4.7",
+      "chairman_model": "anthropic/claude-opus-4.8",
       "council_models": [
         "openai/gpt-5.4",
         "anthropic/claude-sonnet-4.6",
         "google/gemini-3.1-pro-preview",
         "deepseek/deepseek-v4-pro",
-        "moonshotai/kimi-k2.6"
+        "moonshotai/kimi-k2.6",
+        "anthropic/claude-sonnet-5"
       ],
       "requires_zdr": false,
       "default_reasoning_effort": "medium",
@@ -64,7 +65,7 @@
       "id": "private",
       "label": "Private",
       "description": "ZDR-only panel for sensitive work where provider data retention must be avoided.",
-      "chairman_model": "anthropic/claude-opus-4.7",
+      "chairman_model": "anthropic/claude-opus-4.8",
       "council_models": [
         "openai/gpt-5.4",
         "anthropic/claude-sonnet-4.6",
@@ -367,7 +368,7 @@
       "type": "both",
       "pricing": {"input": 2.0, "output": 6.0},
       "context_length": 2000000,
-      "supports_zdr": false,
+      "supports_zdr": true,
       "supports_reasoning": true,
       "available": true,
       "reasoning_extraction": "field"
