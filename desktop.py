@@ -141,7 +141,18 @@ def start_server():
         
         from backend.main import app
         logger.info("Backend imported successfully. Starting uvicorn...")
-        
+
+        # Fail deterministically if another process already owns the port —
+        # otherwise wait_for_port() would see the foreign listener and
+        # navigate to whatever is running there instead of showing the hint.
+        # (Tiny race: something could grab the port between probe.close()
+        # and uvicorn's own bind below; accepted as low-probability.)
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind((SERVER_HOST, SERVER_PORT))
+        finally:
+            probe.close()
+
         server_ready.set()  # Signal that import succeeded
         uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT, log_level="info")
     except Exception as e:
