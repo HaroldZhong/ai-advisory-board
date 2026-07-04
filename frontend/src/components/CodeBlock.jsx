@@ -2,8 +2,6 @@ import { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 import { languageFromClassName, extractNodeText } from '../utils/codeLanguage';
 
-export { languageFromClassName };
-
 /**
  * <pre> override: fenced code blocks get a language label + copy button.
  * Inline code (no language className on the child <code>) falls back to
