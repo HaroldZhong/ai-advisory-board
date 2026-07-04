@@ -80,7 +80,7 @@ jobs:
           python-version-file: .python-version
 
       - name: Run deterministic tests
-        run: uv run --group dev python -m pytest tests/ -q --ignore=tests/verify_upload.py
+        run: uv run --group dev python -m pytest tests/ -q
 
   windows-build-smoke:
     name: Windows PyInstaller build smoke
