@@ -541,15 +541,19 @@ async def test_startup_cleanup_removes_metadata_zdr_conversations(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_startup_cleanup_leaves_missing_conversation_files_alone(monkeypatch, tmp_path):
-    """Decision #5's documented boundary: conversations that no longer have a
-    file on disk (already deleted) are left as-is by the sweep; deletion has
-    its own purge path (delete_conversation_memories)."""
+async def test_startup_cleanup_removes_orphaned_entries_with_missing_conversation_file(monkeypatch, tmp_path):
+    """Fail closed (Codex P2, plan revision): a missing conversation file means
+    the conversation was deleted, so its store entries are pure orphaned,
+    derived data. Unavailable metadata cannot prove an entry is safe to keep,
+    and the delete-path has a crash window that could otherwise strand a ZDR
+    conversation's memories forever if orphans were left alone. The sweep
+    removes them rather than leaving them as-is."""
     storage = import_module_with_api_key(monkeypatch, "backend.storage")
     rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
 
     conversations_dir = tmp_path / "conversations"
     monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-normal")
     monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
 
     pageindex_dir = tmp_path / "pageindex"
@@ -557,13 +561,43 @@ async def test_startup_cleanup_leaves_missing_conversation_files_alone(monkeypat
     index_file = pageindex_dir / "pageindex_memory.json"
     seeded_store = {
         "conv-deleted": {"folder_id": "root", "turns": [{"turn": 0, "memory": "orphaned memory"}]},
+        "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal memory"}]},
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
-    assert "conv-deleted" in rag.store
+    assert "conv-deleted" not in rag.store
+    assert "conv-normal" in rag.store
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_orphaned_entries_with_unreadable_conversation_file(monkeypatch, tmp_path):
+    """Fail closed also covers a corrupt/unreadable conversation file (e.g.
+    truncated by a crash mid-write): get_conversation raising is treated the
+    same as a missing file, not left alone."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    conversations_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    (conversations_dir / "conv-corrupt.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-corrupt": {"folder_id": "root", "turns": [{"turn": 0, "memory": "orphaned memory"}]},
+    }
+    import json
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-corrupt" not in rag.store
 
 
 @pytest.mark.asyncio

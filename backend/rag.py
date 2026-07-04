@@ -69,7 +69,14 @@ class CouncilRAG:
         from ever being written here, but this store may already contain
         memories from ZDR conversations indexed before that guard existed.
         For every conversation id in the store, look up its current metadata
-        and drop the conversation's entries if `metadata.zdr_enabled` is True.
+        and remove the conversation's entries if either:
+          (a) `metadata.zdr_enabled` is True, or
+          (b) the conversation's file is missing or unreadable (orphaned
+              entries). Unavailable metadata cannot prove an entry is safe to
+              keep, so cleanup fails closed: a missing file means the
+              conversation was deleted (its memories are pure orphaned,
+              derived data) and a crash mid-deletion must not be able to
+              permanently strand a ZDR conversation's memories.
 
         LIMITATION (documented, not fixed here): a turn's *effective* ZDR can
         also come from a per-message flag that was never persisted to
@@ -78,29 +85,36 @@ class CouncilRAG:
         this sweep. Going forward there is no gap: index-time exclusion checks
         the per-turn effective ZDR (metadata OR per-message) before writing,
         so no new per-message-only ZDR memory can ever land in the store.
-
-        Conversations whose file is missing (already deleted) are left alone;
-        deletion already purges memory via delete_conversation_memories.
         """
-        removed = 0
+        zdr_removed = 0
+        orphans_removed = 0
         for conversation_id in list(self.store.keys()):
             try:
                 conversation = get_conversation(conversation_id)
             except Exception:
                 logger.exception(
-                    "[RAG] Failed to load conversation %s during ZDR cleanup sweep; leaving its memory alone",
+                    "[RAG] Failed to load conversation %s during ZDR cleanup sweep; removing as an orphan (fail closed)",
                     conversation_id,
                 )
+                del self.store[conversation_id]
+                orphans_removed += 1
                 continue
             if conversation is None:
+                del self.store[conversation_id]
+                orphans_removed += 1
                 continue
             if conversation.get("metadata", {}).get("zdr_enabled") is True:
                 del self.store[conversation_id]
-                removed += 1
+                zdr_removed += 1
 
+        removed = zdr_removed + orphans_removed
         if removed:
             self._save_store()
-            logger.info("[RAG] ZDR cleanup sweep removed %d conversation(s) from PageIndex memory", removed)
+            logger.info(
+                "[RAG] ZDR cleanup sweep removed %d ZDR conversation(s) and %d orphaned conversation(s) from PageIndex memory",
+                zdr_removed,
+                orphans_removed,
+            )
         return removed
 
     def _backup_corrupt_index(self) -> str:
