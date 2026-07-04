@@ -55,8 +55,13 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
     async def fake_run_tool_steward_phase(*args, **kwargs):
         return EvidencePack(run_id="run-1", query="What should we do?"), None
 
-    async def fake_stage1(*args, **kwargs):
-        return [{"model": "model-a", "response": "Answer A", "usage": {}}]
+    # stage1_collect_responses_progressive is the pipeline seam (P3-T6): an
+    # async generator yielding ("model_complete", index, result) per model
+    # then ("complete", stage1_results, None) with the full list.
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
 
     async def fake_stage2(*args, **kwargs):
         return (
@@ -71,7 +76,7 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
         return ["planning"]
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_run_tool_steward_phase)
-    monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)

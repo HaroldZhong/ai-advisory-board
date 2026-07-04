@@ -49,6 +49,39 @@ function lastMessage(state) {
   return messages[messages.length - 1];
 }
 
+test('stage1_model_complete appends results incrementally, then stage1_complete replaces with full list', () => {
+  const state = councilState();
+
+  const afterFirst = streamReducer(
+    state,
+    { type: 'stage1_model_complete', data: { model: 'model-a', response: 'Answer A' }, index: 0 },
+    { availableModels },
+  );
+  assert.deepEqual(lastMessage(afterFirst).stage1, [{ model: 'model-a', response: 'Answer A' }]);
+
+  const afterSecond = streamReducer(
+    afterFirst,
+    { type: 'stage1_model_complete', data: { model: 'model-b', response: 'Answer B' }, index: 1 },
+    { availableModels },
+  );
+  assert.deepEqual(lastMessage(afterSecond).stage1, [
+    { model: 'model-a', response: 'Answer A' },
+    { model: 'model-b', response: 'Answer B' },
+  ]);
+
+  const finalEvent = {
+    type: 'stage1_complete',
+    data: [
+      { model: 'model-a', response: 'Answer A', usage: { prompt_tokens: 1000000, completion_tokens: 0 } },
+      { model: 'model-b', response: 'Answer B', usage: { prompt_tokens: 1000000, completion_tokens: 0 } },
+    ],
+  };
+  const afterComplete = streamReducer(afterSecond, finalEvent, { availableModels });
+  assert.equal(lastMessage(afterComplete).stage1.length, 2);
+  assert.equal(lastMessage(afterComplete).stage1[0].usage.prompt_tokens, 1000000);
+  assert.equal(lastMessage(afterComplete).loading.stage1, false);
+});
+
 test('stage1_complete stores results, merges reasoning buffers, and accrues cost', () => {
   const state = councilState({
     lastMessage: { reasoningBuffers: { stage1: { 0: { text: 'Buffered reasoning' } } } },

@@ -2,7 +2,7 @@
 
 import asyncio
 import httpx
-from typing import List, Dict, Any, Optional
+from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
 from .config import OPENROUTER_API_URL, get_openrouter_api_key
 from .logger import logger
 
@@ -235,3 +235,33 @@ async def query_models_parallel(
 
     # Map models to their responses
     return {model: response for model, response in zip(models, responses)}
+
+
+async def query_models_as_completed(
+    models: List[str],
+    messages: List[Dict[str, str]],
+    zdr_enabled: bool = False,
+    thinking_effort: Optional[str] = None,
+) -> AsyncIterator[Tuple[str, Optional[Dict[str, Any]]]]:
+    """
+    Query multiple models concurrently, yielding (model, response) as each
+    finishes rather than waiting for the slowest (used for progressive Stage 1).
+
+    Args:
+        models: List of OpenRouter model identifiers
+        messages: List of message dicts to send to each model
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
+
+    Yields:
+        (model, response) tuples in completion order; response is None on failure.
+    """
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = thinking_effort
+
+    async def _labeled(model: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        return model, await query_model(model, messages, **query_kwargs)
+
+    for coro in asyncio.as_completed([_labeled(model) for model in models]):
+        yield await coro

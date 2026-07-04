@@ -1,7 +1,7 @@
 """3-stage AI Advisory Board council orchestration."""
 
-from typing import List, Dict, Any, Tuple
-from .openrouter import query_models_parallel, query_model
+from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
+from .openrouter import query_models_parallel, query_models_as_completed, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, UTILITY_MODEL
 from .logger import logger
 from .tools.types import EvidencePack, UsageLimits
@@ -43,29 +43,32 @@ def resolve_stage3_thinking_effort(model: str, effort: str = None) -> str:
     return resolved
 
 
-async def stage1_collect_responses(
-    user_query: str,
-    models: List[str] = None,
-    evidence_pack: EvidencePack = None,
-    zdr_enabled: bool = False,
-    thinking_effort: str = None,
-) -> List[Dict[str, Any]]:
+def build_stage1_result(model: str, response: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
-    Stage 1: Collect individual responses from all council models.
+    Build a single Stage 1 result dict from a query_model response.
 
-    Args:
-        user_query: The user's question
-        models: Optional list of models to query (defaults to COUNCIL_MODELS)
-        evidence_pack: Optional evidence gathered by the Steward
-        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
-        thinking_effort: Optional OpenRouter reasoning effort for supported models
+    Shared by stage1_collect_responses (parallel) and
+    stage1_collect_responses_progressive (as-completed) so there is exactly
+    one place that shapes a Stage 1 result.
 
     Returns:
-        List of dicts with 'model' and 'response' keys
+        The result dict, or None if the model failed (caller should skip it).
     """
-    target_models = models or COUNCIL_MODELS
-    
-    # Format evidence for the prompt if available
+    if response is None:
+        return None
+
+    result = {
+        "model": model,
+        "response": response.get('content', ''),
+        "usage": response.get('usage', {})
+    }
+    if response.get("reasoning_details"):
+        result["reasoning"] = response.get("reasoning_details")
+    return result
+
+
+def _build_stage1_prompt(user_query: str, evidence_pack: EvidencePack = None) -> str:
+    """Build the Stage 1 prompt, including evidence context if available."""
     evidence_context = ""
     if evidence_pack and evidence_pack.tools_used:
         # Render a compact summary with [sID] citations
@@ -91,10 +94,33 @@ async def stage1_collect_responses(
         
         evidence_context = "\n".join(summary_lines)
 
-    prompt = f"""{user_query}
+    return f"""{user_query}
 
 {evidence_context}"""
 
+
+async def stage1_collect_responses(
+    user_query: str,
+    models: List[str] = None,
+    evidence_pack: EvidencePack = None,
+    zdr_enabled: bool = False,
+    thinking_effort: str = None,
+) -> List[Dict[str, Any]]:
+    """
+    Stage 1: Collect individual responses from all council models.
+
+    Args:
+        user_query: The user's question
+        models: Optional list of models to query (defaults to COUNCIL_MODELS)
+        evidence_pack: Optional evidence gathered by the Steward
+        zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
+        thinking_effort: Optional OpenRouter reasoning effort for supported models
+
+    Returns:
+        List of dicts with 'model' and 'response' keys
+    """
+    target_models = models or COUNCIL_MODELS
+    prompt = _build_stage1_prompt(user_query, evidence_pack)
     messages = [{"role": "user", "content": prompt}]
 
     # Query all models in parallel
@@ -103,20 +129,56 @@ async def stage1_collect_responses(
         query_kwargs["thinking_effort"] = thinking_effort
     responses = await query_models_parallel(target_models, messages, **query_kwargs)
 
-    # Format results
+    # Format results (skip failed models)
     stage1_results = []
     for model, response in responses.items():
-        if response is not None:  # Only include successful responses
-            result = {
-                "model": model,
-                "response": response.get('content', ''),
-                "usage": response.get('usage', {})
-            }
-            if response.get("reasoning_details"):
-                result["reasoning"] = response.get("reasoning_details")
+        result = build_stage1_result(model, response)
+        if result is not None:
             stage1_results.append(result)
 
     return stage1_results
+
+
+async def stage1_collect_responses_progressive(
+    user_query: str,
+    models: List[str] = None,
+    evidence_pack: EvidencePack = None,
+    zdr_enabled: bool = False,
+    thinking_effort: str = None,
+) -> AsyncIterator[Tuple[str, Any, Any]]:
+    """
+    Stage 1, progressive variant: same per-model result shape as
+    stage1_collect_responses (via the shared build_stage1_result helper), but
+    yields each model's result as soon as it finishes instead of waiting for
+    the slowest model.
+
+    Yields:
+        ("model_complete", index, result) for each successful model, in
+        completion order, then finally ("complete", stage1_results, None)
+        with the full list (order matches `models`, matching the non-
+        progressive function's output).
+    """
+    target_models = models or COUNCIL_MODELS
+    prompt = _build_stage1_prompt(user_query, evidence_pack)
+    messages = [{"role": "user", "content": prompt}]
+
+    query_kwargs = {"zdr_enabled": zdr_enabled}
+    if thinking_effort is not None:
+        query_kwargs["thinking_effort"] = thinking_effort
+
+    results_by_model: Dict[str, Dict[str, Any]] = {}
+    async for model, response in query_models_as_completed(target_models, messages, **query_kwargs):
+        result = build_stage1_result(model, response)
+        if result is None:
+            continue
+        results_by_model[model] = result
+        yield "model_complete", len(results_by_model) - 1, result
+
+    # Preserve the same model ordering as stage1_collect_responses (input order).
+    stage1_results = [
+        results_by_model[model] for model in target_models if model in results_by_model
+    ]
+    yield "complete", stage1_results, None
 
 
 async def stage2_collect_rankings(
