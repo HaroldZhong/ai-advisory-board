@@ -89,11 +89,20 @@ async def run_turn(
         if has_attachments:
             attachment_context = main.build_llm_context(request.attachment_ids)
             logger.info(f"[ATTACH] Built context from {len(request.attachment_ids)} attachments ({len(attachment_context)} chars)")
-            # Index documents into PageIndex for cross-conversation retrieval
-            for att_id in request.attachment_ids:
-                att_text = main.get_attachment_text(att_id)
-                if att_text:
-                    main.rag_system.index_document(conversation_id, att_id, att_text)
+            # Index documents into PageIndex for cross-conversation retrieval.
+            # Skip for effective-turn ZDR (audit §12, Decision #5): covers the
+            # per-message flag, which isn't visible in conversation metadata
+            # and so can't be checked by rag.py's write barrier below. This is
+            # a cheap early skip, not the authoritative guard against a
+            # metadata flip racing this turn -- CouncilRAG.index_document's
+            # own write barrier re-checks CURRENT metadata synchronously
+            # immediately before it mutates the store, closing that race at
+            # the root regardless of how many awaits happen in between.
+            if not zdr_enabled:
+                for att_id in request.attachment_ids:
+                    att_text = main.get_attachment_text(att_id)
+                    if att_text:
+                        main.rag_system.index_document(conversation_id, att_id, att_text)
 
         # Combine user content with attachment context and custom instructions
         # for the LLM. User sees only their message, LLM sees the composed content.
@@ -317,8 +326,17 @@ async def run_turn(
             turn_index = main.get_turn_index(updated_conversation) - 1
 
             # Index for RAG with enhanced metadata. Skip when the council
-            # produced no result: error text must not become a memory.
-            if stage3_result.get("model") != "error":
+            # produced no result: error text must not become a memory. Also
+            # skip for effective-turn ZDR (audit §12, Decision #5): covers the
+            # per-message flag, which isn't visible in conversation metadata
+            # and so can't be checked by rag.py's write barrier below. This is
+            # a cheap early skip, not the authoritative guard against a
+            # metadata flip racing this turn (e.g. across the extract_topics
+            # await just below) -- CouncilRAG.index_session's own write
+            # barrier re-checks CURRENT metadata synchronously immediately
+            # before it mutates the store, closing that race at the root
+            # regardless of how many awaits happen in between.
+            if stage3_result.get("model") != "error" and not zdr_enabled:
                 logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
 
                 # Extract topics from question + final answer

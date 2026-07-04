@@ -10,6 +10,18 @@ from .config import RAG_SETTINGS, UTILITY_MODEL
 from .openrouter import query_model
 from .app_paths import get_pageindex_dir, write_text_atomic
 
+
+def get_conversation(conversation_id: str):
+    """Lazy-imported indirection to backend.storage.get_conversation.
+
+    Kept as a module-level seam (rather than importing storage at module
+    load time) to avoid a storage<->rag import cycle, and so tests can
+    monkeypatch it directly.
+    """
+    from .storage import get_conversation as _get_conversation
+    return _get_conversation(conversation_id)
+
+
 class CouncilRAG:
     """
     Reasoning-based RAG ("PageIndex") system.
@@ -37,6 +49,15 @@ class CouncilRAG:
                         backup_path,
                     )
                     self.store = {}
+                if not isinstance(self.store, dict):
+                    # Valid JSON but the wrong top-level type (e.g. "[]") skips
+                    # the JSONDecodeError path above; memory is derived data,
+                    # so resetting is the same safe recovery as the corrupt case.
+                    logger.warning(
+                        "[RAG] PageIndex store has invalid top-level type %s; resetting",
+                        type(self.store).__name__,
+                    )
+                    self.store = {}
             else:
                 self.store = {}
                 
@@ -46,6 +67,68 @@ class CouncilRAG:
             logger.exception("[RAG] WARNING: Failed to initialize: %s", e)
             self.enabled = False
             self.store = {}
+
+        if self.enabled:
+            self.cleanup_zdr_conversations()
+
+    def cleanup_zdr_conversations(self) -> int:
+        """One-time-per-process startup sweep (audit §12, Decision #5).
+
+        Index-time exclusion (see turn_pipeline.run_turn) stops new ZDR turns
+        from ever being written here, but this store may already contain
+        memories from ZDR conversations indexed before that guard existed.
+        For every conversation id in the store, look up its current metadata
+        and remove the conversation's entries if either:
+          (a) `metadata.zdr_enabled` is True, or
+          (b) the conversation's file is missing or unreadable (orphaned
+              entries). Unavailable metadata cannot prove an entry is safe to
+              keep, so cleanup fails closed: a missing file means the
+              conversation was deleted (its memories are pure orphaned,
+              derived data) and a crash mid-deletion must not be able to
+              permanently strand a ZDR conversation's memories.
+
+        LIMITATION (documented, not fixed here): a turn's *effective* ZDR can
+        also come from a per-message flag that was never persisted to
+        conversation metadata. Pre-fix memories from such per-message-only
+        ZDR turns cannot be identified retroactively and are NOT covered by
+        this sweep. Going forward there is no gap: index-time exclusion checks
+        the per-turn effective ZDR (metadata OR per-message) before writing,
+        so no new per-message-only ZDR memory can ever land in the store.
+        """
+        zdr_removed = 0
+        orphans_removed = 0
+        for conversation_id in list(self.store.keys()):
+            try:
+                conversation = get_conversation(conversation_id)
+            except Exception:
+                logger.exception(
+                    "[RAG] Failed to load conversation %s during ZDR cleanup sweep; removing as an orphan (fail closed)",
+                    conversation_id,
+                )
+                del self.store[conversation_id]
+                orphans_removed += 1
+                continue
+            if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict):
+                # None (missing file), a valid-JSON-but-wrong-type record
+                # (e.g. a conversation file holding "[]"), or malformed
+                # metadata (e.g. "metadata": null): no metadata to trust,
+                # so fail closed rather than letting .get() raise below.
+                del self.store[conversation_id]
+                orphans_removed += 1
+                continue
+            if conversation["metadata"].get("zdr_enabled") is True:
+                del self.store[conversation_id]
+                zdr_removed += 1
+
+        removed = zdr_removed + orphans_removed
+        if removed:
+            self._save_store()
+            logger.info(
+                "[RAG] ZDR cleanup sweep removed %d ZDR conversation(s) and %d orphaned conversation(s) from PageIndex memory",
+                zdr_removed,
+                orphans_removed,
+            )
+        return removed
 
     def _backup_corrupt_index(self) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
@@ -107,7 +190,17 @@ class CouncilRAG:
         """
         if not self.enabled:
             return
-            
+
+        # ZDR write barrier: never index a conversation whose CURRENT metadata
+        # says ZDR. Synchronous check-then-write (no await window) closes the
+        # runtime-flip race for good; flips after the write are handled by the
+        # purge in update_conversation. Per-message ZDR (request flag, not
+        # visible in metadata) is enforced by the pipeline-level guards.
+        conversation = get_conversation(conversation_id)
+        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
+            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
+            return
+
         # Ensure conversation exists in store
         if conversation_id not in self.store:
             self.store[conversation_id] = {
@@ -136,6 +229,16 @@ class CouncilRAG:
         Truncates to max_chars to keep the reasoning store manageable.
         """
         if not self.enabled or not text.strip():
+            return
+
+        # ZDR write barrier: never index a conversation whose CURRENT metadata
+        # says ZDR. Synchronous check-then-write (no await window) closes the
+        # runtime-flip race for good; flips after the write are handled by the
+        # purge in update_conversation. Per-message ZDR (request flag, not
+        # visible in metadata) is enforced by the pipeline-level guards.
+        conversation = get_conversation(conversation_id)
+        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
+            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
             return
 
         if conversation_id not in self.store:

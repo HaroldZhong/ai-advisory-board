@@ -4,6 +4,7 @@ import pytest
 
 from backend.rag import CouncilRAG
 from backend import rag as rag_module
+from backend import storage
 
 
 def test_rag_preserves_corrupt_pageindex_file(tmp_path):
@@ -20,8 +21,36 @@ def test_rag_preserves_corrupt_pageindex_file(tmp_path):
     assert not index_file.exists()
 
 
+@pytest.mark.parametrize("bad_top_level_json", ["[]", '"a string"'])
+def test_rag_resets_store_with_valid_json_but_wrong_top_level_type(tmp_path, caplog, bad_top_level_json):
+    """Codex P2: json.load succeeds for e.g. `[]`, skipping the
+    JSONDecodeError recovery path, so the store would not be a dict and the
+    startup ZDR cleanup sweep's self.store.keys() would raise AttributeError,
+    aborting backend startup. Must reset to {} the same way corrupt JSON does."""
+    index_file = tmp_path / "pageindex_memory.json"
+    index_file.write_text(bad_top_level_json, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        rag = CouncilRAG(persist_path=str(tmp_path))
+
+    assert rag.enabled is True
+    assert rag.store == {}
+    assert any("invalid top-level type" in record.message for record in caplog.records)
+
+
 def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatch):
-    rag = CouncilRAG(persist_path=str(tmp_path))
+    # index_document now has a ZDR write barrier (Codex round 6) that looks up
+    # the conversation's current metadata before writing; a fabricated id with
+    # no conversation file would fail closed and skip the write entirely
+    # (never reaching write_text_atomic). Create a real, non-ZDR conversation
+    # so the write barrier lets the index proceed and this test still
+    # exercises the atomic-save-failure path.
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
 
     def fail_write(path, content, **kwargs):
         raise PermissionError("locked")
@@ -31,6 +60,35 @@ def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatc
     rag.index_document("conv-1", "doc.txt", "hello")
 
     assert rag.enabled is False
+
+
+def test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr_conversation(tmp_path, monkeypatch):
+    """Codex round 6: the ZDR write barrier lives INSIDE index_session and
+    index_document themselves (not just the turn_pipeline call sites), so it
+    closes the metadata-flip race regardless of how many awaits happen
+    between a pipeline-level guard and the actual store mutation. Direct
+    unit: a conversation whose metadata already says zdr_enabled=True must
+    make both methods no-ops."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-zdr", {"zdr_enabled": True})
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    rag.index_session(
+        "conv-zdr",
+        0,
+        "question",
+        stage1_results=[],
+        stage2_results=[],
+        stage3_result={"model": "chair", "response": "answer"},
+        topics=["topic"],
+        quality_metrics={},
+    )
+    rag.index_document("conv-zdr", "doc.txt", "sensitive text")
+
+    assert rag.store == {}
 
 
 def test_rag_save_store_skips_when_persistence_disabled(tmp_path, monkeypatch):

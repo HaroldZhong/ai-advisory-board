@@ -1,5 +1,7 @@
 import importlib
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -7,6 +9,46 @@ import pytest
 def import_module_with_api_key(monkeypatch, module_name):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     return importlib.import_module(module_name)
+
+
+def _setup_council_fakes(monkeypatch, main, rag_system):
+    """Mirrors tests/test_pipeline_unification.py's council fakes, but lets the
+    caller supply the rag_system fake/spy so ZDR-guard behavior is observable."""
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {"prompt_tokens": 10, "completion_tokens": 5}
+
+    # stage1_collect_responses_progressive is the pipeline seam (P3-T6): an
+    # async generator yielding ("model_complete", index, result) per model
+    # then ("complete", stage1_results, None) with the full list.
+    async def fake_stage1_progressive(content, *args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        return {"model": "chair", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    async def fake_topics(*args, **kwargs):
+        return ["topic"]
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr(main, "rag_system", rag_system)
 
 
 @pytest.mark.asyncio
@@ -354,3 +396,530 @@ async def test_image_file_processing_passes_zdr_to_openrouter(monkeypatch):
 
     assert result.status == "success"
     assert captured_kwargs["zdr_enabled"] is True
+
+
+# --- P5-T2: ZDR memory boundary (index-time exclusion, Decision #5) ---
+
+
+@pytest.mark.asyncio
+async def test_council_turn_with_metadata_zdr_skips_memory_indexing(monkeypatch, tmp_path):
+    """A conversation whose metadata already sets zdr_enabled=True must never
+    have its turns written into the cross-conversation PageIndex memory store."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-zdr-metadata-council"
+    main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Sensitive question", mode="council"),
+    )
+
+    rag_system.index_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_council_turn_with_per_message_zdr_skips_memory_indexing(monkeypatch, tmp_path):
+    """A non-ZDR conversation with a single per-message zdr_enabled=True flag
+    must also skip indexing that turn (effective ZDR = metadata OR per-message)."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-zdr-per-message-council"
+    main.storage.create_conversation(conversation_id)  # no metadata ZDR
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Sensitive question", mode="council", zdr_enabled=True),
+    )
+
+    rag_system.index_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
+    """Control: a normal (non-ZDR) turn must still be indexed, proving the
+    guard is ZDR-specific and not a blanket regression."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-non-zdr-council"
+    main.storage.create_conversation(conversation_id)
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Normal question", mode="council"),
+    )
+
+    rag_system.index_session.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch, tmp_path):
+    """Codex P1 TOCTOU, closed at the root in round 6: a turn starts with the
+    pre-flight zdr_enabled=False captured before the council ran. If the user
+    flips ZDR on via PUT /api/conversations/{id} while the turn is still in
+    flight, update_conversation purges this conversation's existing memories
+    immediately. CouncilRAG.index_session's own ZDR write barrier re-checks
+    CURRENT metadata synchronously right before it mutates the store, so it
+    must not re-add memories after that purge -- this uses a REAL CouncilRAG
+    (wrapped for call-observability) so the write barrier actually runs,
+    rather than a bare mock that would bypass it entirely."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    rag_module = importlib.import_module("backend.rag")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    conversation_id = "conv-zdr-flipped-mid-turn"
+    main.storage.create_conversation(conversation_id)  # starts non-ZDR
+    monkeypatch.setattr(rag_module, "get_conversation", main.storage.get_conversation)
+    real_rag = rag_module.CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {"prompt_tokens": 10, "completion_tokens": 5}
+
+    async def fake_stage1_progressive(content, *args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        # Simulate the user flipping ZDR on via PUT /api/conversations/{id}
+        # while stage3 (or any earlier stage) was still running: real
+        # storage metadata now says zdr_enabled=True, but this turn's
+        # zdr_enabled local variable was already captured as False.
+        main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
+        return {"model": "chair", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    async def fake_topics(*args, **kwargs):
+        return ["topic"]
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(wraps=real_rag.index_session),
+        index_document=Mock(wraps=real_rag.index_document),
+        refresh_hybrid_index=Mock(),
+    )
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr(main, "rag_system", rag_system)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Sensitive question", mode="council"),
+    )
+
+    rag_system.index_session.assert_called_once()  # the pipeline-level early skip doesn't fire (pre-flight was False)
+    assert conversation_id not in real_rag.store  # but the write barrier inside index_session refused to store it
+
+
+@pytest.mark.asyncio
+async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(monkeypatch, tmp_path):
+    """Attachments attached to a ZDR turn must not be indexed into PageIndex
+    either (backend/turn_pipeline.py's attachment loop calls index_document)."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-zdr-attachments"
+    main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+    monkeypatch.setattr(main, "build_llm_context", lambda attachment_ids: "[Attachment] secret contents")
+    monkeypatch.setattr(main, "get_attachment_text", lambda attachment_id: "secret contents")
+    monkeypatch.setattr(
+        main,
+        "prepare_message_attachments",
+        lambda conversation_id, attachment_ids: [{"attachment_id": aid} for aid in attachment_ids],
+    )
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(
+            content="Sensitive question",
+            mode="council",
+            attachment_ids=["att-1"],
+        ),
+    )
+
+    rag_system.index_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_council_turn_skips_document_indexing_when_zdr_enabled_before_attachment_loop(monkeypatch, tmp_path):
+    """Codex P1, round 5/6 (symmetric to the mid-turn index_session case,
+    closed at the root): the attachment-index loop is the FIRST thing
+    run_turn does, so a ZDR flip landing between the request's pre-flight
+    zdr_enabled capture and this loop's start must also be caught.
+    build_llm_context is the call immediately before the loop; simulate the
+    flip happening there via real storage.update_conversation_metadata.
+    CouncilRAG.index_document's own ZDR write barrier re-checks CURRENT
+    metadata synchronously right before it mutates the store, so this uses a
+    REAL CouncilRAG (wrapped for call-observability) rather than a bare mock
+    that would bypass the barrier entirely."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    rag_module = importlib.import_module("backend.rag")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    conversation_id = "conv-zdr-flipped-before-attachments"
+    main.storage.create_conversation(conversation_id)  # starts non-ZDR
+    monkeypatch.setattr(rag_module, "get_conversation", main.storage.get_conversation)
+    real_rag = rag_module.CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(wraps=real_rag.index_session),
+        index_document=Mock(wraps=real_rag.index_document),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+
+    def flipping_build_llm_context(attachment_ids):
+        # Simulate the user flipping ZDR on via PUT /api/conversations/{id}
+        # right as this turn starts: real storage metadata now says
+        # zdr_enabled=True, but this turn's zdr_enabled local variable was
+        # already captured as False during pre-flight.
+        main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
+        return "[Attachment] secret contents"
+
+    monkeypatch.setattr(main, "build_llm_context", flipping_build_llm_context)
+    monkeypatch.setattr(main, "get_attachment_text", lambda attachment_id: "secret contents")
+    monkeypatch.setattr(
+        main,
+        "prepare_message_attachments",
+        lambda conversation_id, attachment_ids: [{"attachment_id": aid} for aid in attachment_ids],
+    )
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(
+            content="Sensitive question",
+            mode="council",
+            attachment_ids=["att-1"],
+        ),
+    )
+
+    rag_system.index_document.assert_called_once()  # the pipeline-level early skip doesn't fire (pre-flight was False)
+    assert conversation_id not in real_rag.store  # but the write barrier inside index_document refused to store it
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_metadata_zdr_conversations(monkeypatch, tmp_path):
+    """Decision #5's one-time startup sweep: any conversation already flagged
+    zdr_enabled=True in metadata must have its memory-store entries purged when
+    CouncilRAG initializes, while a normal conversation's entries survive."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-zdr", {"zdr_enabled": True})
+    storage.create_conversation("conv-normal")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-zdr": {"folder_id": "root", "turns": [{"turn": 0, "memory": "secret memory"}]},
+        "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal memory"}]},
+    }
+    import json
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-zdr" not in rag.store
+    assert "conv-normal" in rag.store
+    persisted = json.loads(index_file.read_text(encoding="utf-8"))
+    assert "conv-zdr" not in persisted
+    assert "conv-normal" in persisted
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_orphaned_entries_with_missing_conversation_file(monkeypatch, tmp_path):
+    """Fail closed (Codex P2, plan revision): a missing conversation file means
+    the conversation was deleted, so its store entries are pure orphaned,
+    derived data. Unavailable metadata cannot prove an entry is safe to keep,
+    and the delete-path has a crash window that could otherwise strand a ZDR
+    conversation's memories forever if orphans were left alone. The sweep
+    removes them rather than leaving them as-is."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-normal")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-deleted": {"folder_id": "root", "turns": [{"turn": 0, "memory": "orphaned memory"}]},
+        "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal memory"}]},
+    }
+    import json
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-deleted" not in rag.store
+    assert "conv-normal" in rag.store
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_orphaned_entries_with_unreadable_conversation_file(monkeypatch, tmp_path):
+    """Fail closed also covers a corrupt/unreadable conversation file (e.g.
+    truncated by a crash mid-write): get_conversation raising is treated the
+    same as a missing file, not left alone."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    conversations_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    (conversations_dir / "conv-corrupt.json").write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-corrupt": {"folder_id": "root", "turns": [{"turn": 0, "memory": "orphaned memory"}]},
+    }
+    import json
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-corrupt" not in rag.store
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_orphaned_entries_with_non_dict_conversation_record(monkeypatch, tmp_path):
+    """Codex P2: get_conversation() can return valid JSON that isn't a dict
+    (e.g. a conversation file holding "[]"). Calling .get() on that would
+    raise OUTSIDE the try/except in cleanup_zdr_conversations, aborting
+    CouncilRAG's constructor and backend startup. Must be treated as an
+    orphan (fail closed) instead of crashing."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    conversations_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    (conversations_dir / "conv-wrong-type.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-wrong-type": {"folder_id": "root", "turns": [{"turn": 0, "memory": "orphaned memory"}]},
+    }
+    import json
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-wrong-type" not in rag.store
+
+
+@pytest.mark.asyncio
+async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(monkeypatch, tmp_path):
+    """End-to-end isolation: because a metadata-ZDR conversation's turns are
+    never indexed (Stage: index-time exclusion) and any pre-existing entries
+    are purged at startup (Stage: cleanup sweep), its content can never reach
+    another conversation's retrieval/extraction prompt. This test drives both
+    stages together rather than asserting a separate retrieval-time filter,
+    which Decision #5 explicitly does not add."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    storage = main.storage
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-zdr", {"zdr_enabled": True})
+    storage.create_conversation("conv-current")
+
+    pageindex_dir = tmp_path / "pageindex"
+    monkeypatch.setattr("backend.rag.get_conversation", storage.get_conversation)
+    real_rag = importlib.import_module("backend.rag").CouncilRAG(persist_path=str(pageindex_dir))
+    # Seed a normal (non-ZDR) memory directly, bypassing the indexing guard,
+    # to prove retrieval still works for legitimate cross-conversation memory.
+    real_rag.store["conv-other"] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "memory": "ordinary memory should still retrieve"}],
+    }
+    real_rag._save_store()
+    monkeypatch.setattr(main, "rag_system", real_rag)
+
+    # Attempt to index a ZDR turn's content into the now-running rag_system:
+    # the turn_pipeline guard must prevent this from ever landing in the store.
+    rag_system = SimpleNamespace(
+        index_session=Mock(wraps=real_rag.index_session),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+    _setup_council_fakes(monkeypatch, main, rag_system)
+
+    await main.send_message(
+        "conv-zdr",
+        main.SendMessageRequest(content="SECRET_ZDR_CONTENT should never leak", mode="council"),
+    )
+
+    rag_system.index_session.assert_not_called()
+    assert "conv-zdr" not in real_rag.store
+
+    captured_kwargs = {}
+
+    async def fake_query_model(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        captured_kwargs["messages"] = args[1]
+        return {"content": "irrelevant"}
+
+    monkeypatch.setattr("backend.rag.query_model", fake_query_model)
+
+    await real_rag.retrieve_async("current question", "conv-current", zdr_enabled=False)
+
+    prompt = captured_kwargs["messages"][0]["content"]
+    assert "SECRET_ZDR_CONTENT" not in prompt
+    assert "ordinary memory should still retrieve" in prompt
+
+
+@pytest.mark.asyncio
+async def test_enabling_zdr_at_runtime_purges_existing_memories(monkeypatch, tmp_path):
+    """Codex P1: the startup sweep (cleanup_zdr_conversations) only runs once
+    per process, so a conversation that flips zdr_enabled=True at runtime (via
+    PUT /api/conversations/{id}) would otherwise leave its already-indexed
+    memories live and retrievable from other conversations until restart.
+    update_conversation must purge them immediately, the same way conversation
+    deletion already does via delete_conversation_memories."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-runtime-zdr-enable"
+    private_preset = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "chairman_model": private_preset["chairman_model"],
+            "council_models": private_preset["council_models"],
+        },
+    )
+
+    fake_rag = SimpleNamespace(
+        delete_conversation_memories=Mock(),
+        update_conversation_folder=Mock(),
+    )
+    monkeypatch.setattr(main, "rag_system", fake_rag)
+
+    updated = await main.update_conversation(
+        conversation_id,
+        main.ConversationUpdate(zdr_enabled=True),
+    )
+
+    assert updated["metadata"]["zdr_enabled"] is True
+    fake_rag.delete_conversation_memories.assert_called_once_with(conversation_id)
+
+
+@pytest.mark.asyncio
+async def test_enabling_zdr_at_runtime_actually_removes_store_entries(monkeypatch, tmp_path):
+    """End-to-end version of the above against the real CouncilRAG: seed the
+    store with entries for a conversation, then flip zdr_enabled=True on it
+    and assert the store no longer has that conversation's entries."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    rag_module = importlib.import_module("backend.rag")
+    conversation_id = "conv-runtime-zdr-enable-real"
+    private_preset = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "chairman_model": private_preset["chairman_model"],
+            "council_models": private_preset["council_models"],
+        },
+    )
+    monkeypatch.setattr(rag_module, "get_conversation", main.storage.get_conversation)
+
+    real_rag = rag_module.CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    real_rag.store[conversation_id] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "memory": "pre-existing memory before ZDR was enabled"}],
+    }
+    real_rag._save_store()
+    monkeypatch.setattr(main, "rag_system", real_rag)
+
+    await main.update_conversation(
+        conversation_id,
+        main.ConversationUpdate(zdr_enabled=True),
+    )
+
+    assert conversation_id not in real_rag.store
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_entries_with_malformed_metadata(monkeypatch, tmp_path):
+    """Fail closed: a conversation record whose metadata is not a dict (e.g.
+    "metadata": null from a partial migration) is removed during the startup
+    sweep instead of crashing CouncilRAG construction (Codex round 7)."""
+    import json
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-normal")
+    conversation_path = Path(storage.get_conversation_path("conv-null-meta"))
+    conversation_path.parent.mkdir(parents=True, exist_ok=True)
+    conversation_path.write_text(
+        json.dumps({"id": "conv-null-meta", "messages": [], "metadata": None}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-null-meta": {"folder_id": "root", "turns": [{"turn": 0, "memory": "suspect"}]},
+        "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal"}]},
+    }
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-null-meta" not in rag.store
+    assert "conv-normal" in rag.store
