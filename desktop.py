@@ -149,6 +149,12 @@ def start_server():
         # and uvicorn's own bind below; accepted as low-probability.)
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            if os.name != "nt":
+                # Match asyncio's POSIX bind semantics: without SO_REUSEADDR a
+                # quick app restart would false-positive on TIME_WAIT sockets.
+                # Not on Windows, where SO_REUSEADDR would bind through a
+                # live foreign listener and defeat the check.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind((SERVER_HOST, SERVER_PORT))
         finally:
             probe.close()
