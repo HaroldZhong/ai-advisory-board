@@ -94,17 +94,40 @@ ERROR_HTML = """
     pre {{ background: #1e293b; padding: 16px; border-radius: 8px; text-align: left;
            font-size: 12px; overflow-x: auto; white-space: pre-wrap; color: #fca5a5; }}
     p {{ color: #94a3b8; font-size: 14px; }}
+    details {{ text-align: left; margin-top: 16px; }}
+    summary {{ cursor: pointer; color: #94a3b8; font-size: 13px; }}
 </style>
 </head>
 <body>
     <div class="error">
-        <h2>Server Failed to Start</h2>
-        <p>Check logs/desktop.log in the app data folder for details.</p>
-        <pre>{error}</pre>
+        <h2>{title}</h2>
+        <p>{hint}</p>
+        <details>
+            <summary>Technical details</summary>
+            <pre>{error}</pre>
+        </details>
     </div>
 </body>
 </html>
 """
+
+
+def format_user_error(traceback_str: str) -> tuple:
+    """Turn a startup traceback into a (title, actionable hint) pair."""
+    lower = traceback_str.lower()
+    if "openrouter_api_key" in lower:
+        return ("API key not configured",
+                "No API key was found. Start the app and complete first-run setup, "
+                "or check that your key was saved correctly.")
+    if any(sig in lower for sig in ("connecterror", "connecttimeout", "nodename", "getaddrinfo")):
+        return ("Network problem",
+                "The app could not reach the internet. Check your connection or proxy "
+                "settings (see docs: Network access, proxies, and restricted regions).")
+    if "address already in use" in lower or "10048" in lower:
+        return ("Port 8001 is taken",
+                "Another program is using port 8001. Close it and start the app again.")
+    return ("Server failed to start",
+            "Check logs/desktop.log in the app data folder for details.")
 
 def start_server():
     """Run the FastAPI server with error capture."""
@@ -173,9 +196,10 @@ def main():
         if server_error:
             logger.error("Server had an error, showing error page.")
             safe_error = server_error.replace("\\", "\\\\").replace("`", "'")
-            window.load_html(ERROR_HTML.format(error=safe_error))
+            title, hint = format_user_error(safe_error)
+            window.load_html(ERROR_HTML.format(title=title, hint=hint, error=safe_error))
             return
-        
+
         # Now wait for the port to be accepting connections
         logger.info("Import succeeded, waiting for port %d...", SERVER_PORT)
         if wait_for_port(SERVER_HOST, SERVER_PORT, timeout=30):
@@ -183,7 +207,9 @@ def main():
             window.load_url(get_app_url())
         else:
             logger.error("Server port never opened.")
-            window.load_html(ERROR_HTML.format(error="Server started but port never opened. Check logs/desktop.log in the app data folder."))
+            port_error = "Server started but port never opened. Check logs/desktop.log in the app data folder."
+            title, hint = format_user_error(port_error)
+            window.load_html(ERROR_HTML.format(title=title, hint=hint, error=port_error))
     
     # Run on_loaded in a thread so it doesn't block webview.start()
     threading.Thread(target=on_loaded, daemon=True).start()
