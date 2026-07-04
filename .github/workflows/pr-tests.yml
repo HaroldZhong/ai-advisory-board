@@ -43,6 +43,7 @@ jobs:
           tests/test_openrouter_base_url.py
           tests/test_openrouter_error_classification.py
           tests/test_council_all_fail.py
+          tests/test_pipeline_unification.py
           tests/test_connectivity_endpoint.py
           tests/test_conversation_creation_defaults.py
           tests/test_conversation_organization.py

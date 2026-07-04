@@ -42,17 +42,18 @@ async def test_send_message_all_fail_skips_indexing_and_returns_error(monkeypatc
     conversation = await main.create_conversation(main.CreateConversationRequest())
     conv_id = conversation["id"]
 
-    async def all_fail_council(*args, **kwargs):
-        return [], [], {
-            "model": "error",
-            "response": "All models failed to respond. Please try again.",
-        }, {}, EvidencePack(run_id="r", query="q", tools_used=[], key_facts=[], limits=UsageLimits())
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="r", query="q", tools_used=[], key_facts=[], limits=UsageLimits()), None
+
+    async def all_fail_stage1(*args, **kwargs):
+        return []
 
     async def fake_title(*args, **kwargs):
         return "title"
 
     indexed = []
-    monkeypatch.setattr(main, "run_full_council", all_fail_council)
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses", all_fail_stage1)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
     monkeypatch.setattr(main.rag_system, "index_session", lambda *a, **k: indexed.append(a))
 

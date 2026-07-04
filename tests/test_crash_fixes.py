@@ -31,7 +31,9 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
     monkeypatch.setattr(
         main.storage,
         "get_conversation",
-        Mock(side_effect=[initial_conversation, indexed_conversation]),
+        # Three reads: endpoint pre-flight, turn-index calculation after the
+        # assistant message is saved, and the completion-event total-cost read.
+        Mock(side_effect=[initial_conversation, indexed_conversation, indexed_conversation]),
     )
     monkeypatch.setattr(main.storage, "add_user_message", Mock())
     monkeypatch.setattr(main.storage, "update_conversation_title", Mock())
@@ -48,19 +50,30 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
 
     monkeypatch.setattr(main, "generate_conversation_title", fake_generate_conversation_title)
 
-    async def fake_run_full_council(*args, **kwargs):
-        from backend.tools.types import EvidencePack
+    from backend.tools.types import EvidencePack
 
-        stage1 = [{"model": "model-a", "response": "Answer A", "usage": {}}]
-        stage2 = [{"model": "model-a", "parsed_ranking": ["Response A"], "usage": {}}]
-        stage3 = {"model": "chair", "response": "Final answer", "usage": {}}
-        metadata = {"label_to_model": {"Response A": "model-a"}}
-        return stage1, stage2, stage3, metadata, EvidencePack(run_id="run-1", query="What should we do?")
+    async def fake_run_tool_steward_phase(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="What should we do?"), None
+
+    async def fake_stage1(*args, **kwargs):
+        return [{"model": "model-a", "response": "Answer A", "usage": {}}]
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        return {"model": "chair", "response": "Final answer", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
         return ["planning"]
 
-    monkeypatch.setattr(main, "run_full_council", fake_run_full_council)
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_run_tool_steward_phase)
+    monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
     monkeypatch.setattr("backend.council.calculate_quality_metrics", Mock(return_value={"model-a": {}}))
 
