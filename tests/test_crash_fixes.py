@@ -1,6 +1,6 @@
 import importlib
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -83,7 +83,7 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
     monkeypatch.setattr("backend.council.calculate_quality_metrics", Mock(return_value={"model-a": {}}))
 
     fake_rag = SimpleNamespace(
-        index_session=Mock(),
+        index_session=AsyncMock(return_value=None),
         refresh_hybrid_index=Mock(),
     )
     monkeypatch.setattr(main, "rag_system", fake_rag)

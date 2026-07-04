@@ -67,11 +67,15 @@ def _setup_council_fakes(monkeypatch, main, captured):
     _patch_both(monkeypatch, main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
     monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+
+    async def fake_index_session(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(
         main,
         "rag_system",
         SimpleNamespace(
-            index_session=lambda *a, **k: None,
+            index_session=fake_index_session,
             refresh_hybrid_index=lambda *a, **k: None,
             index_document=lambda *a, **k: None,
         ),

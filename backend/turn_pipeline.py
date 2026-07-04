@@ -352,8 +352,10 @@ async def run_turn(
 
                 logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
 
-                # Index session with enhanced metadata
-                main.rag_system.index_session(
+                # Index session with enhanced metadata. May return usage from
+                # a P5-T5 summary-compression call if this conversation's
+                # turn count just crossed the compression threshold.
+                summary_usage = await main.rag_system.index_session(
                     conversation_id,
                     turn_index,
                     request.content,
@@ -363,6 +365,8 @@ async def run_turn(
                     topics,
                     quality_metrics,
                 )
+                if summary_usage:
+                    extra_usage_records.append({"model": config.UTILITY_MODEL, "usage": summary_usage})
                 logger.info("[PHASE1] Session indexed successfully")
 
                 # Refresh hybrid index after indexing
@@ -495,6 +499,32 @@ async def run_turn(
                 running_cost=turn_cost,
                 reasoning=response_dict.get("reasoning"),
             )
+
+            # Chat turns previously left no memory (P5-T5 feature 2). Skip
+            # for effective-turn ZDR (audit §12, Decision #5), mirroring the
+            # council branch's guard: this is a cheap early skip, not the
+            # authoritative guard -- CouncilRAG.index_chat_turn's own write
+            # barrier re-checks CURRENT metadata synchronously immediately
+            # before it mutates the store.
+            if not zdr_enabled:
+                from .council import extract_topics
+                chat_turn_index = len(main.rag_system.store.get(conversation_id, {}).get("turns", []))
+                combined_text = request.content + " " + response_dict.get("content", "")
+                chat_topics = await extract_topics(
+                    combined_text,
+                    max_topics=3,
+                    zdr_enabled=zdr_enabled,
+                )
+                summary_usage = await main.rag_system.index_chat_turn(
+                    conversation_id,
+                    chat_turn_index,
+                    request.content,
+                    response_dict.get("content", ""),
+                    chat_topics,
+                )
+                if summary_usage:
+                    extra_usage_records.append({"model": config.UTILITY_MODEL, "usage": summary_usage})
+                main.rag_system.refresh_hybrid_index()
 
             yield {"type": "chat_response", "data": response_dict}
             logger.info("[CHAT] Chat response sent to client")

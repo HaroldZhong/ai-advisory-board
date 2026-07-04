@@ -298,9 +298,25 @@ async def test_edit_regenerate_resent_attachment_survives_end_to_end(monkeypatch
         # retrieve_async returns (context, usage) since PR #75.
         return "", None
 
+    async def fake_topics(*args, **kwargs):
+        return ["topic"]
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
 
     result = await main.send_message(
         conversation_id,

@@ -76,11 +76,15 @@ def _setup_council_fakes(monkeypatch, main, stage1_calls=None):
     _patch_both(monkeypatch, main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
     monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+
+    async def fake_index_session(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(
         main,
         "rag_system",
         SimpleNamespace(
-            index_session=lambda *a, **k: None,
+            index_session=fake_index_session,
             refresh_hybrid_index=lambda *a, **k: None,
             index_document=lambda *a, **k: None,
         ),
@@ -97,9 +101,25 @@ def _setup_chat_fakes(monkeypatch, main):
     async def fake_retrieve_async(*args, **kwargs):
         return "", {}
 
+    async def fake_topics(*args, **kwargs):
+        return ["topic"]
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
 
 
 @pytest.mark.asyncio

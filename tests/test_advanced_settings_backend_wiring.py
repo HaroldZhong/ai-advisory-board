@@ -50,10 +50,14 @@ def stub_sync_council_dependencies(main, monkeypatch, captured=None):
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
     monkeypatch.setattr("backend.council.calculate_quality_metrics", Mock(return_value={"model-a": {}}))
+
+    async def fake_index_session(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(
         main,
         "rag_system",
-        SimpleNamespace(index_session=Mock(), refresh_hybrid_index=Mock()),
+        SimpleNamespace(index_session=fake_index_session, refresh_hybrid_index=Mock()),
     )
 
 
@@ -220,8 +224,24 @@ async def test_sync_chat_uses_advanced_settings_for_rag_and_chairman(monkeypatch
         captured_chairman.update(kwargs)
         return {"content": "Advanced response", "usage": {}}
 
+    async def fake_extract_topics(*args, **kwargs):
+        return ["topic"]
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     result = await main.send_message(
@@ -268,8 +288,24 @@ async def test_stream_chat_uses_advanced_settings_for_rag_and_chairman(monkeypat
         captured_chairman.update(kwargs)
         return {"content": "Advanced response", "usage": {}}
 
+    async def fake_extract_topics(*args, **kwargs):
+        return ["topic"]
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     response = await main.send_message_stream(

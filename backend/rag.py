@@ -16,6 +16,16 @@ from .app_paths import get_pageindex_dir, write_text_atomic
 # something this module should do on its own.
 STORE_SIZE_WARNING_BYTES = 5 * 1024 * 1024  # 5 MB
 
+# P5-T5 feature 1 (owner decision): bump this to force a one-time memory
+# store reset on next startup (see _apply_one_time_memory_reset). Sidecar
+# marker file, never a key inside the store dict.
+MEMORY_STORE_VERSION = "2"
+
+# P5-T5 feature 3: bounded per-conversation memory growth. Once a
+# conversation's turns list exceeds this length, the oldest half is
+# compressed into a single summary entry.
+SUMMARY_COMPRESSION_THRESHOLD = 12
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -58,12 +68,19 @@ class CouncilRAG:
         self.enabled = False
         self.store = {}
         self.index_file = ""
+        self.version_file = ""
         try:
             if persist_path is None:
                 persist_path = str(get_pageindex_dir())
             os.makedirs(persist_path, exist_ok=True)
             self.index_file = os.path.join(persist_path, "pageindex_memory.json")
-            
+            self.version_file = os.path.join(persist_path, "pageindex_memory.version")
+
+            # Snapshot BEFORE loading: the corrupt-JSON recovery path below
+            # renames self.index_file away, so checking existence afterward
+            # would always say "no store file" even when one existed.
+            store_file_existed = os.path.exists(self.index_file)
+
             # Load existing JSON index
             if os.path.exists(self.index_file):
                 try:
@@ -87,7 +104,7 @@ class CouncilRAG:
                     self.store = {}
             else:
                 self.store = {}
-                
+
             self.enabled = True
             logger.info("[RAG] Initialized PageIndex Reasoning RAG successfully")
         except Exception as e:
@@ -96,7 +113,39 @@ class CouncilRAG:
             self.store = {}
 
         if self.enabled:
+            self._apply_one_time_memory_reset(store_file_existed)
             self.cleanup_zdr_conversations()
+
+    def _apply_one_time_memory_reset(self, store_file_existed: bool) -> None:
+        """P5-T5 feature 1 (owner decision): guarantee historical ZDR cleanup
+        regardless of the per-message-flag blind spot the startup sweep can't
+        retroactively detect (cleanup_zdr_conversations' documented
+        limitation). A sidecar version marker file -- deliberately NOT a key
+        inside self.store, which would pollute conversation-id iteration --
+        gates a one-time reset of the memory store to {}. Only the memory
+        store is touched; conversations and attachments live in a completely
+        separate directory tree and this method never looks at them.
+        """
+        try:
+            with open(self.version_file, "r", encoding="utf-8") as f:
+                current_version = f.read().strip()
+        except (OSError, ValueError):
+            current_version = None
+
+        if current_version == MEMORY_STORE_VERSION:
+            return
+
+        conversations_dropped = len(self.store)
+        if store_file_existed and conversations_dropped:
+            self.store = {}
+            self._save_store()
+            logger.info(
+                "[RAG] Performing one-time memory reset for v1.2.0 ZDR guarantee, %d conversation(s) dropped",
+                conversations_dropped,
+            )
+        # Fresh install (no prior store file) or an already-empty store: just
+        # write the marker, no reset log spam since nothing was purged.
+        write_text_atomic(Path(self.version_file), MEMORY_STORE_VERSION)
 
     def cleanup_zdr_conversations(self) -> int:
         """One-time-per-process startup sweep (audit §12, Decision #5).
@@ -224,22 +273,25 @@ class CouncilRAG:
             if self.enabled:
                 logger.info("[RAG] Updated PageIndex folder routing for conversation %s to %s", conversation_id, new_folder_id)
 
-    def index_session(
-        self, 
-        conversation_id: str, 
-        turn_index: int, 
+    async def index_session(
+        self,
+        conversation_id: str,
+        turn_index: int,
         user_question: str,
         stage1_results: List[Dict[str, Any]],
         stage2_results: List[Dict[str, Any]],
         stage3_result: Dict[str, Any],
         topics: List[str],
         quality_metrics: Dict[str, Dict[str, float]],
-    ):
+    ) -> Optional[Dict[str, Any]]:
         """
         Index one council session as chronological memory blocks.
+
+        Returns the summary-compression LLM call's usage dict when the P5-T5
+        summary tier compressed this conversation's oldest turns, else None.
         """
         if not self.enabled:
-            return
+            return None
 
         # ZDR write barrier: never index a conversation whose CURRENT metadata
         # says ZDR. Synchronous check-then-write (no await window) closes the
@@ -249,18 +301,18 @@ class CouncilRAG:
         conversation = get_conversation(conversation_id)
         if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
             logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
-            return
+            return None
 
         # Ensure conversation exists in store
         if conversation_id not in self.store:
             self.store[conversation_id] = {
-                "folder_id": "root", 
+                "folder_id": "root",
                 "turns": []
             }
-            
+
         stage3_model = stage3_result.get('model', 'unknown')
         final_text = stage3_result.get('response', '')
-        
+
         # Only index the user's question and the final synthesized answer to save context tokens for reasoning retrieve
         if final_text:
             turn_memory = {
@@ -269,9 +321,113 @@ class CouncilRAG:
                 "memory": f"Q: {user_question}\nA: {final_text}"
             }
             self.store[conversation_id]["turns"].append(turn_memory)
+            usage = await self._maybe_compress_oldest_half(conversation_id)
             self._save_store()
             if self.enabled:
                 logger.info("[PHASE1] Indexed turn %d for conv=%s into PageIndex", turn_index, conversation_id)
+            return usage
+        return None
+
+    async def index_chat_turn(
+        self,
+        conversation_id: str,
+        turn_index: int,
+        question: str,
+        answer: str,
+        topics: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Index one chat turn into cross-conversation memory. Chat turns
+        previously left no memory (P5-T5 feature 2); the entry shape is
+        IDENTICAL to a council turn's (question/answer/topics folded into the
+        same "memory" text field) so retrieve_with_stats_async's block builder
+        and the topic pre-filter need no special-casing.
+
+        Returns the summary-compression LLM call's usage dict when the P5-T5
+        summary tier compressed this conversation's oldest turns, else None.
+        """
+        if not self.enabled:
+            return None
+
+        # ZDR write barrier: identical to index_session's (copied, not
+        # refactored into a shared helper here, to keep this diff minimal and
+        # match the existing index_document barrier's own copy of the same
+        # check).
+        conversation = get_conversation(conversation_id)
+        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
+            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
+            return None
+
+        if conversation_id not in self.store:
+            self.store[conversation_id] = {"folder_id": "root", "turns": []}
+
+        if not answer:
+            return None
+
+        turn_memory = {
+            "turn": turn_index,
+            "topics": topics,
+            "memory": f"Q: {question}\nA: {answer}",
+        }
+        self.store[conversation_id]["turns"].append(turn_memory)
+        usage = await self._maybe_compress_oldest_half(conversation_id)
+        self._save_store()
+        if self.enabled:
+            logger.info("[RAG] Indexed chat turn %d for conv=%s into PageIndex", turn_index, conversation_id)
+        return usage
+
+    async def _maybe_compress_oldest_half(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """P5-T5 feature 3: bounded per-conversation memory growth.
+
+        Once a conversation's turns list exceeds SUMMARY_COMPRESSION_THRESHOLD,
+        compress the OLDEST half into a single dense summary entry via
+        UTILITY_MODEL. On LLM failure (None), skip compression entirely -- no
+        data loss, just unbounded growth for this conversation until the next
+        successful attempt. Callers are responsible for _save_store()/logging
+        the caller-specific context; this only mutates self.store in memory
+        and returns the summarization call's usage (or None).
+        """
+        turns = self.store[conversation_id]["turns"]
+        if len(turns) <= SUMMARY_COMPRESSION_THRESHOLD:
+            return None
+
+        half = (len(turns) + 1) // 2
+        oldest = turns[:half]
+        rest = turns[half:]
+
+        compact_text = "\n\n".join(
+            entry.get("summary", entry.get("memory", "")) for entry in oldest
+        )
+        prompt = (
+            "Summarize the following conversation turns into a single dense, "
+            "factual summary. Preserve concrete facts, decisions, and numbers. "
+            "Be concise.\n\n" + compact_text
+        )
+        try:
+            response = await query_model(UTILITY_MODEL, [{"role": "user", "content": prompt}], timeout=15.0)
+        except Exception:
+            logger.exception("[RAG] Summary compression call failed for conv=%s; skipping compression", conversation_id)
+            return None
+
+        if not response or not (response.get("content") or "").strip():
+            logger.warning("[RAG] Summary compression returned no content for conv=%s; skipping compression", conversation_id)
+            return None
+
+        union_topics = []
+        for entry in oldest:
+            for topic in entry.get("topics") or []:
+                if topic not in union_topics:
+                    union_topics.append(topic)
+
+        summary_entry = {
+            "kind": "summary",
+            "turn": oldest[0]["turn"],
+            "topics": union_topics,
+            "summary": response["content"].strip(),
+            "turns_compressed": half,
+        }
+        self.store[conversation_id]["turns"] = [summary_entry] + rest
+        return response.get("usage") or {}
 
     def index_document(self, conversation_id: str, filename: str, text: str, max_chars: int = 8000):
         """
@@ -425,9 +581,16 @@ class CouncilRAG:
             or score > 0
         ]
 
-        # Flatten into a prompt-friendly string
+        # Flatten into a prompt-friendly string. Summary entries (P5-T5
+        # feature 3) get their own citation header naming how many turns they
+        # compress, instead of a normal turn body -- everything else is
+        # unchanged from before the summary tier existed.
         memory_blocks = [
-            f"[Memory from Chat: {cid} | Turn: {turn['turn']}]\n{turn['memory']}"
+            (
+                f"[Memory from Chat: {cid} | Turn: {turn['turn']}: summary of {turn['turns_compressed']} earlier turns]\n{turn['summary']}"
+                if turn.get("kind") == "summary"
+                else f"[Memory from Chat: {cid} | Turn: {turn['turn']}]\n{turn['memory']}"
+            )
             for cid, turn in turns_to_use
         ]
 

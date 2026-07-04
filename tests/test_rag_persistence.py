@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,8 @@ def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatc
     assert rag.enabled is False
 
 
-def test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr_conversation(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr_conversation(tmp_path, monkeypatch):
     """Codex round 6: the ZDR write barrier lives INSIDE index_session and
     index_document themselves (not just the turn_pipeline call sites), so it
     closes the metadata-flip race regardless of how many awaits happen
@@ -76,7 +78,7 @@ def test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr_conve
 
     rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
 
-    rag.index_session(
+    await rag.index_session(
         "conv-zdr",
         0,
         "question",
@@ -487,3 +489,219 @@ def test_save_store_does_not_warn_below_size_threshold(tmp_path, caplog):
         rag._save_store()
 
     assert not any("PageIndex store size" in r.message for r in caplog.records)
+
+
+# --- P5-T5 feature 1: one-time memory purge on upgrade (owner decision) ---
+
+
+def test_purge_resets_existing_store_and_writes_marker_when_marker_missing(tmp_path, caplog):
+    """A store that predates the version marker must be dropped once, with a
+    clear INFO log, and the marker must be written so it never happens again."""
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    index_file.write_text(
+        json.dumps({"conv-1": {"folder_id": "root", "turns": [{"turn": 0, "memory": "old memory"}]}}),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level("INFO"):
+        rag = CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert rag.store == {}
+    marker_path = pageindex_dir / "pageindex_memory.version"
+    assert marker_path.read_text(encoding="utf-8").strip() == "2"
+    # The store file on disk is also reset (not just the in-memory dict).
+    assert json.loads(index_file.read_text(encoding="utf-8")) == {}
+    assert any(
+        "one-time memory reset" in r.message and "1 conversation" in r.message
+        for r in caplog.records
+    )
+
+
+def test_purge_leaves_store_alone_when_marker_present(tmp_path, monkeypatch):
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    stored = {"conv-1": {"folder_id": "root", "turns": [{"turn": 0, "memory": "keep me"}]}}
+    index_file.write_text(json.dumps(stored), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
+
+    rag = CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert rag.store == stored
+
+
+def test_purge_fresh_install_writes_marker_without_reset_log(tmp_path, caplog):
+    """No store file at all (fresh install): just write the marker, no purge
+    log spam since there was nothing to purge."""
+    pageindex_dir = tmp_path / "pageindex"
+
+    with caplog.at_level("INFO"):
+        rag = CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert rag.store == {}
+    marker_path = pageindex_dir / "pageindex_memory.version"
+    assert marker_path.read_text(encoding="utf-8").strip() == "2"
+    assert not any("one-time memory reset" in r.message for r in caplog.records)
+
+
+def test_purge_never_touches_conversations_or_attachments_dirs(tmp_path, monkeypatch):
+    """Owner decision: the purge is scoped to the memory store file ONLY.
+    Conversations and attachments must survive untouched even though a purge
+    fires on this run."""
+    conversations_dir = tmp_path / "data" / "conversations"
+    attachments_dir = conversations_dir / "attachments"
+    attachments_dir.mkdir(parents=True)
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-1")
+    attachment_file = attachments_dir / "att-1.txt"
+    attachment_file.write_text("attachment body", encoding="utf-8")
+
+    pageindex_dir = tmp_path / "data"  # shares the parent "data" dir, like get_pageindex_dir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    index_file.write_text(json.dumps({"conv-1": {"folder_id": "root", "turns": [{"turn": 0, "memory": "x"}]}}), encoding="utf-8")
+
+    CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert (conversations_dir / "conv-1.json").exists()
+    assert attachment_file.read_text(encoding="utf-8") == "attachment body"
+
+
+# --- P5-T5 feature 2: chat-turn indexing ---
+
+
+@pytest.mark.asyncio
+async def test_index_chat_turn_stores_entry_shape_compatible_with_retrieval(tmp_path, monkeypatch):
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    await rag.index_chat_turn("conv-1", 0, "What is our budget?", "It is $10k.", ["budget"])
+
+    turns = rag.store["conv-1"]["turns"]
+    assert len(turns) == 1
+    entry = turns[0]
+    assert entry["turn"] == 0
+    assert entry["topics"] == ["budget"]
+    assert "What is our budget?" in entry["memory"]
+    assert "It is $10k." in entry["memory"]
+
+
+@pytest.mark.asyncio
+async def test_index_chat_turn_write_barrier_blocks_zdr_conversation(tmp_path, monkeypatch):
+    """Mirrors test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr_conversation:
+    the barrier must live inside index_chat_turn itself."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-zdr", {"zdr_enabled": True})
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    await rag.index_chat_turn("conv-zdr", 0, "question", "answer", ["topic"])
+
+    assert rag.store == {}
+
+
+# --- P5-T5 feature 3: per-conversation summary tier ---
+
+
+@pytest.mark.asyncio
+async def test_summary_tier_compresses_oldest_half_above_threshold(tmp_path, monkeypatch):
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+
+    async def fake_query_model(*args, **kwargs):
+        return {"content": "Dense summary of earlier turns.", "usage": {"prompt_tokens": 5, "completion_tokens": 5}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    usage = await rag.index_chat_turn("conv-1", SUMMARY_COMPRESSION_THRESHOLD, "new question", "new answer", ["newtopic"])
+
+    turns = rag.store["conv-1"]["turns"]
+    # Oldest half (of the post-append length) replaced by one summary entry.
+    total_after_append = SUMMARY_COMPRESSION_THRESHOLD + 1
+    half = (total_after_append + 1) // 2
+    assert turns[0]["kind"] == "summary"
+    assert turns[0]["turns_compressed"] == half
+    assert turns[0]["summary"] == "Dense summary of earlier turns."
+    assert set(turns[0]["topics"]) == {f"topic{i}" for i in range(half)}
+    # Newest turns intact, including the just-added one.
+    remaining_normal = [t for t in turns if t.get("kind") != "summary"]
+    assert remaining_normal[-1]["memory"] == "Q: new question\nA: new answer"
+    assert usage == {"prompt_tokens": 5, "completion_tokens": 5}
+
+
+@pytest.mark.asyncio
+async def test_summary_tier_skips_compression_on_llm_failure(tmp_path, monkeypatch, caplog):
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+
+    async def fake_query_model(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    with caplog.at_level("WARNING"):
+        usage = await rag.index_chat_turn("conv-1", SUMMARY_COMPRESSION_THRESHOLD, "new question", "new answer", ["newtopic"])
+
+    turns = rag.store["conv-1"]["turns"]
+    # No data loss: all turns intact (original + the new one), no summary entry.
+    assert len(turns) == SUMMARY_COMPRESSION_THRESHOLD + 1
+    assert not any(t.get("kind") == "summary" for t in turns)
+    assert usage is None
+    assert any("summary compression" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_summary_tier_renders_as_a_retrieval_block_with_header(tmp_path, monkeypatch):
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {
+                    "kind": "summary",
+                    "turn": 0,
+                    "topics": ["budget"],
+                    "summary": "Summary of 6 earlier turns about budget.",
+                    "turns_compressed": 6,
+                },
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(rag, monkeypatch, None, query="what was our budget")
+
+    assert "summary of 6 earlier turns" in memory_section.lower()
+    assert "Summary of 6 earlier turns about budget." in memory_section

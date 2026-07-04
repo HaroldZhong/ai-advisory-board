@@ -1,7 +1,7 @@
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -411,7 +411,7 @@ async def test_council_turn_with_metadata_zdr_skips_memory_indexing(monkeypatch,
     main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
+        index_session=AsyncMock(),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -435,7 +435,7 @@ async def test_council_turn_with_per_message_zdr_skips_memory_indexing(monkeypat
     main.storage.create_conversation(conversation_id)  # no metadata ZDR
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
+        index_session=AsyncMock(),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -459,7 +459,7 @@ async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
     main.storage.create_conversation(conversation_id)
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
+        index_session=AsyncMock(),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -555,7 +555,7 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
     main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
+        index_session=AsyncMock(),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -659,6 +659,9 @@ async def test_startup_cleanup_removes_metadata_zdr_conversations(monkeypatch, t
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    # Marker already present: this store is post-upgrade steady state, not
+    # the one-time-purge moment (that's covered separately in test_rag_persistence.py).
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -694,6 +697,7 @@ async def test_startup_cleanup_removes_orphaned_entries_with_missing_conversatio
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -723,6 +727,7 @@ async def test_startup_cleanup_removes_orphaned_entries_with_unreadable_conversa
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -753,6 +758,7 @@ async def test_startup_cleanup_removes_orphaned_entries_with_non_dict_conversati
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -918,6 +924,7 @@ async def test_startup_cleanup_removes_entries_with_malformed_metadata(monkeypat
         "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal"}]},
     }
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
