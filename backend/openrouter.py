@@ -263,5 +263,16 @@ async def query_models_as_completed(
     async def _labeled(model: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         return model, await query_model(model, messages, **query_kwargs)
 
-    for coro in asyncio.as_completed([_labeled(model) for model in models]):
-        yield await coro
+    # Wrap each call in an explicit Task (not a bare coroutine) so it can be
+    # cancelled if this generator is closed early (browser closes/navigates
+    # mid-Stage-1) instead of running to its full HTTP timeout for nothing.
+    tasks = [asyncio.ensure_future(_labeled(model)) for model in models]
+    try:
+        for task in asyncio.as_completed(tasks):
+            yield await task
+    finally:
+        pending = [task for task in tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)

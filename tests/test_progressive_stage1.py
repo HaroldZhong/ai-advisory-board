@@ -72,3 +72,35 @@ async def test_stage1_collect_responses_progressive_matches_aggregate_shape(monk
     aggregate = await council.stage1_collect_responses("question", models=["model-a", "model-b"])
 
     assert stage1_results == aggregate
+
+
+@pytest.mark.asyncio
+async def test_query_models_as_completed_cancels_pending_on_early_close(monkeypatch):
+    """Closing the generator mid-stream (browser closes/navigates) must cancel
+    in-flight model calls instead of letting them run to their full HTTP
+    timeout for nothing (Codex P2, PR #69 round 2)."""
+    cancelled = []
+
+    async def fake_query_model(model, messages, **kwargs):
+        if model == "model-fast":
+            return {"content": "fast answer", "usage": {}}
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cancelled.append(model)
+            raise
+        return {"content": "slow answer", "usage": {}}
+
+    monkeypatch.setattr(openrouter, "query_model", fake_query_model)
+
+    gen = openrouter.query_models_as_completed(
+        ["model-slow", "model-fast"], [{"role": "user", "content": "hi"}]
+    )
+    first_model, _ = await gen.__anext__()
+    assert first_model == "model-fast"
+
+    await gen.aclose()
+    # Let the cancelled task's except-block actually run.
+    await asyncio.sleep(0)
+
+    assert cancelled == ["model-slow"]
