@@ -767,6 +767,13 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
 
     if "zdr_enabled" in updates_dict and updates.zdr_enabled is not None:
         storage.update_conversation_metadata(conversation_id, {"zdr_enabled": bool(updates.zdr_enabled)})
+        if updates.zdr_enabled is True:
+            # The startup cleanup sweep (CouncilRAG.cleanup_zdr_conversations)
+            # only runs once per process, so a conversation flipping ZDR on at
+            # runtime would otherwise leave its already-indexed memories live
+            # and retrievable from other conversations until restart. Purge
+            # immediately using the same path conversation deletion uses.
+            rag_system.delete_conversation_memories(conversation_id)
     if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
         metadata = conv.get("metadata", {})
         storage.update_conversation_metadata(

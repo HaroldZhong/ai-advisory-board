@@ -18,8 +18,13 @@ def _setup_council_fakes(monkeypatch, main, rag_system):
     async def fake_steward(*args, **kwargs):
         return EvidencePack(run_id="run-1", query="q"), {"prompt_tokens": 10, "completion_tokens": 5}
 
-    async def fake_stage1(content, *args, **kwargs):
-        return [{"model": "model-a", "response": "Answer A", "usage": {}}]
+    # stage1_collect_responses_progressive is the pipeline seam (P3-T6): an
+    # async generator yielding ("model_complete", index, result) per model
+    # then ("complete", stage1_results, None) with the full list.
+    async def fake_stage1_progressive(content, *args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
 
     async def fake_stage2(*args, **kwargs):
         return (
@@ -37,7 +42,7 @@ def _setup_council_fakes(monkeypatch, main, rag_system):
         return ["topic"]
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
-    monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
@@ -619,3 +624,75 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     prompt = captured_kwargs["messages"][0]["content"]
     assert "SECRET_ZDR_CONTENT" not in prompt
     assert "ordinary memory should still retrieve" in prompt
+
+
+@pytest.mark.asyncio
+async def test_enabling_zdr_at_runtime_purges_existing_memories(monkeypatch, tmp_path):
+    """Codex P1: the startup sweep (cleanup_zdr_conversations) only runs once
+    per process, so a conversation that flips zdr_enabled=True at runtime (via
+    PUT /api/conversations/{id}) would otherwise leave its already-indexed
+    memories live and retrievable from other conversations until restart.
+    update_conversation must purge them immediately, the same way conversation
+    deletion already does via delete_conversation_memories."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-runtime-zdr-enable"
+    private_preset = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "chairman_model": private_preset["chairman_model"],
+            "council_models": private_preset["council_models"],
+        },
+    )
+
+    fake_rag = SimpleNamespace(
+        delete_conversation_memories=Mock(),
+        update_conversation_folder=Mock(),
+    )
+    monkeypatch.setattr(main, "rag_system", fake_rag)
+
+    updated = await main.update_conversation(
+        conversation_id,
+        main.ConversationUpdate(zdr_enabled=True),
+    )
+
+    assert updated["metadata"]["zdr_enabled"] is True
+    fake_rag.delete_conversation_memories.assert_called_once_with(conversation_id)
+
+
+@pytest.mark.asyncio
+async def test_enabling_zdr_at_runtime_actually_removes_store_entries(monkeypatch, tmp_path):
+    """End-to-end version of the above against the real CouncilRAG: seed the
+    store with entries for a conversation, then flip zdr_enabled=True on it
+    and assert the store no longer has that conversation's entries."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    rag_module = importlib.import_module("backend.rag")
+    conversation_id = "conv-runtime-zdr-enable-real"
+    private_preset = next(preset for preset in main.config.MODEL_PRESETS if preset["id"] == "private")
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    main.storage.create_conversation(
+        conversation_id,
+        {
+            "chairman_model": private_preset["chairman_model"],
+            "council_models": private_preset["council_models"],
+        },
+    )
+    monkeypatch.setattr(rag_module, "get_conversation", main.storage.get_conversation)
+
+    real_rag = rag_module.CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    real_rag.store[conversation_id] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "memory": "pre-existing memory before ZDR was enabled"}],
+    }
+    real_rag._save_store()
+    monkeypatch.setattr(main, "rag_system", real_rag)
+
+    await main.update_conversation(
+        conversation_id,
+        main.ConversationUpdate(zdr_enabled=True),
+    )
+
+    assert conversation_id not in real_rag.store
