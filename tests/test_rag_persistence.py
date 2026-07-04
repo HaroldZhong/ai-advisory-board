@@ -432,6 +432,33 @@ async def test_retrieve_preserves_original_order_so_cap_keeps_newer_matching_tur
     assert "old_notes.txt" not in memory_section
 
 
+@pytest.mark.asyncio
+async def test_retrieve_keeps_topicless_turns_eligible_alongside_a_matching_turn(tmp_path, monkeypatch):
+    """Codex round 4: extract_topics can legitimately return [] on a timeout
+    or error, so a session turn can have empty/missing topics through no
+    fault of its own. Such a turn is unjudgeable, not irrelevant -- it must
+    stay eligible (fail open, same rationale as documents) even when another
+    turn DOES score an overlap and would otherwise trigger the filter."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": [], "memory": "topicless memory"},
+                {"turn": 1, "topics": ["budget"], "memory": "budget memory"},
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget"
+    )
+
+    assert "topicless memory" in memory_section
+    assert "budget memory" in memory_section
+
+
 # --- P5-T4: store hygiene (warn, never auto-evict) ---
 
 

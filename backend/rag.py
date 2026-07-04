@@ -389,22 +389,28 @@ class CouncilRAG:
         # 1b. Topic pre-filter (P5-T4, audit §12): scoring every stored SESSION
         # turn against the query's tokens and keeping only the ones that
         # overlap cuts down how much irrelevant history gets stuffed into the
-        # extraction prompt. This is a pre-filter, not a search engine: if
-        # NOTHING overlaps, fall back to ALL session turns so the filter can
-        # never return less context than before it existed (quality floor).
+        # extraction prompt. This is a pre-filter, not a search engine.
         #
-        # Document memories (index_document, sentinel turn == -1) are ALWAYS
-        # kept regardless of the filter's outcome: their stored "topics" is
-        # just [f"document:{filename}"], derived from the filename alone, not
-        # from the document's actual content -- it can't be trusted as a
-        # relevance signal. The extraction model inspects the document body
-        # itself to decide relevance, the same as it always has.
+        # Three classes of entry are ALWAYS eligible regardless of scoring:
+        #   1. Document memories (index_document, sentinel turn == -1): their
+        #      stored "topics" is just [f"document:{filename}"], derived from
+        #      the filename alone, not the document's actual content -- it
+        #      can't be trusted as a relevance signal. The extraction model
+        #      inspects the document body itself to decide relevance, the
+        #      same as it always has.
+        #   2. Topicless session turns (empty/missing "topics", e.g.
+        #      extract_topics returned [] on a timeout or error): there is
+        #      nothing to score them against, so they are unjudgeable rather
+        #      than irrelevant -- same fail-open rationale as documents.
+        #   3. Everything, when NO session turn scores an overlap at all
+        #      (quality floor): the filter can never return less context
+        #      than before it existed.
         #
         # Filtered in a single pass over the ORIGINAL order (not
         # partition-then-concatenate): the char-budget cap below walks
         # reversed(memory_blocks) to keep the newest blocks, so re-ordering
         # entries here (e.g. appending all documents last) would make an old
-        # document look newest and let it evict a genuinely newer, topic-
+        # entry look newest and let it evict a genuinely newer, topic-
         # matching turn under a tight budget.
         all_entries = [(cid, turn) for cid, data in other_convs.items() for turn in data["turns"]]
         scores = [score_topic_overlap(query, turn.get("topics")) for _, turn in all_entries]
@@ -413,7 +419,10 @@ class CouncilRAG:
         )
         turns_to_use = [
             (cid, turn) for (cid, turn), score in zip(all_entries, scores)
-            if turn.get("turn") == -1 or not any_session_turn_scores or score > 0
+            if turn.get("turn") == -1
+            or not turn.get("topics")
+            or not any_session_turn_scores
+            or score > 0
         ]
 
         # Flatten into a prompt-friendly string
