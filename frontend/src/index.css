@@ -80,14 +80,17 @@ body {
 
 /* Global markdown/prose styling - ChatGPT/Claude style */
 
-/* Code blocks: horizontal scroll like ChatGPT */
+/* Code blocks: horizontal scroll like ChatGPT.
+   Background is always dark (matches the github-dark highlight.js theme
+   used for both light and dark app themes -- see CodeBlock.jsx header). */
 .prose pre {
-  background: hsl(var(--muted));
+  background: hsl(240 10% 10%);
   padding: 1rem;
   border-radius: 0.5rem;
   overflow-x: auto;
   margin: 1rem 0;
   border: 1px solid hsl(var(--border));
+  color: #c9d1d9;
 }
 
 .prose pre::-webkit-scrollbar {
@@ -95,7 +98,7 @@ body {
 }
 
 .prose pre::-webkit-scrollbar-track {
-  background: hsl(var(--muted));
+  background: hsl(240 10% 10%);
   border-radius: 4px;
 }
 
@@ -128,12 +131,7 @@ body {
   word-break: break-word;
 }
 
-/* Dark mode adjustments */
-.dark .prose pre {
-  background: hsl(240 10% 10%);
-  border-color: hsl(var(--border));
-}
-
+/* Dark mode adjustments (pre already dark in both themes, see above) */
 .dark .prose code {
   background: hsl(240 10% 15%);
 }

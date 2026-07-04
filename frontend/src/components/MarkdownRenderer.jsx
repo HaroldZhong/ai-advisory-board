@@ -2,8 +2,11 @@ import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
-import { isSafeHref } from '../utils/safeHref';
+import rehypeHighlight from 'rehype-highlight';
+import { isSafeHref, isSafeImageSrc } from '../utils/safeHref';
+import { CodeBlock } from './CodeBlock';
 // Note: katex.min.css is loaded globally in main.jsx
+// Code block syntax colors are loaded globally in main.jsx (highlight.js/styles/github-dark.css)
 
 /**
  * MarkdownRenderer - Enhanced markdown with LaTeX equation support
@@ -139,6 +142,16 @@ const SafeAnchor = ({ href, children, ...rest }) => {
     );
 };
 
+// Images: only render http(s) sources (audit §7). Blocks data:/file:/blob:
+// images, which can be used for tracking pixels or to smuggle oversized
+// payloads. Non-qualifying images fall back to their alt text.
+const SafeImage = ({ src, alt, ...rest }) => {
+    if (!isSafeImageSrc(src)) {
+        return <span>{alt || ''}</span>;
+    }
+    return <img {...rest} src={src} alt={alt} loading="lazy" />;
+};
+
 /**
  * MarkdownRenderer component with LaTeX support
  *
@@ -172,8 +185,8 @@ export default function MarkdownRenderer({
             <div className={`w-full overflow-x-auto ${className}`}>
                 <ReactMarkdown
                     remarkPlugins={[remarkMath]}
-                    rehypePlugins={[[rehypeKatex, katexOptions]]}
-                    components={{ ...components, a: SafeAnchor }}
+                    rehypePlugins={[[rehypeKatex, katexOptions], rehypeHighlight]}
+                    components={{ ...components, a: SafeAnchor, img: SafeImage, pre: CodeBlock }}
                     {...props}
                 >
                     {processedContent}

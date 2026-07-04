@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import ReasoningSection from './ReasoningSection';
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ function deAnonymizeText(text, labelToModel) {
   return result;
 }
 
-export default function Stage2({
+function Stage2({
   rankings,
   labelToModel,
   aggregateRankings,
@@ -122,3 +122,5 @@ export default function Stage2({
     </div>
   );
 }
+
+export default memo(Stage2);
