@@ -399,13 +399,22 @@ class CouncilRAG:
         # from the document's actual content -- it can't be trusted as a
         # relevance signal. The extraction model inspects the document body
         # itself to decide relevance, the same as it always has.
+        #
+        # Filtered in a single pass over the ORIGINAL order (not
+        # partition-then-concatenate): the char-budget cap below walks
+        # reversed(memory_blocks) to keep the newest blocks, so re-ordering
+        # entries here (e.g. appending all documents last) would make an old
+        # document look newest and let it evict a genuinely newer, topic-
+        # matching turn under a tight budget.
         all_entries = [(cid, turn) for cid, data in other_convs.items() for turn in data["turns"]]
-        document_entries = [(cid, turn) for cid, turn in all_entries if turn.get("turn") == -1]
-        session_turns = [(cid, turn) for cid, turn in all_entries if turn.get("turn") != -1]
-        scored_session_turns = [
-            (cid, turn) for cid, turn in session_turns if score_topic_overlap(query, turn.get("topics")) > 0
+        scores = [score_topic_overlap(query, turn.get("topics")) for _, turn in all_entries]
+        any_session_turn_scores = any(
+            score > 0 for (_, turn), score in zip(all_entries, scores) if turn.get("turn") != -1
+        )
+        turns_to_use = [
+            (cid, turn) for (cid, turn), score in zip(all_entries, scores)
+            if turn.get("turn") == -1 or not any_session_turn_scores or score > 0
         ]
-        turns_to_use = (scored_session_turns or session_turns) + document_entries
 
         # Flatten into a prompt-friendly string
         memory_blocks = [

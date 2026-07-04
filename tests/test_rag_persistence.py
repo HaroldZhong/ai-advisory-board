@@ -396,6 +396,42 @@ async def test_retrieve_keeps_document_memory_when_filename_does_not_match_query
     assert "unrelated filename document body" in memory_section
 
 
+@pytest.mark.asyncio
+async def test_retrieve_preserves_original_order_so_cap_keeps_newer_matching_turn(tmp_path, monkeypatch):
+    """Codex round 3: unioning document entries AFTER the filtered session
+    turns made every document look newest to the P5-T1 char-budget cap
+    (which walks reversed(memory_blocks) to keep the NEWEST blocks), so an
+    older document could evict a newer, topic-matching turn that should have
+    survived instead. The filter must preserve original relative order:
+    document indexed FIRST (older), topic-matching turn indexed AFTER
+    (newer); with a cap that only fits one block, the newer matching turn
+    must survive and the older document must be dropped -- the reverse of
+    what the pre-fix append-documents-last ordering produced."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {
+                    "turn": -1,
+                    "topics": ["document:old_notes.txt"],
+                    "memory": "[Uploaded Document: old_notes.txt]\n" + "d" * 100,
+                },
+                {"turn": 0, "topics": ["budget"], "memory": "newer budget turn " + "t" * 100},
+            ],
+        },
+    }
+
+    max_tokens = 40  # cap = min(60_000, 40 * 4) = 160 chars: fits only one of the two blocks
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, max_tokens, query="what was our budget"
+    )
+
+    assert "newer budget turn" in memory_section
+    assert "old_notes.txt" not in memory_section
+
+
 # --- P5-T4: store hygiene (warn, never auto-evict) ---
 
 
