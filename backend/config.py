@@ -111,8 +111,15 @@ AVAILABLE_MODELS = CURATED_MODELS
 # Chairman model - synthesizes final response
 CHAIRMAN_MODEL = MODEL_REGISTRY["chairman_model"]
 
-# OpenRouter API endpoint
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# OpenRouter API endpoint. Override the base to route through an
+# OpenAI-compatible relay/proxy (e.g. where openrouter.ai is blocked).
+# Blank/whitespace values fall back to the default (an optional env var
+# left empty must not produce a scheme-less URL).
+OPENROUTER_BASE_URL = (
+    os.getenv("OPENROUTER_BASE_URL", "").strip()
+    or "https://openrouter.ai/api/v1"
+).rstrip("/")
+OPENROUTER_API_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
 
 # Data directory for conversation storage
 DATA_DIR = str(app_paths.get_conversations_dir())
