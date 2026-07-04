@@ -94,7 +94,7 @@ async def run_eval():
         # Run setup turns as full council
         for setup_q in case["setup"]:
             print(f"  Setup: {setup_q}")
-            stage1, stage2, stage3, meta = await run_full_council(setup_q)
+            stage1, stage2, stage3, meta, _evidence = await run_full_council(setup_q)
             quality = calculate_quality_metrics(stage2, meta["label_to_model"])
             
             history.append({"role": "user", "content": setup_q})
@@ -146,7 +146,7 @@ async def run_eval():
 
         if category == "confidence":
             # Run a full council to check confidence
-            stage1, stage2, stage3, meta = await run_full_council(user_q)
+            stage1, stage2, stage3, meta, _evidence = await run_full_council(user_q)
             confidence = stage3.get("confidence")
             results["confidence_total"] += 1
             if confidence in ("HIGH", "MEDIUM", "LOW", "UNKNOWN"):
