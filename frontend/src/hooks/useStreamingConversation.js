@@ -20,8 +20,14 @@ import { formatStreamErrorMessage } from '../utils/streamErrors';
  * because it's also mutated by non-streaming handlers (privacy, thinking
  * effort, session policy) — this hook reads/writes it via the passed-in
  * setter rather than duplicating the state.
+ *
+ * `conversationId` must be the route param (App.jsx's useParams().conversationId),
+ * not `currentConversation?.id`: currentConversation is loaded asynchronously
+ * after navigation and is briefly stale on conversation switch, which would
+ * otherwise send the turn to the previous conversation.
  */
 export function useStreamingConversation({
+  conversationId,
   currentConversation,
   setCurrentConversation,
   setBudgetWarning,
@@ -32,7 +38,7 @@ export function useStreamingConversation({
   const [isLoading, setIsLoading] = useState(false);
 
   const sendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
-    const targetConversationId = currentConversation?.id;
+    const targetConversationId = conversationId;
     if (!targetConversationId) return;
 
     const previousMessages = editIndex >= 0

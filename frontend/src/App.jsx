@@ -190,6 +190,7 @@ function ConversationView({
   };
 
   const { sendMessage: handleSendMessage, isLoading } = useStreamingConversation({
+    conversationId,
     currentConversation,
     setCurrentConversation,
     setBudgetWarning,
