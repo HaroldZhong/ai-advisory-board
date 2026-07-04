@@ -163,6 +163,8 @@ Display to user
 
 ```bash
 OPENROUTER_API_KEY=sk-or-...  # Required — get at openrouter.ai
+OPENROUTER_BASE_URL=...       # Optional relay base (see docs/installation.md → Network access)
+HTTPS_PROXY=...               # Honored by the backend; Windows system proxy is NOT read
 ```
 
 ### Model Configuration (`backend/config.py`)
