@@ -585,6 +585,13 @@ async def get_config_status():
     return {"has_api_key": config.has_openrouter_api_key()}
 
 
+@app.get("/api/config/connectivity")
+async def get_connectivity_status():
+    """Probe OpenRouter reachability so the UI can distinguish network blocks from key problems."""
+    from .openrouter_client import check_connectivity
+    return await check_connectivity()
+
+
 LOCAL_CLIENT_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
