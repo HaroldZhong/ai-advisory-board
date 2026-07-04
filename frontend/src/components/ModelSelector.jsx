@@ -90,6 +90,7 @@ export default function ModelSelector({
   initialCouncil = DEFAULT_COUNCIL,
   initialChairman = '',
   defaultBudgetUsd = null,
+  zdrAvailable = true,
 }) {
   const { settings } = useSettings();
   const [models, setModels] = useState([]);
@@ -370,29 +371,31 @@ export default function ModelSelector({
               <DialogDescription className="sr-only">
                 Choose a preset or customize the chairman, council members, routing privacy, and estimated cost for a new conversation.
               </DialogDescription>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant={effectivePresetZdr ? 'default' : 'outline'}
-                    size="sm"
-                    aria-disabled={zdrToggleLocked}
-                    className={cn(zdrToggleLocked && 'cursor-not-allowed')}
-                    onClick={() => {
-                      if (zdrToggleLocked) return;
-                      setZdrEnabled((value) => !value);
-                    }}
-                  >
-                    <Lock className="mr-2 h-4 w-4" />
-                    ZDR only
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {zdrToggleLocked
-                    ? 'This preset requires Zero Data Retention model routes.'
-                    : 'Restrict this conversation to Zero Data Retention model routes.'}
-                </TooltipContent>
-              </Tooltip>
+              {zdrAvailable && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={effectivePresetZdr ? 'default' : 'outline'}
+                      size="sm"
+                      aria-disabled={zdrToggleLocked}
+                      className={cn(zdrToggleLocked && 'cursor-not-allowed')}
+                      onClick={() => {
+                        if (zdrToggleLocked) return;
+                        setZdrEnabled((value) => !value);
+                      }}
+                    >
+                      <Lock className="mr-2 h-4 w-4" />
+                      ZDR only
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {zdrToggleLocked
+                      ? 'This preset requires Zero Data Retention model routes.'
+                      : 'Restrict this conversation to Zero Data Retention model routes.'}
+                  </TooltipContent>
+                </Tooltip>
+              )}
             </div>
           </DialogHeader>
 

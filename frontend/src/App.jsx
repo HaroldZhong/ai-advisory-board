@@ -19,6 +19,7 @@ import {
   buildConfigStatusFailureState,
   buildConfigStatusSuccessState,
   getConfigStatusRetryDelayMs,
+  isZdrAvailableForProvider,
 } from './utils/configStatus';
 import { createConversationWithDefaults } from './utils/conversationCreation';
 import {
@@ -42,6 +43,7 @@ function ConversationView({
   conversations,
   onConversationsChange,
   availableModels,
+  providerKind = 'openrouter',
   onShowAnalytics,
   showAnalytics,
   onCloseAnalytics,
@@ -321,6 +323,7 @@ function ConversationView({
         onClose={() => setIsModelSelectorOpen(false)}
         onConfirm={handleModelConfirm}
         defaultBudgetUsd={settings.defaultSessionBudgetUsd}
+        zdrAvailable={isZdrAvailableForProvider(providerKind)}
       />
       {showAnalytics && (
         <AnalyticsDashboard onClose={onCloseAnalytics} />
@@ -487,6 +490,7 @@ function AppContent() {
                   conversations={conversations}
                   onConversationsChange={setConversations}
                   availableModels={availableModels}
+                  providerKind={configStatus.providerKind}
                   onShowAnalytics={() => setShowAnalytics(true)}
                   showAnalytics={showAnalytics}
                   onCloseAnalytics={() => setShowAnalytics(false)}
@@ -510,6 +514,7 @@ function AppContent() {
                   conversations={conversations}
                   onConversationsChange={setConversations}
                   availableModels={availableModels}
+                  providerKind={configStatus.providerKind}
                   onShowAnalytics={() => setShowAnalytics(true)}
                   showAnalytics={showAnalytics}
                   onCloseAnalytics={() => setShowAnalytics(false)}

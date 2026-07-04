@@ -63,6 +63,7 @@ jobs:
           tests/test_openrouter_timeout.py
           tests/test_utf8_file_io.py
           tests/test_progressive_stage1.py
+          tests/test_provider_kind.py
           -q
 
   windows-tests:

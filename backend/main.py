@@ -186,6 +186,9 @@ async def create_conversation(request: CreateConversationRequest):
     if chairman_model is None and preset is not None:
         chairman_model = preset["chairman_model"]
 
+    if request.zdr_enabled is True and not config.provider_is_openrouter():
+        raise HTTPException(status_code=400, detail="ZDR requires OpenRouter")
+
     if request.zdr_enabled is not None:
         metadata["zdr_enabled"] = bool(request.zdr_enabled)
     elif preset is not None and preset.get("requires_zdr"):
@@ -583,7 +586,10 @@ async def get_models():
 @app.get("/api/config/status")
 async def get_config_status():
     """Check if the system is configured (API key exists)."""
-    return {"has_api_key": config.has_openrouter_api_key()}
+    return {
+        "has_api_key": config.has_openrouter_api_key(),
+        "provider_kind": config.PROVIDER_KIND,
+    }
 
 
 @app.get("/api/config/connectivity")
@@ -750,6 +756,8 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
         )
         if updates.zdr_enabled is False and preset is not None and preset.get("requires_zdr"):
             raise HTTPException(status_code=400, detail=f"Preset {preset_id} requires ZDR")
+        if updates.zdr_enabled is True and not config.provider_is_openrouter():
+            raise HTTPException(status_code=400, detail="ZDR requires OpenRouter")
         if updates.zdr_enabled is True:
             ensure_zdr_compatible_models(
                 metadata.get("chairman_model"),
