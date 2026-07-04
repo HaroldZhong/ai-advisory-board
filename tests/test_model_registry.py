@@ -19,7 +19,7 @@ def test_model_registry_loads_from_json_and_has_required_sections(monkeypatch):
 
 def test_curated_models_are_unique_and_schema_valid(monkeypatch):
     config = import_module_with_api_key(monkeypatch, "backend.config")
-    valid_types = {"chairman", "council", "both", "search"}
+    valid_types = {"chairman", "council", "both", "search", "utility"}
     seen = set()
 
     for model in config.CURATED_MODELS:

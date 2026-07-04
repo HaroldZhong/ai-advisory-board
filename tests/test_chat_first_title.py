@@ -73,7 +73,7 @@ def _setup_chat_fakes(monkeypatch, main):
         return {"content": "Chat answer", "usage": {}}
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)

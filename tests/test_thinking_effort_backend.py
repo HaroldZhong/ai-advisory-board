@@ -289,7 +289,7 @@ async def test_sync_chat_passes_resolved_thinking_effort_to_chairman(monkeypatch
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -325,7 +325,7 @@ async def test_stream_chat_passes_request_thinking_effort_to_chairman(monkeypatc
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
         captured_kwargs.update(kwargs)

@@ -277,6 +277,18 @@
       "reasoning_extraction": "field"
     },
     {
+      "id": "google/gemini-2.5-flash",
+      "name": "Google: Gemini 2.5 Flash",
+      "capabilities": ["fast", "utility", "long-context"],
+      "type": "utility",
+      "pricing": {"input": 0.3, "output": 2.5},
+      "context_length": 1048576,
+      "supports_zdr": true,
+      "supports_reasoning": true,
+      "available": true,
+      "reasoning_extraction": "field"
+    },
+    {
       "id": "minimax/minimax-m2.7",
       "name": "MiniMax: MiniMax M2.7",
       "capabilities": ["agentic", "value", "roleplay"],

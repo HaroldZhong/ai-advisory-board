@@ -126,7 +126,7 @@ async def test_sync_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
         }
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
 
@@ -148,6 +148,107 @@ async def test_sync_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(0.75)
     assert usage["spent_usd"] == pytest.approx(0.75)
     assert usage["messages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_chat_counts_rag_extraction_usage_in_turn_cost(monkeypatch, tmp_path):
+    """audit §12: the RAG extraction call (UTILITY_MODEL, inside
+    retrieve_with_stats_async) burns tokens on every chat turn but its cost
+    was previously invisible -- never counted in turn_cost or session budget.
+    retrieve_async now returns (context, usage); turn_pipeline must append
+    that usage to extra_usage_records so calculate_turn_cost counts it
+    alongside the chairman's own usage."""
+    main = import_main(monkeypatch)
+    conversation_id = "conv-rag-extraction-cost"
+
+    # Small, exact numbers so the registry-pricing arithmetic is easy to
+    # hand-verify: google/gemini-2.5-flash (UTILITY_MODEL) pricing is
+    # input=$0.3/M, output=$2.5/M tokens (backend/model_registry.json).
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    rag_extraction_usage = {"prompt_tokens": 100_000, "completion_tokens": 10_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {
+            "content": "Budget-aware response",
+            "usage": chairman_usage,
+        }
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "captured RAG context", rag_extraction_usage
+
+    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(main, "rag_system", fake_rag)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    # openai/gpt-4o-mini pricing (backend/model_registry.json): input=$0.15/M, output=$0.6/M
+    chairman_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    rag_cost = (100_000 / 1_000_000) * 0.3 + (10_000 / 1_000_000) * 2.5
+    expected_total = chairman_cost + rag_cost
+
+    assert result["turn_cost"] == pytest.approx(expected_total)
+    assert result["total_cost"] == pytest.approx(expected_total)
+
+
+@pytest.mark.asyncio
+async def test_sync_chat_skips_rag_cost_when_no_extraction_ran(monkeypatch, tmp_path):
+    """Control: when retrieve_async returns an empty usage dict (nothing to
+    retrieve, or the extraction call failed), no RAG cost record is added --
+    only the chairman's own usage is counted."""
+    main = import_main(monkeypatch)
+    conversation_id = "conv-rag-no-extraction-cost"
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {
+            "content": "Budget-aware response",
+            "usage": chairman_usage,
+        }
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(main, "rag_system", fake_rag)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    chairman_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    assert result["turn_cost"] == pytest.approx(chairman_cost)
 
 
 @pytest.mark.asyncio
@@ -174,7 +275,7 @@ async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path)
         }
 
     async def fake_retrieve_async(*args, **kwargs):
-        return ""
+        return "", {}
 
     fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
 

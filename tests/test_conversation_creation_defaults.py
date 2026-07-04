@@ -74,6 +74,57 @@ async def test_private_preset_rejects_non_zdr_model_overrides(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_create_conversation_rejects_utility_model_as_chairman(monkeypatch, tmp_path):
+    """Codex P2: google/gemini-2.5-flash (UTILITY_MODEL) exists in the
+    registry only for RAG-extraction cost accounting (audit §12, P5-T3) and
+    must not be selectable as chairman just because it's a valid registry id."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(main.CreateConversationRequest(
+            chairman_model="google/gemini-2.5-flash",
+        ))
+
+    assert exc.value.status_code == 400
+    assert "google/gemini-2.5-flash" in exc.value.detail
+    assert "utility" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_utility_model_as_council_member(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(main.CreateConversationRequest(
+            council_members=["openai/gpt-4o-mini", "google/gemini-2.5-flash", "x-ai/grok-4.1-fast"],
+        ))
+
+    assert exc.value.status_code == 400
+    assert "google/gemini-2.5-flash" in exc.value.detail
+    assert "utility" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_accepts_normal_chairman_and_council_models(monkeypatch, tmp_path):
+    """Control: the utility-type gate must not affect ordinary registry
+    models still selectable as chairman/council."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    conversation = await main.create_conversation(main.CreateConversationRequest(
+        chairman_model="openai/gpt-5.5",
+        council_members=["openai/gpt-4o-mini", "x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro"],
+    ))
+
+    assert conversation["metadata"]["chairman_model"] == "openai/gpt-5.5"
+    assert conversation["metadata"]["council_models"] == [
+        "openai/gpt-4o-mini", "x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_conversation_does_not_store_implicit_zdr_false(monkeypatch, tmp_path):
     main = import_main(monkeypatch)
     monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
