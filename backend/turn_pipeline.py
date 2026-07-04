@@ -22,6 +22,29 @@ ALL_FAIL_STAGE3 = {
 }
 
 
+def _start_title_task(main, needs_title: bool, content: str, zdr_enabled: bool):
+    """Kick off title generation in parallel (don't await yet).
+
+    Runs once per conversation regardless of mode (P3-T3): a conversation
+    needs a title until its first assistant message lands, whether that
+    turn ran chat or council.
+    """
+    if not needs_title:
+        return None
+    return asyncio.create_task(
+        main.generate_conversation_title(content, zdr_enabled=zdr_enabled)
+    )
+
+
+async def _finish_title_task(main, conversation_id: str, title_task):
+    """Await a pending title task, persist it, and yield its completion event."""
+    if not title_task:
+        return
+    title = await title_task
+    main.storage.update_conversation_title(conversation_id, title)
+    yield {"type": "title_complete", "data": {"title": title}}
+
+
 async def run_turn(
     conversation_id: str,
     request: Any,
@@ -80,6 +103,17 @@ async def run_turn(
             current_conversation = main.storage.get_conversation(conversation_id)
             yield {"type": "edit_truncated", "data": {"edit_index": request.edit_index, "attachments": attachment_cleanup}}
 
+        # A conversation needs a title until its first assistant message
+        # lands — true both for a council-first turn and a chat-first turn
+        # (default_mode="chat" runs chat on every turn, including the
+        # first, so title generation can no longer live only in the
+        # council branch). current_conversation here is the pre-turn
+        # snapshot, before this turn's user message is added below.
+        needs_title = not any(
+            m.get("role") == "assistant"
+            for m in current_conversation.get("messages", [])
+        )
+
         message_attachments = main.prepare_message_attachments(conversation_id, request.attachment_ids)
 
         # Add user message (store only original content, not attachment text)
@@ -99,15 +133,7 @@ async def run_turn(
         )
 
         if mode == "council":
-            # Start title generation in parallel (don't await yet)
-            title_task = None
-            if is_first_message:
-                title_task = asyncio.create_task(
-                    main.generate_conversation_title(
-                        request.content,
-                        zdr_enabled=zdr_enabled,
-                    )
-                )
+            title_task = _start_title_task(main, needs_title, request.content, zdr_enabled)
 
             # Stage 0a: Web Search (if enabled)
             web_context = ""
@@ -226,10 +252,8 @@ async def run_turn(
                 yield {"type": "stage3_complete", "data": stage3_result}
 
             # Wait for title generation if it was started
-            if title_task:
-                title = await title_task
-                main.storage.update_conversation_title(conversation_id, title)
-                yield {"type": "title_complete", "data": {"title": title}}
+            async for event in _finish_title_task(main, conversation_id, title_task):
+                yield event
 
             # Save complete assistant message with metadata for analytics
             council_metadata = {
@@ -294,6 +318,8 @@ async def run_turn(
 
         else:
             # Chat mode
+            title_task = _start_title_task(main, needs_title, request.content, zdr_enabled)
+
             yield {"type": "chat_start"}
 
             logger.info(f"[CHAT] Chat mode started for query: {request.content[:50]}...")
@@ -391,6 +417,10 @@ async def run_turn(
                 model=effective_chairman_model,
                 content_key="content",
             ):
+                yield event
+
+            # Wait for title generation if it was started
+            async for event in _finish_title_task(main, conversation_id, title_task):
                 yield event
 
             # Save chat message

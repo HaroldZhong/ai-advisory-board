@@ -138,3 +138,73 @@ async def test_auto_with_stale_edit_index_beyond_count_runs_council_when_empty(m
     )
 
     assert result["type"] == "council"
+
+
+# --- default_mode routing (P3-T3): Chat-default / Council-explicit ---
+
+
+@pytest.mark.asyncio
+async def test_default_mode_chat_runs_chat_on_first_message(monkeypatch, tmp_path):
+    """metadata.default_mode == 'chat' means EVERY turn runs chat, including the first."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation("conv-chat-default-first", {"default_mode": "chat"})
+    _setup_chat_fakes(monkeypatch, main)
+
+    result = await main.send_message(
+        "conv-chat-default-first",
+        main.SendMessageRequest(content="First question", mode="auto"),
+    )
+
+    assert result["type"] == "chat"
+
+
+@pytest.mark.asyncio
+async def test_default_mode_council_runs_council_on_first_message(monkeypatch, tmp_path):
+    """metadata.default_mode == 'council' keeps today's auto behavior: council on the
+    effectively-first turn."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation("conv-council-default-first", {"default_mode": "council"})
+    _setup_council_fakes(monkeypatch, main)
+
+    result = await main.send_message(
+        "conv-council-default-first",
+        main.SendMessageRequest(content="First question", mode="auto"),
+    )
+
+    assert result["type"] == "council"
+
+
+@pytest.mark.asyncio
+async def test_default_mode_council_runs_chat_on_followup(monkeypatch, tmp_path):
+    """metadata.default_mode == 'council' still runs chat after the first turn."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation("conv-council-default-followup", {"default_mode": "council"})
+    main.storage.add_user_message("conv-council-default-followup", "First question")
+    main.storage.add_chat_message("conv-council-default-followup", "First answer")
+    _setup_chat_fakes(monkeypatch, main)
+
+    result = await main.send_message(
+        "conv-council-default-followup",
+        main.SendMessageRequest(content="Follow up", mode="auto"),
+    )
+
+    assert result["type"] == "chat"
+
+
+@pytest.mark.asyncio
+async def test_explicit_request_mode_overrides_default_mode_chat(monkeypatch, tmp_path):
+    """An explicit request.mode wins over metadata.default_mode."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation("conv-explicit-override", {"default_mode": "chat"})
+    _setup_council_fakes(monkeypatch, main)
+
+    result = await main.send_message(
+        "conv-explicit-override",
+        main.SendMessageRequest(content="First question", mode="council"),
+    )
+
+    assert result["type"] == "council"

@@ -141,6 +141,24 @@ test('legacy conversation without ZDR metadata falls back to current settings', 
   assert.equal(state.thinking.tone, 'warn');
 });
 
+test('chat-default conversations show the active model instead of council preset info', () => {
+  const state = formatTrustRowState({
+    conversation: {
+      metadata: {
+        default_mode: 'chat',
+        chairman_model: 'anthropic/claude-opus-4.7',
+      },
+      session_policy: {},
+      session_usage: {},
+    },
+    settings: {},
+  });
+
+  assert.equal(state.council.label, 'Chat');
+  assert.equal(state.council.detail, 'anthropic/claude-opus-4.7');
+  assert.equal(state.council.count, 0);
+});
+
 test('privacy update merge preserves local streaming messages', () => {
   const current = {
     id: 'conversation-1',

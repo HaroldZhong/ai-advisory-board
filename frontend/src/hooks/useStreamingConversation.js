@@ -78,6 +78,7 @@ export function useStreamingConversation({
       const predictedMode = predictNextMessageMode({
         messageCount: currentConversation.messages.length,
         editIndex,
+        defaultMode: currentConversation?.metadata?.default_mode,
       });
       const requestSettings = normalizeAdvancedSettingsForMode(settings, predictedMode);
       requestSettings.zdrEnabled = resolveEffectiveZdr(currentConversation, settings);

@@ -188,13 +188,22 @@ export function formatTrustRowState({
   const effectiveThinkingEffort = resolveEffectiveThinkingEffort(conversation);
   const thinkingOption = getThinkingEffortOption(effectiveThinkingEffort);
 
+  const isChatDefault = metadata.default_mode === 'chat';
+
   return {
-    council: {
-      label: formatPresetLabel(metadata.preset_id),
-      detail: `${council.length || 0} council + 1 chair`,
-      count: council.length || 0,
-      presetId: metadata.preset_id || null,
-    },
+    council: isChatDefault
+      ? {
+        label: 'Chat',
+        detail: metadata.chairman_model || 'Default model',
+        count: 0,
+        presetId: null,
+      }
+      : {
+        label: formatPresetLabel(metadata.preset_id),
+        detail: `${council.length || 0} council + 1 chair`,
+        count: council.length || 0,
+        presetId: metadata.preset_id || null,
+      },
     privacy: {
       effectiveZdr,
       label: effectiveZdr ? 'ZDR enforced' : 'Standard',

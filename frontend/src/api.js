@@ -42,6 +42,7 @@ export const api = {
         zdr_enabled: options.zdrEnabled ?? null,
         budget_usd: options.budgetUsd ?? null,
         budget_allow_overage: options.budgetAllowOverage ?? false,
+        default_mode: options.defaultMode ?? null,
       }),
     });
     if (!response.ok) {
