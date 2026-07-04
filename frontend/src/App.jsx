@@ -13,9 +13,8 @@ import { Menu } from "lucide-react";
 import FirstRunSetup from './components/FirstRunSetup';
 import ModelSelector from './components/ModelSelector';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
-import { calculateUsageCost, calculateStage1Cost, calculateStage2Cost, calculateStage3Cost } from './utils/cost';
+import { calculateUsageCost } from './utils/cost';
 import { SettingsProvider, useSettings } from './contexts/SettingsContext';
-import { normalizeAdvancedSettingsForMode } from './utils/advancedSettingsAvailability';
 import {
   buildConfigStatusFailureState,
   buildConfigStatusSuccessState,
@@ -28,26 +27,16 @@ import {
   shouldBlockNewConversation,
 } from './utils/conversationNavigation';
 import { shouldConsumeOneShotSignal } from './utils/oneShotSignal';
-import { rollbackFailedSendConversation } from './utils/optimisticMessages';
 import {
   mergeConversationThinkingEffortUpdate,
   setConversationThinkingEffortMetadata,
 } from './utils/thinkingEffort';
 import {
-  appendContentDeltaToMessage,
-  appendReasoningDeltaToMessage,
-  applyStreamUpdateToActiveConversation,
-  markLastAssistantStreamInterrupted,
-  mergeReasoningBufferIntoResult,
-  mergeReasoningBuffersIntoResults,
-} from './utils/reasoningMessages';
-import {
   mergeConversationPrivacyUpdate,
-  resolveEffectiveZdr,
   setConversationPrivacyMetadata,
 } from './utils/trustState';
 import { toast } from './hooks/use-toast';
-import { formatStreamErrorMessage } from './utils/streamErrors';
+import { useStreamingConversation } from './hooks/useStreamingConversation';
 
 function ConversationView({
   conversations,
@@ -73,7 +62,6 @@ function ConversationView({
   const navigate = useNavigate();
 
   const [currentConversation, setCurrentConversation] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [budgetWarning, setBudgetWarning] = useState(null);
@@ -201,6 +189,16 @@ function ConversationView({
     }
   };
 
+  const { sendMessage: handleSendMessage, isLoading } = useStreamingConversation({
+    conversationId,
+    currentConversation,
+    setCurrentConversation,
+    setBudgetWarning,
+    availableModels,
+    loadConversations,
+    settings,
+  });
+
   const handleUpdateSessionPolicy = async (policyUpdate) => {
     if (!conversationId) return null;
 
@@ -262,281 +260,6 @@ function ConversationView({
         setConversationThinkingEffortMetadata(prev, targetConversationId, previousThinkingEffort)
       ));
       throw error;
-    }
-  };
-
-  const handleSendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1) => {
-    if (!conversationId) return;
-
-    const targetConversationId = conversationId;
-    const previousMessages = editIndex >= 0
-      ? [...(currentConversation?.messages || [])]
-      : null;
-    const updateTargetConversation = (updater) => {
-      setCurrentConversation((prev) => (
-        applyStreamUpdateToActiveConversation(prev, targetConversationId, updater)
-      ));
-    };
-
-    setIsLoading(true);
-    try {
-      const userMessage = {
-        role: 'user',
-        content,
-        attachments: attachmentMetadata
-      };
-
-      // Edit & Regenerate: truncate local state to edit point
-      if (editIndex >= 0) {
-        updateTargetConversation((prev) => ({
-          ...prev,
-          messages: [...prev.messages.slice(0, editIndex), userMessage],
-        }));
-      } else {
-        updateTargetConversation((prev) => ({
-          ...prev,
-          messages: [...prev.messages, userMessage],
-        }));
-      }
-
-      // Determine mode: if after truncation we're at msg index 0, it's council mode
-      const effectiveMsgCount = editIndex >= 0 ? editIndex : currentConversation.messages.length;
-      const isFollowUp = effectiveMsgCount > 0;
-      const mode = isFollowUp ? 'chat' : 'council';
-      const requestSettings = normalizeAdvancedSettingsForMode(settings, mode);
-      requestSettings.zdrEnabled = resolveEffectiveZdr(currentConversation, settings);
-
-      if (mode === 'council') {
-        const assistantMessage = {
-          role: 'assistant',
-          stage1: null,
-          stage2: null,
-          stage3: null,
-          metadata: null,
-          loading: {
-            stage1: false,
-            stage2: false,
-            stage3: false,
-            stage3_status: 'pending'
-          },
-        };
-
-        updateTargetConversation((prev) => ({
-          ...prev,
-          messages: [...prev.messages, assistantMessage],
-        }));
-      } else {
-        const assistantMessage = {
-          role: 'assistant',
-          content: '',
-          loading: {
-            chat: true
-          }
-        };
-
-        updateTargetConversation((prev) => ({
-          ...prev,
-          messages: [...prev.messages, assistantMessage],
-        }));
-      }
-
-      await api.sendMessageStream(conversationId, content, (eventType, event) => {
-        switch (eventType) {
-          case 'stage1_start':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage1 = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage1_complete':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage1 = mergeReasoningBuffersIntoResults(
-                event.data,
-                lastMsg.reasoningBuffers?.stage1,
-              );
-              lastMsg.loading.stage1 = false;
-
-              const cost = calculateStage1Cost(lastMsg.stage1, availableModels);
-              lastMsg.running_cost = (lastMsg.running_cost || 0) + cost;
-
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage2_start':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage2 = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage2_complete':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage2 = mergeReasoningBuffersIntoResults(
-                event.data,
-                lastMsg.reasoningBuffers?.stage2,
-              );
-              lastMsg.metadata = event.metadata;
-              lastMsg.loading.stage2 = false;
-
-              const cost = calculateStage2Cost(lastMsg.stage2, availableModels);
-              lastMsg.running_cost = (lastMsg.running_cost || 0) + cost;
-
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage3_start':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage3 = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'stage3_complete':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage3 = mergeReasoningBufferIntoResult(
-                event.data,
-                lastMsg.reasoningBuffers?.stage3,
-              );
-              lastMsg.loading.stage3 = false;
-
-              const cost = calculateStage3Cost(lastMsg.stage3, availableModels);
-              lastMsg.running_cost = (lastMsg.running_cost || 0) + cost;
-
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'chat_start':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.chat = true;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'chat_response':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              if (typeof event.data === 'string') {
-                lastMsg.content = event.data;
-              } else {
-                lastMsg.content = event.data.content;
-                if (event.data.reasoning) {
-                  lastMsg.reasoning = event.data.reasoning;
-                }
-              }
-              lastMsg.loading.chat = false;
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'reasoning_delta':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastIndex = messages.length - 1;
-              if (lastIndex < 0) return prev;
-              messages[lastIndex] = appendReasoningDeltaToMessage(messages[lastIndex], event.data);
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'content_delta':
-            updateTargetConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastIndex = messages.length - 1;
-              if (lastIndex < 0) return prev;
-              messages[lastIndex] = appendContentDeltaToMessage(messages[lastIndex], event.data);
-              return { ...prev, messages };
-            });
-            break;
-
-          case 'title_complete':
-            loadConversations();
-            break;
-
-          case 'budget_warning':
-            setBudgetWarning(event.data);
-            break;
-
-          case 'complete':
-            if (event.data) {
-              updateTargetConversation((prev) => {
-                const messages = [...prev.messages];
-                const lastMsg = messages[messages.length - 1];
-                if (lastMsg?.role === 'assistant' && event.data.turn_cost != null) {
-                  lastMsg.running_cost = event.data.turn_cost;
-                }
-
-                return {
-                  ...prev,
-                  messages,
-                  total_cost: event.data.total_cost,
-                  session_usage: event.data.session_usage,
-                  budget_spent_pct: event.data.budget_spent_pct,
-                };
-              });
-            }
-            loadConversations();
-            setIsLoading(false);
-            break;
-
-          case 'error':
-            console.error('Stream error:', event.message);
-            updateTargetConversation(markLastAssistantStreamInterrupted);
-            toast({
-              variant: 'destructive',
-              title: 'Response failed',
-              description: formatStreamErrorMessage(event.message),
-            });
-            setIsLoading(false);
-            break;
-
-          default:
-            console.warn('Unknown event type:', eventType);
-        }
-      }, mode, attachmentIds, {
-        enabled: settings.webSearchEnabled,
-        depth: settings.webSearchDepth,
-        customInstructions: requestSettings.customInstructions,
-        zdrEnabled: requestSettings.zdrEnabled,
-        executionMode: requestSettings.executionMode,
-        ragPreset: requestSettings.ragPreset,
-        modelTier: requestSettings.modelTier,
-      }, editIndex);
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      const isBudgetCapError = error?.status === 409;
-      if (!isBudgetCapError) {
-        alert(`Failed to send message: ${error.message || 'Unknown error'}`);
-      }
-      setCurrentConversation((prev) => {
-        return rollbackFailedSendConversation(prev, {
-          conversationId: targetConversationId,
-          editIndex,
-          previousMessages,
-        });
-      });
-      setIsLoading(false);
-      if (isBudgetCapError) {
-        throw error;
-      }
     }
   };
 

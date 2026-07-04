@@ -214,28 +214,6 @@ export const api = {
     }
   },
 
-  /**
-   * Upload a file and get extracted text.
-   * @param {File} file - The file to upload
-   * @returns {Promise<{text: string, filename: string, truncated: boolean}>}
-   */
-  async uploadFile(file, useZdr = false) {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const response = await fetch(`${API_BASE}/api/upload?use_zdr=${useZdr}`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || 'Failed to upload file');
-    }
-
-    return response.json();
-  },
-
   // Get available models
   async getModels() {
     const response = await fetch(`${API_BASE}/api/models`);
