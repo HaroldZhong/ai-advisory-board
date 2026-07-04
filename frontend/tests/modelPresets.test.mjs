@@ -5,6 +5,7 @@ import {
   estimateSelectionCost,
   filterModelsForRole,
   canConfirmModelSelection,
+  canStartPresetWithProvider,
   canStartPresetWithZdr,
   getEffectivePresetZdr,
   isPresetAvailableForZdr,
@@ -92,6 +93,16 @@ test('ZDR-enabled presets cannot start with incompatible models', () => {
 
   assert.equal(getEffectivePresetZdr(mixedPreset, true), true);
   assert.equal(canStartPresetWithZdr(mixedPreset, models, true), false);
+});
+
+test('a requires_zdr preset is blocked when the provider has no ZDR at all', () => {
+  const privatePreset = { requires_zdr: true };
+  const openPreset = { requires_zdr: false };
+
+  assert.equal(canStartPresetWithProvider(privatePreset, false), false);
+  assert.equal(canStartPresetWithProvider(privatePreset, true), true);
+  assert.equal(canStartPresetWithProvider(openPreset, false), true);
+  assert.equal(canStartPresetWithProvider(undefined, false), true);
 });
 
 test('model selection cannot confirm while loading or errored', () => {

@@ -25,6 +25,7 @@ import {
   estimateSelectionCost,
   filterModelsForRole,
   canConfirmModelSelection,
+  canStartPresetWithProvider,
   canStartPresetWithZdr,
   getEffectivePresetZdr,
   getProvider,
@@ -146,9 +147,14 @@ export default function ModelSelector({
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
     [presets, selectedPresetId],
   );
+  // The provider may not support ZDR at all (off-OpenRouter): the toggle is
+  // hidden in that case, but a stale saved preference must not silently
+  // still request ZDR — force it off at the source instead of trusting the
+  // hidden control's last value.
+  const effectiveZdrEnabled = zdrAvailable && zdrEnabled;
   const effectivePresetZdr = activeTab === 'presets'
-    ? getEffectivePresetZdr(selectedPreset, zdrEnabled)
-    : zdrEnabled;
+    ? getEffectivePresetZdr(selectedPreset, effectiveZdrEnabled)
+    : effectiveZdrEnabled;
   const presetModels = useMemo(
     () => resolvePresetModels(selectedPreset, models, effectivePresetZdr),
     [effectivePresetZdr, models, selectedPreset],
@@ -158,12 +164,13 @@ export default function ModelSelector({
   const activeChairman = activeTab === 'presets' ? presetModels.chairman : customChairman;
   const activeCouncil = activeTab === 'presets' ? presetModels.council : customCouncil;
   const selectedPresetAvailable = activeTab !== 'presets'
-    || canStartPresetWithZdr(selectedPreset, models, effectivePresetZdr);
+    || (canStartPresetWithProvider(selectedPreset, zdrAvailable)
+      && canStartPresetWithZdr(selectedPreset, models, effectivePresetZdr));
   const zdrToggleLocked = activeTab === 'presets' && selectedPreset?.requires_zdr;
   const estimatedCost = estimateSelectionCost({ chairman: activeChairman, council: activeCouncil });
   const roleModels = useMemo(
-    () => filterModelsForRole(models, customRole, zdrEnabled),
-    [models, customRole, zdrEnabled],
+    () => filterModelsForRole(models, customRole, effectiveZdrEnabled),
+    [models, customRole, effectiveZdrEnabled],
   );
   const groupedModels = useMemo(() => groupModelsByProvider(roleModels), [roleModels]);
   const providers = useMemo(() => ['all', ...groupedModels.map(([provider]) => provider)], [groupedModels]);
@@ -174,7 +181,7 @@ export default function ModelSelector({
   ), [activeProvider, groupedModels]);
 
   useEffect(() => {
-    if (!zdrEnabled || models.length === 0 || activeTab !== 'custom') return;
+    if (!effectiveZdrEnabled || models.length === 0 || activeTab !== 'custom') return;
     const compatibleIds = new Set(models.filter((model) => model.supports_zdr).map((model) => model.id));
     setSelectedCouncil((prev) => prev.filter((id) => compatibleIds.has(id)));
     setSelectedChairman((prev) => {
@@ -182,10 +189,10 @@ export default function ModelSelector({
       const fallback = models.find((model) => model.supports_zdr && ['chairman', 'both'].includes(model.type));
       return fallback?.id || '';
     });
-  }, [activeTab, models, zdrEnabled]);
+  }, [activeTab, models, effectiveZdrEnabled]);
 
   const applyPresetToCustom = (preset) => {
-    const resolved = resolvePresetModels(preset, models, zdrEnabled || preset.requires_zdr);
+    const resolved = resolvePresetModels(preset, models, effectiveZdrEnabled || preset.requires_zdr);
     setSelectedPresetId(preset.id);
     setSelectedChairman(resolved.chairman?.id || '');
     setSelectedCouncil(resolved.council.map((model) => model.id));
@@ -215,7 +222,7 @@ export default function ModelSelector({
       councilMembers: activeTab === 'presets' ? null : activeCouncil.map((model) => model.id),
       chairmanModel: activeTab === 'presets' ? null : activeChairman.id,
       presetId: activeTab === 'presets' ? selectedPresetId : null,
-      zdrEnabled: activeTab === 'presets' ? effectivePresetZdr : zdrEnabled,
+      zdrEnabled: activeTab === 'presets' ? effectivePresetZdr : effectiveZdrEnabled,
       budgetUsd: defaultBudgetUsd,
     });
     onClose();
@@ -231,12 +238,17 @@ export default function ModelSelector({
   });
 
   const renderPresetCard = (preset) => {
-    const presetZdr = getEffectivePresetZdr(preset, zdrEnabled);
+    const presetZdr = getEffectivePresetZdr(preset, effectiveZdrEnabled);
     const resolved = resolvePresetModels(preset, models, presetZdr);
-    const availableForZdr = canStartPresetWithZdr(preset, models, presetZdr);
+    const availableForProvider = canStartPresetWithProvider(preset, zdrAvailable);
+    const availableForZdr = availableForProvider && canStartPresetWithZdr(preset, models, presetZdr);
     const isSelected = selectedPresetId === preset.id;
     const cost = estimateSelectionCost({ chairman: resolved.chairman, council: resolved.council });
-    const disabledReason = !availableForZdr ? 'Contains models that do not support ZDR' : null;
+    const disabledReason = !availableForProvider
+      ? 'Requires OpenRouter'
+      : !availableForZdr
+        ? 'Contains models that do not support ZDR'
+        : null;
 
     return (
       <Card
@@ -244,6 +256,7 @@ export default function ModelSelector({
         role="button"
         tabIndex={availableForZdr ? 0 : -1}
         aria-pressed={isSelected}
+        title={disabledReason || undefined}
         className={cn(
           'p-4 transition-all',
           availableForZdr ? 'cursor-pointer hover:border-primary/50' : 'cursor-not-allowed opacity-50',

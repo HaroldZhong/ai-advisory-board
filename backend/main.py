@@ -186,7 +186,15 @@ async def create_conversation(request: CreateConversationRequest):
     if chairman_model is None and preset is not None:
         chairman_model = preset["chairman_model"]
 
-    if request.zdr_enabled is True and not config.provider_is_openrouter():
+    # Effective ZDR: explicit request value, else implied by a requires_zdr
+    # preset. Must gate on this — not just the explicit flag — or a preset
+    # like "private" silently loses its ZDR guarantee off-OpenRouter.
+    effective_zdr = (
+        bool(request.zdr_enabled)
+        if request.zdr_enabled is not None
+        else bool(preset is not None and preset.get("requires_zdr"))
+    )
+    if effective_zdr and not config.provider_is_openrouter():
         raise HTTPException(status_code=400, detail="ZDR requires OpenRouter")
 
     if request.zdr_enabled is not None:

@@ -320,6 +320,41 @@ async def test_update_conversation_rejects_zdr_when_openai_compatible(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_create_conversation_rejects_implicit_preset_zdr_when_openai_compatible(monkeypatch, tmp_path):
+    """A requires_zdr preset (e.g. "private") with zdr_enabled omitted must
+    still 400 off-OpenRouter — the resulting metadata would claim ZDR while
+    the actual request silently drops the routing field (Codex finding)."""
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(topic="Test", preset_id="private")
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(request)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "ZDR requires OpenRouter"
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_private_preset_succeeds_on_openrouter(monkeypatch, tmp_path):
+    """Same request as above succeeds when the provider is OpenRouter."""
+    main = _import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    request = main.CreateConversationRequest(topic="Test", preset_id="private")
+
+    conversation = await main.create_conversation(request)
+
+    assert conversation["metadata"]["zdr_enabled"] is True
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
 async def test_config_status_includes_provider_kind(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
     main = _import_main(monkeypatch)
