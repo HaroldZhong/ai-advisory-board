@@ -5,9 +5,12 @@
  * mode:"auto" and backend/main.py prepare_turn makes the authoritative,
  * edit-aware decision. This prediction exists ONLY for presentation —
  * choosing the optimistic assistant skeleton and which advanced settings
- * apply — and mirrors the backend rule exactly.
+ * apply — and mirrors the backend rule exactly, including default_mode
+ * (P3-T3, master plan P3-W2, owner decision #2: Chat default, Council explicit).
  */
-export function predictNextMessageMode({ messageCount = 0, editIndex = -1 } = {}) {
+export function predictNextMessageMode({ messageCount = 0, editIndex = -1, defaultMode } = {}) {
+  if (defaultMode === 'chat') return 'chat';
+
   // Clamped like the backend: truncation keeps messages[:editIndex], so a
   // stale editIndex beyond the stored count still leaves messageCount messages.
   const effectiveCount = editIndex >= 0 ? Math.min(editIndex, messageCount) : messageCount;

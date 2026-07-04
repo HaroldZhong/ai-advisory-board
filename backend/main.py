@@ -147,6 +147,9 @@ app.add_middleware(
 )
 
 
+VALID_DEFAULT_MODES = {"chat", "council"}
+
+
 class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
     topic: str = "New Conversation"
@@ -157,6 +160,7 @@ class CreateConversationRequest(BaseModel):
     budget_usd: Optional[float] = None
     budget_allow_overage: bool = False
     thinking_effort: Optional[str] = None
+    default_mode: Optional[str] = None
 
 
 @app.post("/api/conversations")
@@ -166,6 +170,14 @@ async def create_conversation(request: CreateConversationRequest):
     metadata = {}
     preset = None
     session_policy = None
+
+    if request.default_mode is not None:
+        if request.default_mode not in VALID_DEFAULT_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid default_mode: {request.default_mode}",
+            )
+        metadata["default_mode"] = request.default_mode
 
     if request.preset_id:
         preset = next(
@@ -823,9 +835,21 @@ def prepare_turn(conversation_id: str, request: SendMessageRequest):
         if request.edit_index >= 0
         else len(conversation["messages"])
     )
+    # Mode resolution order (P3-T3, master plan P3-W2, owner decision #2):
+    # 1. An explicit request.mode ("chat"/"council") always wins.
+    # 2. metadata.default_mode == "chat": every turn runs chat, including the first.
+    # 3. metadata.default_mode == "council": council on the effectively-first
+    #    turn, chat after — i.e. today's auto behavior.
+    # 4. No default_mode (legacy conversations / old clients): unchanged auto rule.
     mode = request.mode
     if mode == "auto":
-        mode = "council" if effective_message_count == 0 else "chat"
+        default_mode = conversation.get("metadata", {}).get("default_mode")
+        if default_mode == "chat":
+            mode = "chat"
+        else:
+            # default_mode == "council" and legacy (no default_mode) both use
+            # this rule: council on the effectively-first turn, chat after.
+            mode = "council" if effective_message_count == 0 else "chat"
     validate_advanced_settings_for_mode(mode, request)
     ensure_budget_allows_new_turn(conversation_id, conversation)
 

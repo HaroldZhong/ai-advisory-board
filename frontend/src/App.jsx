@@ -126,6 +126,7 @@ function ConversationView({
     presetId,
     zdrEnabled,
     budgetUsd,
+    defaultMode,
   }) => {
     try {
       const newConv = await createConversationWithDefaults({
@@ -136,6 +137,7 @@ function ConversationView({
         presetId,
         zdrEnabled,
         defaultSessionBudgetUsd: budgetUsd ?? settings.defaultSessionBudgetUsd,
+        defaultMode,
       });
 
       // Update conversations list

@@ -100,3 +100,38 @@ async def test_create_conversation_applies_preset_when_overrides_are_blank(monke
     assert conversation["metadata"]["preset_id"] == "balanced"
     assert conversation["metadata"]["council_models"] == balanced["council_models"]
     assert conversation["metadata"]["chairman_model"] == balanced["chairman_model"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("default_mode", ["chat", "council"])
+async def test_create_conversation_persists_default_mode(monkeypatch, tmp_path, default_mode):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    conversation = await main.create_conversation(main.CreateConversationRequest(
+        default_mode=default_mode,
+    ))
+
+    assert conversation["metadata"]["default_mode"] == default_mode
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_invalid_default_mode(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(main.CreateConversationRequest(default_mode="bogus"))
+
+    assert exc.value.status_code == 400
+    assert "default_mode" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_omits_default_mode_when_absent(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    conversation = await main.create_conversation(main.CreateConversationRequest())
+
+    assert "default_mode" not in conversation["metadata"]
