@@ -812,11 +812,20 @@ def prepare_turn(conversation_id: str, request: SendMessageRequest):
     zdr_enabled = resolve_effective_zdr(conversation, request)
     thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
-    # Determine mode
+    # Determine mode. Auto-resolution must use the EFFECTIVE message count —
+    # a pending edit_index truncation makes an edit-back-to-message-0 send
+    # effectively first, so it routes to council like the original send did.
     is_first_message = len(conversation["messages"]) == 0
+    # Clamp: truncate_messages keeps messages[:edit_index], so a stale
+    # edit_index beyond the stored count leaves min(edit_index, len) messages.
+    effective_message_count = (
+        min(request.edit_index, len(conversation["messages"]))
+        if request.edit_index >= 0
+        else len(conversation["messages"])
+    )
     mode = request.mode
     if mode == "auto":
-        mode = "council" if is_first_message else "chat"
+        mode = "council" if effective_message_count == 0 else "chat"
     validate_advanced_settings_for_mode(mode, request)
     ensure_budget_allows_new_turn(conversation_id, conversation)
 
