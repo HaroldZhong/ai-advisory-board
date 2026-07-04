@@ -18,6 +18,7 @@ def _status_error(code: int) -> httpx.HTTPStatusError:
     (asyncio.TimeoutError(), "timeout"),
     (_status_error(401), "auth"),
     (_status_error(402), "quota"),
+    (_status_error(408), "timeout"),
     (_status_error(500), "other"),
     (ValueError("weird"), "other"),
 ])

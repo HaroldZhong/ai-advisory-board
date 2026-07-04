@@ -19,6 +19,8 @@ def classify_openrouter_error(exc: Exception) -> str:
             return "auth"
         if code == 402:
             return "quota"
+        if code == 408:  # OpenRouter documents 408 as request timeout
+            return "timeout"
         return "other"
     return "other"
 
