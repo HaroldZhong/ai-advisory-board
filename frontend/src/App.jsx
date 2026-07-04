@@ -46,6 +46,7 @@ import {
   setConversationPrivacyMetadata,
 } from './utils/trustState';
 import { toast } from './hooks/use-toast';
+import { formatStreamErrorMessage } from './utils/streamErrors';
 
 function ConversationView({
   conversations,
@@ -498,6 +499,11 @@ function ConversationView({
           case 'error':
             console.error('Stream error:', event.message);
             updateTargetConversation(markLastAssistantStreamInterrupted);
+            toast({
+              variant: 'destructive',
+              title: 'Response failed',
+              description: formatStreamErrorMessage(event.message),
+            });
             setIsLoading(false);
             break;
 

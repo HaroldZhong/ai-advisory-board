@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import { isSafeHref } from '../utils/safeHref';
 // Note: katex.min.css is loaded globally in main.jsx
 
 /**
@@ -19,7 +20,7 @@ const katexOptions = {
     throwOnError: false,  // Don't crash on parse errors
     errorColor: '#666',   // Gray color for error text
     strict: false,        // Lenient parsing
-    trust: true,          // Allow all LaTeX commands
+    trust: false,         // KaTeX default; blocks \href{javascript:...} (audit §7)
     output: 'htmlAndMathml', // Better accessibility
 };
 
@@ -126,9 +127,21 @@ class MarkdownErrorBoundary extends React.Component {
     }
 }
 
+const SafeAnchor = ({ href, children, ...rest }) => {
+    if (!isSafeHref(href)) {
+        return <span>{children}</span>;
+    }
+    // Spread rest FIRST so target/rel can never be overridden by incoming props.
+    return (
+        <a {...rest} href={href} target="_blank" rel="noopener noreferrer">
+            {children}
+        </a>
+    );
+};
+
 /**
  * MarkdownRenderer component with LaTeX support
- * 
+ *
  * Features:
  * - Memoized content processing for performance
  * - Graceful fallback on errors
@@ -160,7 +173,7 @@ export default function MarkdownRenderer({
                 <ReactMarkdown
                     remarkPlugins={[remarkMath]}
                     rehypePlugins={[[rehypeKatex, katexOptions]]}
-                    components={components}
+                    components={{ ...components, a: SafeAnchor }}
                     {...props}
                 >
                     {processedContent}
