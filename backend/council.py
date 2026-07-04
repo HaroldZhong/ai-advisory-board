@@ -149,14 +149,23 @@ async def stage1_collect_responses_progressive(
     """
     Stage 1, progressive variant: same per-model result shape as
     stage1_collect_responses (via the shared build_stage1_result helper), but
-    yields each model's result as soon as it finishes instead of waiting for
-    the slowest model.
+    yields each model's result as soon as it can be placed, instead of
+    waiting for every model to finish.
+
+    INVARIANT: a yielded ("model_complete", index, result) always has
+    `index` equal to that result's index in the final `stage1_results` list
+    (the "complete" list, in configured-model order with failures filtered
+    out — matching stage1_collect_responses's ordering). Because a failure
+    is dropped from the aggregate, a model's final index isn't knowable
+    until every earlier-configured model has also resolved (succeeded or
+    failed) — so results are buffered by configured position and flushed as
+    a contiguous prefix resolves, rather than yielded in raw completion
+    order. This is still progressive: only stragglers earlier in the
+    configured list can delay a later model's card.
 
     Yields:
-        ("model_complete", index, result) for each successful model, in
-        completion order, then finally ("complete", stage1_results, None)
-        with the full list (order matches `models`, matching the non-
-        progressive function's output).
+        ("model_complete", index, result) as each index becomes resolvable,
+        then finally ("complete", stage1_results, None) with the full list.
     """
     target_models = models or COUNCIL_MODELS
     prompt = _build_stage1_prompt(user_query, evidence_pack)
@@ -166,18 +175,25 @@ async def stage1_collect_responses_progressive(
     if thinking_effort is not None:
         query_kwargs["thinking_effort"] = thinking_effort
 
-    results_by_model: Dict[str, Dict[str, Any]] = {}
+    position_of = {model: i for i, model in enumerate(target_models)}
+    # None until that configured position resolves; then holds the built
+    # result (success) or False (failure, to be dropped from the aggregate).
+    resolved: List[Any] = [None] * len(target_models)
+    next_to_flush = 0
+    stage1_results: List[Dict[str, Any]] = []
+
     async for model, response in query_models_as_completed(target_models, messages, **query_kwargs):
         result = build_stage1_result(model, response)
-        if result is None:
-            continue
-        results_by_model[model] = result
-        yield "model_complete", len(results_by_model) - 1, result
+        resolved[position_of[model]] = result if result is not None else False
 
-    # Preserve the same model ordering as stage1_collect_responses (input order).
-    stage1_results = [
-        results_by_model[model] for model in target_models if model in results_by_model
-    ]
+        while next_to_flush < len(resolved) and resolved[next_to_flush] is not None:
+            flushed = resolved[next_to_flush]
+            next_to_flush += 1
+            if flushed is False:
+                continue  # failed model: dropped from the aggregate, no card
+            stage1_results.append(flushed)
+            yield "model_complete", len(stage1_results) - 1, flushed
+
     yield "complete", stage1_results, None
 
 

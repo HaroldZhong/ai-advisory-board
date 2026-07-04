@@ -82,6 +82,41 @@ test('stage1_model_complete appends results incrementally, then stage1_complete 
   assert.equal(lastMessage(afterComplete).loading.stage1, false);
 });
 
+test('stage1_model_complete events (backend guarantees index == final position) produce the same order as stage1_complete', () => {
+  // Codex round 3, PR #69: the backend now buffers so a stage1_model_complete
+  // event's `index` always equals that result's index in the final
+  // stage1_complete list (council.stage1_collect_responses_progressive).
+  // The reducer just appends in delivery order, which is therefore already
+  // final order -- this pins that invariant so cards never reorder under
+  // the user's cursor when the aggregate event lands.
+  const state = councilState();
+
+  const afterFirst = streamReducer(
+    state,
+    { type: 'stage1_model_complete', data: { model: 'model-a', response: 'Answer A' }, index: 0 },
+    { availableModels },
+  );
+  const afterSecond = streamReducer(
+    afterFirst,
+    { type: 'stage1_model_complete', data: { model: 'model-b', response: 'Answer B' }, index: 1 },
+    { availableModels },
+  );
+
+  const progressiveOrder = lastMessage(afterSecond).stage1.map((r) => r.model);
+
+  const finalEvent = {
+    type: 'stage1_complete',
+    data: [
+      { model: 'model-a', response: 'Answer A', usage: {} },
+      { model: 'model-b', response: 'Answer B', usage: {} },
+    ],
+  };
+  const afterComplete = streamReducer(afterSecond, finalEvent, { availableModels });
+  const finalOrder = lastMessage(afterComplete).stage1.map((r) => r.model);
+
+  assert.deepEqual(progressiveOrder, finalOrder);
+});
+
 test('stage1_complete stores results, merges reasoning buffers, and accrues cost', () => {
   const state = councilState({
     lastMessage: { reasoningBuffers: { stage1: { 0: { text: 'Buffered reasoning' } } } },

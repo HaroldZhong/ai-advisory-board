@@ -75,6 +75,74 @@ async def test_stage1_collect_responses_progressive_matches_aggregate_shape(monk
 
 
 @pytest.mark.asyncio
+async def test_stage1_model_complete_index_matches_final_aggregate_position(monkeypatch):
+    """Codex round 3, PR #69: progressive events append in COMPLETION order
+    but the aggregate is in CONFIGURED-model order. If the yielded index
+    were raw completion order, a later-configured model finishing first
+    would get index 0, then get bumped to a different slot when the
+    aggregate replaces the list — reordering cards under the user's cursor.
+    model-b (configured position 1) finishes before model-a (position 0);
+    its yielded index must already be 1, matching its final position."""
+
+    async def fake_query_model(model, messages, **kwargs):
+        if model == "model-a":
+            await asyncio.sleep(0.05)
+        return {"content": f"answer from {model}", "usage": {}}
+
+    monkeypatch.setattr(openrouter, "query_model", fake_query_model)
+
+    events = []
+    async for event in council.stage1_collect_responses_progressive(
+        "question", models=["model-a", "model-b"]
+    ):
+        events.append(event)
+
+    model_complete_events = [e for e in events if e[0] == "model_complete"]
+    complete_events = [e for e in events if e[0] == "complete"]
+    _, stage1_results, _ = complete_events[0]
+
+    for _, index, result in model_complete_events:
+        assert stage1_results[index] == result, (
+            f"model_complete index {index} for {result['model']} does not "
+            "match its position in the final aggregate"
+        )
+
+    assert [r["model"] for r in stage1_results] == ["model-a", "model-b"]
+
+
+@pytest.mark.asyncio
+async def test_stage1_model_complete_index_stable_when_earlier_model_fails(monkeypatch):
+    """A failed model is dropped from the aggregate (build_stage1_result
+    returns None), so a later model's final index shifts down. The
+    progressive generator must buffer until the failure resolves before
+    assigning the later model's index, not yield-then-correct."""
+
+    async def fake_query_model(model, messages, **kwargs):
+        if model == "model-a":
+            await asyncio.sleep(0.05)
+            return None  # fails
+        return {"content": f"answer from {model}", "usage": {}}
+
+    monkeypatch.setattr(openrouter, "query_model", fake_query_model)
+
+    events = []
+    async for event in council.stage1_collect_responses_progressive(
+        "question", models=["model-a", "model-b"]
+    ):
+        events.append(event)
+
+    model_complete_events = [e for e in events if e[0] == "model_complete"]
+    complete_events = [e for e in events if e[0] == "complete"]
+    _, stage1_results, _ = complete_events[0]
+
+    assert [r["model"] for r in stage1_results] == ["model-b"]
+    assert len(model_complete_events) == 1
+    _, index, result = model_complete_events[0]
+    assert index == 0
+    assert result["model"] == "model-b"
+
+
+@pytest.mark.asyncio
 async def test_query_models_as_completed_cancels_pending_on_early_close(monkeypatch):
     """Closing the generator mid-stream (browser closes/navigates) must cancel
     in-flight model calls instead of letting them run to their full HTTP
