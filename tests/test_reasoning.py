@@ -86,16 +86,16 @@ def test_anthropic_models_extract_field_reasoning():
         assert clean_content == "Final answer"
 
 
-def test_field_mode_falls_back_to_tag_parsing():
-    """A field-mode model whose provider inlines <think> blocks anyway must
-    still have reasoning extracted and the tags stripped (PR #66 review)."""
-    content = "<think>Inline reasoning despite field mode</think>Visible answer"
+def test_field_mode_never_strips_tag_markup_from_answers():
+    """Field-mode answers that merely mention <think> markup keep it verbatim —
+    tag parsing stays gated to tags-mode models (PR #66 review, round 3)."""
+    content = "<think>example of a thinking tag</think>And the visible answer"
     message = {}
 
     clean_content, reasoning = extract_reasoning(content, message, FIELD_MODEL)
 
-    assert clean_content == "Visible answer"
-    assert "Inline reasoning despite field mode" in reasoning
+    assert clean_content == content
+    assert reasoning == ""
 
 
 def test_tag_parsing():

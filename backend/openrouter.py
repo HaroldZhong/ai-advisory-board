@@ -181,10 +181,10 @@ def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tupl
                     reasoning = str(rd)
     
     # 3. Tag Parsing (Precedence 2)
-    # Runs whenever field extraction produced nothing — field-mode models on
-    # providers that inline <think> blocks anyway still get their reasoning
-    # captured (and the tags stripped from the visible answer).
-    if not reasoning:
+    # Deliberately gated to tags-mode models: field-mode answers that merely
+    # MENTION <think>/<thinking> markup (e.g. explaining tags) must not have
+    # that text stripped as if it were hidden reasoning.
+    if not reasoning and extraction_mode == "tags":
         # Non-greedy regex to find <think> or <thinking> blocks
         # Matches: <think>...</think> OR <thinking>...</thinking>
         pattern = r"<(think|thinking)>([\s\S]*?)</\1>"
