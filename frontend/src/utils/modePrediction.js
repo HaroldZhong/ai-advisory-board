@@ -16,3 +16,14 @@ export function predictNextMessageMode({ messageCount = 0, editIndex = -1, defau
   const effectiveCount = editIndex >= 0 ? Math.min(editIndex, messageCount) : messageCount;
   return effectiveCount === 0 ? 'council' : 'chat';
 }
+
+/**
+ * Resolve the optimistic skeleton/advanced-settings mode for a send, given an
+ * optional explicit mode override (P3-T4: "Ask the council" on any turn).
+ * An explicit mode (from the composer's council toggle) always wins over the
+ * prediction — mirrors backend/main.py prepare_turn's "explicit request.mode
+ * wins" rule.
+ */
+export function resolveSendMode(explicitMode, predictionArgs) {
+  return explicitMode || predictNextMessageMode(predictionArgs);
+}
