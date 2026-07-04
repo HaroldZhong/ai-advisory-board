@@ -771,12 +771,13 @@ async def run_full_council(
         thinking_effort=thinking_effort,
     )
 
-    # If no models responded successfully, return error
+    # If no models responded successfully, return a clean error result.
+    # Must stay a 5-tuple: callers unpack 5 values (main.py:831).
     if not stage1_results:
         return [], [], {
             "model": "error",
-            "response": "All models failed to respond. Please try again."
-        }, {}
+            "response": "All models failed to respond. Please try again.",
+        }, {}, evidence_pack
 
     # Stage 2: Collect rankings
     stage2_results, label_to_model = await stage2_collect_rankings(
