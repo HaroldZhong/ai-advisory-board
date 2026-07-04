@@ -475,6 +475,7 @@ def _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, metadata
         return "rewritten"
 
     async def fake_retrieve_async(*args, **kwargs):
+        # retrieve_async returns (context, usage) since PR #75
         return "", {}
 
     async def fake_chat_with_chairman(*args, **kwargs):
