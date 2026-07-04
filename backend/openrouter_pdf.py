@@ -11,7 +11,7 @@ Reference: https://openrouter.ai/docs/guides/overview/multimodal/pdfs
 import base64
 import httpx
 from typing import Dict, Any, Optional, Literal
-from .config import get_openrouter_api_key, OPENROUTER_API_URL
+from .config import get_openrouter_api_key, OPENROUTER_API_URL, UTILITY_MODEL
 from .logger import logger
 
 # Derived from OPENROUTER_BASE_URL so relay/proxy overrides cover PDF extraction too.
@@ -102,7 +102,7 @@ async def extract_pdf_with_openrouter(
     ]
     
     payload = {
-        "model": "google/gemini-2.5-flash",  # Fast model for extraction
+        "model": UTILITY_MODEL,  # Fast model for extraction
         "messages": messages,
         "plugins": [
             {

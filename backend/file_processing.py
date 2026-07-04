@@ -18,6 +18,7 @@ import docx
 
 from .openrouter import query_model
 from .logger import logger
+from .config import UTILITY_MODEL
 
 # Limits
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB (increased for office docs)
@@ -480,7 +481,7 @@ async def _extract_image(
     
     try:
         response = await query_model(
-            "google/gemini-2.5-flash",
+            UTILITY_MODEL,
             messages,
             timeout=30.0,
             zdr_enabled=zdr_enabled,
