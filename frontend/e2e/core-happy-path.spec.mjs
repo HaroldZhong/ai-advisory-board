@@ -137,6 +137,10 @@ async function installMockApi(page) {
     route.fulfill(json({ success: true, has_api_key: true }));
   });
 
+  await page.route(`${API_BASE}/api/config/connectivity`, (route) => {
+    route.fulfill(json({ reachable: true, key_valid: true, error_kind: null, detail: '' }));
+  });
+
   await page.route(`${API_BASE}/api/models`, (route) => {
     route.fulfill(json(modelsPayload));
   });
@@ -297,6 +301,8 @@ test('first-run setup creates a private preset conversation and renders streamed
   await expect(page.getByRole('button', { name: /Continue/ })).toBeDisabled();
 
   await page.getByLabel('OpenRouter API key').fill('sk-or-v1-launch-hardening-key');
+  await page.getByRole('button', { name: 'Test connection' }).click();
+  await expect(page.getByText('Connected to OpenRouter.')).toBeVisible();
   await page.getByRole('button', { name: /Continue/ }).click();
   await page.getByText('Private routing by default').click();
   await page.getByRole('button', { name: /Continue/ }).click();
@@ -334,4 +340,17 @@ test('first-run setup creates a private preset conversation and renders streamed
     mode: 'council',
     zdr_enabled: true,
   });
+});
+
+test('first-run setup can be dismissed and lands on the landing page', async ({ page }) => {
+  await installMockApi(page);
+
+  await page.goto('/app');
+
+  await expect(page.getByRole('heading', { name: 'Set Up AI Advisory Board' })).toBeVisible();
+
+  await page.keyboard.press('Escape');
+
+  await expect(page.getByRole('heading', { name: 'Set Up AI Advisory Board' })).not.toBeVisible();
+  await expect(page).toHaveURL('/');
 });

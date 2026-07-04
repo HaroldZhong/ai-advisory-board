@@ -16,3 +16,26 @@ export function buildFirstRunSettings({ zdrChoice, budgetUsd }) {
     defaultSessionBudgetUsd: budgetUsd ?? null,
   };
 }
+
+/**
+ * Map a /api/config/connectivity response body to UI status + message.
+ * Handles a missing body (e.g. the fetch itself failed) as 'blocked'.
+ */
+export function mapConnectivityResult(body) {
+  if (!body) {
+    return { status: 'blocked', message: 'Could not reach the backend to test the connection.' };
+  }
+
+  const { reachable, key_valid: keyValid, detail } = body;
+
+  if (!reachable) {
+    return { status: 'blocked', message: detail };
+  }
+  if (keyValid === true) {
+    return { status: 'connected', message: 'Connected to OpenRouter.' };
+  }
+  if (keyValid === false) {
+    return { status: 'bad_key', message: detail };
+  }
+  return { status: 'key_unchecked', message: 'Network OK. API key not checked yet.' };
+}
