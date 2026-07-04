@@ -111,6 +111,10 @@ AVAILABLE_MODELS = CURATED_MODELS
 # Chairman model - synthesizes final response
 CHAIRMAN_MODEL = MODEL_REGISTRY["chairman_model"]
 
+# Cheap fast model for titles/topics/rewrites/RAG extraction/vision description/
+# PDF parsing — change here, not inline.
+UTILITY_MODEL = "google/gemini-2.5-flash"
+
 # OpenRouter API endpoint. Override the base to route through an
 # OpenAI-compatible relay/proxy (e.g. where openrouter.ai is blocked).
 # Blank/whitespace values fall back to the default (an optional env var

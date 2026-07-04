@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from .logger import logger
-from .config import RAG_SETTINGS
+from .config import RAG_SETTINGS, UTILITY_MODEL
 from .openrouter import query_model
 from .app_paths import get_pageindex_dir, write_text_atomic
 
@@ -253,9 +253,9 @@ class CouncilRAG:
         )
 
         try:
-            logger.info("[RAG] Calling PageIndex reasoner (gemini-2.5-flash) for query=%r...", query)
+            logger.info("[RAG] Calling PageIndex reasoner (%s) for query=%r...", UTILITY_MODEL, query)
             response = await query_model(
-                "google/gemini-2.5-flash",
+                UTILITY_MODEL,
                 [{"role": "user", "content": extract_prompt}],
                 timeout=15.0,
                 zdr_enabled=zdr_enabled,

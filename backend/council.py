@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, UTILITY_MODEL
 from .logger import logger
 from .tools.types import EvidencePack, UsageLimits
 from .tools.registry import ToolRegistry
@@ -407,7 +407,7 @@ Topics:"""
 
     try:
         response = await query_model(
-            "google/gemini-2.5-flash",
+            UTILITY_MODEL,
             [{"role": "user", "content": prompt}],
             timeout=10.0,
             zdr_enabled=zdr_enabled,
@@ -604,9 +604,9 @@ Title:"""
 
     messages = [{"role": "user", "content": title_prompt}]
 
-    # Use gemini-2.5-flash for title generation (fast and cheap)
+    # Use UTILITY_MODEL for title generation (fast and cheap)
     response = await query_model(
-        "google/gemini-2.5-flash",
+        UTILITY_MODEL,
         messages,
         timeout=30.0,
         zdr_enabled=zdr_enabled,
@@ -884,7 +884,7 @@ Rewritten question (ONE sentence, no explanations):"""
     
     try:
         response = await query_model(
-            "google/gemini-2.5-flash",
+            UTILITY_MODEL,
             [{"role": "user", "content": prompt}],
             timeout=10.0,
             zdr_enabled=zdr_enabled,
