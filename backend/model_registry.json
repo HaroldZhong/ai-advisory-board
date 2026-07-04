@@ -406,7 +406,7 @@
       "supports_zdr": true,
       "supports_reasoning": true,
       "available": true,
-      "reasoning_extraction": "tags"
+      "reasoning_extraction": "field"
     },
     {
       "id": "anthropic/claude-sonnet-5",
@@ -418,7 +418,7 @@
       "supports_zdr": true,
       "supports_reasoning": true,
       "available": true,
-      "reasoning_extraction": "tags"
+      "reasoning_extraction": "field"
     },
     {
       "id": "google/gemini-3.5-flash",
@@ -442,7 +442,7 @@
       "supports_zdr": true,
       "supports_reasoning": true,
       "available": true,
-      "reasoning_extraction": "tags"
+      "reasoning_extraction": "field"
     },
     {
       "id": "x-ai/grok-4.3",
