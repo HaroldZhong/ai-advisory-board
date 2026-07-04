@@ -211,3 +211,109 @@ def test_truncated_messages_release_attachment_references(monkeypatch, tmp_path)
 
     assert result["deleted"] == 1
     assert attachment_storage.get_attachment(attachment.attachment_id) is None
+
+
+def test_truncated_attachment_survives_when_resent_via_keep_ids(monkeypatch, tmp_path):
+    """Codex review finding (P3-T8 round 2, item 1): an edit/regenerate that
+    resends an attachment id only referenced by the truncated tail must not
+    have that attachment's files deleted out from under the resend — the
+    relink in prepare_message_attachments would then fail on a missing
+    record. keep_ids protects ids the caller is about to resend."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    attachment_storage = import_module_with_api_key(monkeypatch, "backend.attachment_storage")
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+
+    conversation_id = "conv-truncate-keep-ids"
+    storage.create_conversation(conversation_id)
+    resent = attachment_storage.create_attachment(b"resent file", "resent.txt", "text/plain")
+    dropped = attachment_storage.create_attachment(b"dropped file", "dropped.txt", "text/plain")
+    linked = attachment_storage.link_attachments_to_conversation(
+        [resent.attachment_id, dropped.attachment_id],
+        conversation_id,
+    )
+    storage.add_user_message(
+        conversation_id,
+        "Use these files",
+        attachment_ids=[resent.attachment_id, dropped.attachment_id],
+        attachments=[a.model_dump() for a in linked],
+    )
+    storage.add_chat_message(conversation_id, "Response")
+
+    result = main.delete_truncated_message_attachments(
+        conversation_id,
+        keep_count=0,
+        keep_ids={resent.attachment_id},
+    )
+    storage.truncate_messages(conversation_id, 0)
+
+    # The resent id is skipped entirely — not even counted as retained/deleted.
+    assert resent.attachment_id not in result["attachment_ids"]
+    assert attachment_storage.get_attachment(resent.attachment_id) is not None
+
+    # A truncated-only attachment NOT being resent is still cleaned up.
+    assert dropped.attachment_id in result["attachment_ids"]
+    assert result["deleted"] == 1
+    assert attachment_storage.get_attachment(dropped.attachment_id) is None
+
+    # The relink prepare_message_attachments performs on resend must still work.
+    relinked = main.prepare_message_attachments(conversation_id, [resent.attachment_id])
+    assert len(relinked) == 1
+    assert relinked[0]["attachment_id"] == resent.attachment_id
+
+
+@pytest.mark.asyncio
+async def test_edit_regenerate_resent_attachment_survives_end_to_end(monkeypatch, tmp_path):
+    """Full run_turn path: editing a message and resending its attachment_id
+    must not lose the attachment (Codex review finding, P3-T8 round 2 item 1)."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    attachment_storage = import_module_with_api_key(monkeypatch, "backend.attachment_storage")
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+
+    conversation_id = "conv-edit-regen-attachment"
+    storage.create_conversation(conversation_id)
+    attachment = attachment_storage.create_attachment(b"edit regen file", "edit.txt", "text/plain")
+    linked = attachment_storage.link_attachments_to_conversation(
+        [attachment.attachment_id],
+        conversation_id,
+    )
+    storage.add_user_message(
+        conversation_id,
+        "Original question",
+        attachment_ids=[attachment.attachment_id],
+        attachments=[linked[0].model_dump()],
+    )
+    storage.add_chat_message(conversation_id, "Original answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "New answer", "usage": {}}
+
+    async def fake_retrieve_async(*args, **kwargs):
+        # retrieve_async returns (context, usage) since PR #75.
+        return "", None
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(
+            content="Edited question",
+            mode="chat",
+            edit_index=0,
+            attachment_ids=[attachment.attachment_id],
+        ),
+    )
+
+    assert result["type"] == "chat"
+    conversation = storage.get_conversation(conversation_id)
+    assert conversation["messages"][0]["attachment_ids"] == [attachment.attachment_id]
+    assert conversation["messages"][0]["attachments"][0]["attachment_id"] == attachment.attachment_id
+    assert attachment_storage.get_attachment(attachment.attachment_id) is not None

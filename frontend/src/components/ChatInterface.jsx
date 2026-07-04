@@ -20,6 +20,7 @@ import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
 import { getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 import { predictNextMessageMode } from '../utils/modePrediction';
+import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
 import { getExportSavedDescription } from '@/utils/conversationExport';
 
@@ -86,6 +87,8 @@ export default function ChatInterface({
   const [isDragging, setIsDragging] = useState(false);
   const [editingIndex, setEditingIndex] = useState(-1);
   const [editingContent, setEditingContent] = useState('');
+  const [editingAttachmentIds, setEditingAttachmentIds] = useState([]);
+  const [editingAttachmentMetadata, setEditingAttachmentMetadata] = useState([]);
   const [askCouncil, setAskCouncil] = useState(false);
   const [showCouncilConfirm, setShowCouncilConfirm] = useState(false);
   const { settings, updateSettings } = useSettings();
@@ -103,9 +106,26 @@ export default function ChatInterface({
   const canAskCouncil = nextMessageMode === 'chat';
   const effectiveZdr = resolveEffectiveZdr(conversation, settings, zdrAvailable);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
-  const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
+  // Granular busy flags (P3-T8 item 2): a single isLoading used to disable
+  // the whole composer area, including controls with no real conflict with
+  // an in-flight stream. Only sending a NEW turn (and its textarea/attach
+  // toggle) needs to wait on isLoading — thinking effort tracks its own busy
+  // state and carries no per-turn promise, so it isn't blocked just because
+  // a response happens to be streaming. The attach button DOES still need
+  // isUploading (Codex review, round 2 item 2): handleFileUpload validates
+  // the 10-file cap against a stale `attachments.length` snapshot taken at
+  // call time, so a second upload starting before the first one's state
+  // updates land could slip past the cap. Privacy is DELIBERATELY still
+  // blocked by isLoading (Codex review, round 4 — see
+  // getPrivacyToggleDisabledReason's isStreaming param): prepare_turn
+  // resolves zdr_enabled once per turn, so flipping the toggle mid-stream
+  // would show "ZDR enforced" while the in-flight turn keeps its captured
+  // (possibly non-ZDR) routing.
+  const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
+  const attachDisabled = isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
+  const composerDisabled = sendDisabled;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
-    isLoading,
+    isStreaming: isLoading,
     isUploading,
     isUpdatingPrivacy,
     // Only the ENABLE direction is blocked off-provider — an explicit
@@ -113,11 +133,9 @@ export default function ChatInterface({
     // disable-able so the user can consciously turn it off.
     isEnablingUnavailable: !zdrAvailable && !effectiveZdr,
   });
-  const thinkingDisabledReason = isLoading
-    ? 'Thinking effort changes apply to future turns and are disabled while a response is streaming'
-    : isUpdatingThinkingEffort
-      ? 'Thinking effort update is being saved'
-      : null;
+  const thinkingDisabledReason = isUpdatingThinkingEffort
+    ? 'Thinking effort update is being saved'
+    : null;
 
   const handleBudgetConfirm = async (budgetUsd) => {
     try {
@@ -386,14 +404,20 @@ export default function ChatInterface({
   };
 
   // Edit & Regenerate handlers
-  const handleEditStart = (index, content) => {
+  const handleEditStart = (index, message) => {
     setEditingIndex(index);
-    setEditingContent(content);
+    setEditingContent(message.content);
+    // Re-apply the original message's attachments on regenerate (P3-T8 item
+    // 3) — the resend used to hardcode an empty attachment list here.
+    setEditingAttachmentIds(extractMessageAttachmentIds(message));
+    setEditingAttachmentMetadata(message.attachments || []);
   };
 
   const handleEditCancel = () => {
     setEditingIndex(-1);
     setEditingContent('');
+    setEditingAttachmentIds([]);
+    setEditingAttachmentMetadata([]);
   };
 
   const handleEditSubmit = async () => {
@@ -406,15 +430,21 @@ export default function ChatInterface({
 
     const submittedContent = editingContent;
     const submittedIndex = editingIndex;
+    const submittedAttachmentIds = editingAttachmentIds;
+    const submittedAttachmentMetadata = editingAttachmentMetadata;
     setEditingIndex(-1);
     setEditingContent('');
+    setEditingAttachmentIds([]);
+    setEditingAttachmentMetadata([]);
 
     try {
-      await onSendMessage(submittedContent, [], [], submittedIndex);
+      await onSendMessage(submittedContent, submittedAttachmentIds, submittedAttachmentMetadata, submittedIndex);
     } catch (error) {
       if (error?.status === 409) {
         setEditingIndex(submittedIndex);
         setEditingContent(submittedContent);
+        setEditingAttachmentIds(submittedAttachmentIds);
+        setEditingAttachmentMetadata(submittedAttachmentMetadata);
         setSendError(error.message || budgetCapBlock.detail);
         setShowBudgetSelector(true);
       }
@@ -558,7 +588,7 @@ export default function ChatInterface({
                       </Card>
                       {!isLoading && (
                         <button
-                          onClick={() => handleEditStart(index, msg.content)}
+                          onClick={() => handleEditStart(index, msg)}
                           className="absolute -left-8 top-1/2 rounded p-1 opacity-0 transition-opacity hover:bg-muted group-hover/msg:opacity-100"
                           title="Edit & Regenerate"
                         >
@@ -817,7 +847,7 @@ export default function ChatInterface({
               size="icon"
               className="h-10 w-10 shrink-0"
               onClick={() => fileInputRef.current?.click()}
-              disabled={composerDisabled}
+              disabled={attachDisabled}
               title={budgetCapBlock.blocked ? budgetCapBlock.detail : 'Attach files'}
             >
               <Paperclip className="h-4 w-4" />

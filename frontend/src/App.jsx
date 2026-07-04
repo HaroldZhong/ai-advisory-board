@@ -219,7 +219,11 @@ function ConversationView({
   };
 
   const handleUpdateConversationPrivacy = async (zdrEnabled) => {
-    if (!conversationId || isLoading) return null;
+    // No longer gated on isLoading (Codex review, P3-T8 round 2 item 3): the
+    // ZDR write barrier + startup purge from #71 make a mid-stream privacy
+    // flip safe server-side, and the composer's own isUpdatingPrivacy flag
+    // (ChatInterface) already prevents double-submitting this handler.
+    if (!conversationId) return null;
 
     const targetConversationId = conversationId;
     const previousZdr = currentConversation?.id === targetConversationId
@@ -244,7 +248,11 @@ function ConversationView({
   };
 
   const handleUpdateThinkingEffort = async (thinkingEffort) => {
-    if (!conversationId || isLoading) return null;
+    // No longer gated on isLoading (Codex review, P3-T8 round 2 item 3):
+    // thinking effort applies to future turns only, and the composer's own
+    // isUpdatingThinkingEffort flag (ChatInterface) already prevents
+    // double-submitting this handler.
+    if (!conversationId) return null;
 
     const targetConversationId = conversationId;
     const previousThinkingEffort = currentConversation?.id === targetConversationId

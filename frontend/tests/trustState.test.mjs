@@ -240,16 +240,31 @@ test('local privacy metadata update only applies to the active conversation', ()
 test('privacy toggle is disabled for active data-routing operations', () => {
   assert.equal(getPrivacyToggleDisabledReason(), null);
   assert.match(
-    getPrivacyToggleDisabledReason({ isLoading: true }),
-    /streaming/,
-  );
-  assert.match(
     getPrivacyToggleDisabledReason({ isUploading: true }),
     /attachments are uploading/,
   );
   assert.match(
     getPrivacyToggleDisabledReason({ isUpdatingPrivacy: true }),
     /being saved/,
+  );
+});
+
+test('privacy toggle is blocked while a turn is streaming (Codex review, P3-T8 round 4)', () => {
+  // Deliberate partial revert of round 2's "usable mid-stream" change:
+  // prepare_turn resolves zdr_enabled ONCE per turn, so flipping this
+  // mid-stream would show "ZDR enforced" while the in-flight turn keeps
+  // its already-captured routing — a per-turn promise the UI must not
+  // appear to break. Plan detail loses to privacy correctness here.
+  assert.match(
+    getPrivacyToggleDisabledReason({ isStreaming: true }),
+    /Wait for the current response to finish/,
+  );
+});
+
+test('privacy toggle streaming guard takes priority over other busy reasons', () => {
+  assert.match(
+    getPrivacyToggleDisabledReason({ isStreaming: true, isUploading: true, isUpdatingPrivacy: true }),
+    /Wait for the current response to finish/,
   );
 });
 
