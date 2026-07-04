@@ -17,8 +17,12 @@ def classify_openrouter_error(exc: Exception) -> str:
         return "timeout"
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
-        if code in (401, 403):
+        if code == 401:
             return "auth"
+        # 403 is NOT auth: OpenRouter documents it as moderation/guardrail
+        # blocks (input flagged), so it must not point operators at key fixes.
+        if code == 403:
+            return "other"
         if code == 402:
             return "quota"
         if code == 408:  # OpenRouter documents 408 as request timeout
