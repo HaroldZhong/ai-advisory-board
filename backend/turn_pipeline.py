@@ -272,7 +272,20 @@ async def run_turn(
             # produced no result: error text must not become a memory. Also
             # skip entirely for ZDR turns (audit §12, Decision #5): PageIndex
             # memory is cross-conversation, so ZDR content must never enter it.
-            if stage3_result.get("model") != "error" and not zdr_enabled:
+            # Re-check FRESH metadata (updated_conversation, just refetched
+            # above) in addition to the pre-flight zdr_enabled: if the user
+            # flipped ZDR on via PUT /api/conversations/{id} while this turn
+            # was running, update_conversation already purged this
+            # conversation's existing memories, and this stale-zdr_enabled
+            # turn must not re-add fresh ones after that purge (TOCTOU).
+            # The earlier attachment-loop index_document call is inherently
+            # covered even without a recheck there: if ZDR flips after those
+            # writes land, the runtime purge in update_conversation deletes
+            # them along with everything else for this conversation.
+            turn_zdr_enabled = zdr_enabled or bool(
+                updated_conversation.get("metadata", {}).get("zdr_enabled")
+            )
+            if stage3_result.get("model") != "error" and not turn_zdr_enabled:
                 logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
 
                 # Extract topics from question + final answer

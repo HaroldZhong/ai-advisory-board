@@ -108,7 +108,11 @@ class CouncilRAG:
                 del self.store[conversation_id]
                 orphans_removed += 1
                 continue
-            if conversation is None:
+            if not isinstance(conversation, dict):
+                # None (missing file) or a valid-JSON-but-wrong-type record
+                # (e.g. a conversation file holding "[]"): either way there's
+                # no metadata to trust, so treat it the same as unreadable and
+                # fail closed rather than letting .get() raise below.
                 del self.store[conversation_id]
                 orphans_removed += 1
                 continue

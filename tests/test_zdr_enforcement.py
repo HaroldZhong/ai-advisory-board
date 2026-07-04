@@ -473,6 +473,72 @@ async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch, tmp_path):
+    """Codex P1 TOCTOU: a turn starts with the pre-flight zdr_enabled=False
+    captured before the council ran. If the user flips ZDR on via
+    PUT /api/conversations/{id} while the turn is still in flight,
+    update_conversation purges this conversation's existing memories
+    immediately. The turn must re-check FRESH metadata at indexing time (not
+    just the stale pre-flight value) so it doesn't re-add memories right
+    after that purge."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-zdr-flipped-mid-turn"
+    main.storage.create_conversation(conversation_id)  # starts non-ZDR
+
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {"prompt_tokens": 10, "completion_tokens": 5}
+
+    async def fake_stage1_progressive(content, *args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        # Simulate the user flipping ZDR on via PUT /api/conversations/{id}
+        # while stage3 (or any earlier stage) was still running: real
+        # storage metadata now says zdr_enabled=True, but this turn's
+        # zdr_enabled local variable was already captured as False.
+        main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
+        return {"model": "chair", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    async def fake_topics(*args, **kwargs):
+        return ["topic"]
+
+    rag_system = SimpleNamespace(
+        index_session=Mock(),
+        index_document=Mock(),
+        refresh_hybrid_index=Mock(),
+    )
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr(main, "rag_system", rag_system)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Sensitive question", mode="council"),
+    )
+
+    rag_system.index_session.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(monkeypatch, tmp_path):
     """Attachments attached to a ZDR turn must not be indexed into PageIndex
     either (backend/turn_pipeline.py's attachment loop calls index_document)."""
@@ -598,6 +664,36 @@ async def test_startup_cleanup_removes_orphaned_entries_with_unreadable_conversa
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
     assert "conv-corrupt" not in rag.store
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_removes_orphaned_entries_with_non_dict_conversation_record(monkeypatch, tmp_path):
+    """Codex P2: get_conversation() can return valid JSON that isn't a dict
+    (e.g. a conversation file holding "[]"). Calling .get() on that would
+    raise OUTSIDE the try/except in cleanup_zdr_conversations, aborting
+    CouncilRAG's constructor and backend startup. Must be treated as an
+    orphan (fail closed) instead of crashing."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    rag_module = import_module_with_api_key(monkeypatch, "backend.rag")
+
+    conversations_dir = tmp_path / "conversations"
+    conversations_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    (conversations_dir / "conv-wrong-type.json").write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    seeded_store = {
+        "conv-wrong-type": {"folder_id": "root", "turns": [{"turn": 0, "memory": "orphaned memory"}]},
+    }
+    import json
+    index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+
+    rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert "conv-wrong-type" not in rag.store
 
 
 @pytest.mark.asyncio
