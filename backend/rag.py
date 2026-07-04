@@ -236,10 +236,12 @@ class CouncilRAG:
         if not memory_blocks:
             return {"context": "", "used_tokens": 0, "pieces": 0}
 
-        # Limit the history string generically to roughly max_tokens or 60,000 chars to avoid overloading standard OpenRouter context
+        # Limit the history string to roughly max_tokens or 60,000 chars to avoid overloading standard OpenRouter context.
+        # chars≈tokens×4 heuristic; effective cap never exceeds the legacy 60k ceiling.
+        cap = min(60000, max_tokens * 4) if max_tokens else 60000
         memory_text = "\n\n".join(memory_blocks)
-        if len(memory_text) > 60000:
-            memory_text = memory_text[-60000:]
+        if len(memory_text) > cap:
+            memory_text = memory_text[-cap:]
             
         # 2. Reasoning Extraction step
         no_context_token = "NO_RELEVANT_CONTEXT"
