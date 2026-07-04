@@ -109,3 +109,25 @@ Before publishing a release candidate:
 6. Run as a standard user, not administrator.
 
 The clean-VM acceptance test should use a Windows environment with no Python installed.
+
+## Network access, proxies, and restricted regions
+
+The app requires HTTPS access to `openrouter.ai`. Nothing is downloaded from
+Hugging Face or any other model host — if the app cannot work, it is the
+OpenRouter connection (or your API key), not a model download.
+
+- **Proxy:** the backend honors the `HTTPS_PROXY` / `HTTP_PROXY` environment
+  variables. It does **not** read the Windows system proxy settings — a VPN
+  that only works in your browser (system-proxy mode) will not cover this app.
+  Either run your VPN in TUN/global mode, or set `HTTPS_PROXY` before launching.
+- **Relay:** set `OPENROUTER_BASE_URL` to route all API calls through an
+  OpenAI-compatible relay (default: `https://openrouter.ai/api/v1`).
+- **Diagnose:** `GET http://127.0.0.1:8001/api/config/connectivity` reports
+  whether the backend can reach OpenRouter and whether your API key is valid
+  (network / key). Key validation requires the endpoint to implement
+  OpenRouter's `/key` route — a generic relay without it reports "key status
+  unknown" while reachability is still checked. Credit problems are reported
+  at chat time, not by this probe.
+- **Logs:** check `logs/app.log` under the app data folder
+  (`%LOCALAPPDATA%\HaroldZhong\AI Advisory Board\` on Windows). On the old
+  v1.0.0 build, `desktop.log` is next to the `.exe` instead.
