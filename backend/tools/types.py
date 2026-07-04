@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, Field
 
@@ -105,7 +105,7 @@ class EvidencePack(BaseModel):
     """
     run_id: str
     query: str
-    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     schema_version: str = "1.0"
     
     tools_used: List[ToolUsageRecord] = Field(default_factory=list)

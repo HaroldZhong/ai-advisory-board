@@ -49,7 +49,7 @@ def save_openrouter_api_key(api_key: str) -> None:
     lines = []
     key_exists = False
     if ENV_PATH.exists():
-        lines = ENV_PATH.read_text().splitlines(keepends=True)
+        lines = ENV_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
 
     new_lines = []
     for line in lines:
