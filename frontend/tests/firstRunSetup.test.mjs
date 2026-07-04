@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   FIRST_RUN_BUDGET_PRESETS,
   looksLikeOpenRouterKey,
+  isAcceptableApiKey,
   buildFirstRunSettings,
   mapConnectivityResult,
 } from '../src/utils/firstRunSetup.js';
@@ -12,6 +13,19 @@ test('validates OpenRouter key shape without accepting empty strings', () => {
   assert.equal(looksLikeOpenRouterKey(''), false);
   assert.equal(looksLikeOpenRouterKey('sk-test'), false);
   assert.equal(looksLikeOpenRouterKey(' sk-or-v1-abcdefghijklmnop '), true);
+});
+
+test('key acceptance is provider-aware', () => {
+  // openrouter: existing sk-or- shape check applies
+  assert.equal(isAcceptableApiKey('sk-or-v1-abcdefghijklmnop', 'openrouter'), true);
+  assert.equal(isAcceptableApiKey('junk', 'openrouter'), false);
+  assert.equal(isAcceptableApiKey('', 'openrouter'), false);
+
+  // openai-compatible: any non-empty trimmed value is accepted
+  assert.equal(isAcceptableApiKey('anything', 'openai-compatible'), true);
+  assert.equal(isAcceptableApiKey('ollama-local', 'openai-compatible'), true);
+  assert.equal(isAcceptableApiKey('  ', 'openai-compatible'), false);
+  assert.equal(isAcceptableApiKey('', 'openai-compatible'), false);
 });
 
 test('builds persisted first-run settings from privacy and budget choices', () => {

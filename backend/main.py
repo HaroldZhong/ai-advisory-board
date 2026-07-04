@@ -198,6 +198,17 @@ async def create_conversation(request: CreateConversationRequest):
     if chairman_model is None and preset is not None:
         chairman_model = preset["chairman_model"]
 
+    # Effective ZDR: explicit request value, else implied by a requires_zdr
+    # preset. Must gate on this — not just the explicit flag — or a preset
+    # like "private" silently loses its ZDR guarantee off-OpenRouter.
+    effective_zdr = (
+        bool(request.zdr_enabled)
+        if request.zdr_enabled is not None
+        else bool(preset is not None and preset.get("requires_zdr"))
+    )
+    if effective_zdr and not config.provider_is_openrouter():
+        raise HTTPException(status_code=400, detail="ZDR requires OpenRouter")
+
     if request.zdr_enabled is not None:
         metadata["zdr_enabled"] = bool(request.zdr_enabled)
     elif preset is not None and preset.get("requires_zdr"):
@@ -610,7 +621,10 @@ async def get_models():
 @app.get("/api/config/status")
 async def get_config_status():
     """Check if the system is configured (API key exists)."""
-    return {"has_api_key": config.has_openrouter_api_key()}
+    return {
+        "has_api_key": config.has_openrouter_api_key(),
+        "provider_kind": config.PROVIDER_KIND,
+    }
 
 
 @app.get("/api/config/connectivity")
@@ -777,6 +791,8 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
         )
         if updates.zdr_enabled is False and preset is not None and preset.get("requires_zdr"):
             raise HTTPException(status_code=400, detail=f"Preset {preset_id} requires ZDR")
+        if updates.zdr_enabled is True and not config.provider_is_openrouter():
+            raise HTTPException(status_code=400, detail="ZDR requires OpenRouter")
         if updates.zdr_enabled is True:
             ensure_zdr_compatible_models(
                 metadata.get("chairman_model"),
@@ -844,6 +860,11 @@ def prepare_turn(conversation_id: str, request: SendMessageRequest):
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     zdr_enabled = resolve_effective_zdr(conversation, request)
+    if zdr_enabled and not config.provider_is_openrouter():
+        raise HTTPException(
+            status_code=400,
+            detail="ZDR requires OpenRouter. Disable ZDR for this conversation or switch providers.",
+        )
     thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
     # Determine mode. Auto-resolution must use the EFFECTIVE message count —
@@ -1007,6 +1028,12 @@ async def create_attachment_endpoint(
     Upload a file and create an attachment.
     Returns attachment_id and status. Extraction happens async.
     """
+    if use_zdr and not config.provider_is_openrouter():
+        raise HTTPException(
+            status_code=400,
+            detail="ZDR requires OpenRouter. Disable ZDR for this upload or switch providers.",
+        )
+
     content = await file.read()
     mime_type = get_mime_type(file.filename, file.content_type)
     
@@ -1110,16 +1137,22 @@ async def enhance_attachment_endpoint(
 ):
     """
     Re-extract attachment content using OpenRouter enhanced PDF processing.
-    
+
     Use this when local extraction failed or produced poor results.
-    
+
     Args:
         engine: "pdf-text" (free) or "mistral-ocr" (paid, better for scans)
         use_zdr: Enable Zero Data Retention for privacy
     """
+    if use_zdr and not config.provider_is_openrouter():
+        raise HTTPException(
+            status_code=400,
+            detail="ZDR requires OpenRouter. Disable ZDR for this upload or switch providers.",
+        )
+
     from .openrouter_pdf import extract_pdf_with_openrouter, estimate_pdf_cost
     from .attachment_storage import get_attachment_raw
-    
+
     attachment = get_attachment(attachment_id)
     if not attachment:
         raise HTTPException(status_code=404, detail="Attachment not found")

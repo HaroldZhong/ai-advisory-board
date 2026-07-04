@@ -3,7 +3,7 @@
 import asyncio
 import httpx
 from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
-from .config import OPENROUTER_API_URL, get_openrouter_api_key
+from .config import OPENROUTER_API_URL, get_openrouter_api_key, provider_is_openrouter
 from .logger import logger
 
 
@@ -57,7 +57,24 @@ async def query_model(
 
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
+
+    Raises:
+        ValueError: zdr_enabled is True but the configured provider isn't
+            OpenRouter. ZDR routing is an OpenRouter-specific `provider`
+            field a generic OpenAI-compatible endpoint (relay, Ollama, LM
+            Studio) has no notion of — silently dropping it would send
+            content to that endpoint while callers still believe it was
+            ZDR-routed. backend.main.prepare_turn rejects zdr_enabled turns
+            before they reach here for normal chat/council traffic; this
+            raise is the hard backstop for any other caller (e.g. the
+            attachment upload/vision-extraction path) that doesn't go
+            through that pre-flight.
     """
+    # Raised BEFORE any network call is prepared — a caller error here must
+    # never silently downgrade to an unprotected request.
+    if zdr_enabled and not provider_is_openrouter():
+        raise ValueError("ZDR routing requires OpenRouter")
+
     api_key = get_openrouter_api_key()
     if not api_key:
         logger.error("OpenRouter API key not configured")
@@ -81,15 +98,41 @@ async def query_model(
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=connect_timeout_for(timeout))
         ) as client:
-            response = await asyncio.wait_for(
-                client.post(
-                    OPENROUTER_API_URL,
-                    headers=headers,
-                    json=payload
-                ),
-                timeout=timeout,
-            )
-            response.raise_for_status()
+            try:
+                response = await asyncio.wait_for(
+                    client.post(
+                        OPENROUTER_API_URL,
+                        headers=headers,
+                        json=payload
+                    ),
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # Some OpenAI-compatible endpoints reject the `reasoning`
+                # field outright (400) instead of ignoring it. Retry once
+                # without it rather than failing the whole turn.
+                if (
+                    e.response.status_code == 400
+                    and "reasoning" in payload
+                    and not provider_is_openrouter()
+                ):
+                    logger.warning(
+                        "OpenAI-compatible endpoint rejected reasoning field for model=%s; retrying without it",
+                        model,
+                    )
+                    payload.pop("reasoning")
+                    response = await asyncio.wait_for(
+                        client.post(
+                            OPENROUTER_API_URL,
+                            headers=headers,
+                            json=payload
+                        ),
+                        timeout=timeout,
+                    )
+                    response.raise_for_status()
+                else:
+                    raise
 
             data = response.json()
             message = data['choices'][0]['message']

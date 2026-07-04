@@ -11,6 +11,7 @@ import {
   getPrivacyToggleDisabledReason,
   mergeConversationPrivacyUpdate,
   resolveAttachmentEnhancementZdr,
+  resolveEffectiveZdr,
   setConversationPrivacyMetadata,
 } from '../src/utils/trustState.js';
 
@@ -141,6 +142,21 @@ test('legacy conversation without ZDR metadata falls back to current settings', 
   assert.equal(state.thinking.tone, 'warn');
 });
 
+test('trust row state ignores the settings ZDR default off-provider', () => {
+  const state = formatTrustRowState({
+    conversation: {
+      metadata: { council_models: ['a'], chairman_model: 'chair' },
+      session_policy: {},
+      session_usage: {},
+    },
+    settings: { zdrEnabled: true },
+    zdrAvailable: false,
+  });
+
+  assert.equal(state.privacy.effectiveZdr, false);
+  assert.equal(state.privacy.label, 'Standard');
+});
+
 test('chat-default conversations show the active model instead of council preset info', () => {
   const state = formatTrustRowState({
     conversation: {
@@ -234,6 +250,38 @@ test('privacy toggle is disabled for active data-routing operations', () => {
   assert.match(
     getPrivacyToggleDisabledReason({ isUpdatingPrivacy: true }),
     /being saved/,
+  );
+});
+
+test('privacy toggle blocks enabling ZDR off-provider but not disabling it', () => {
+  assert.match(
+    getPrivacyToggleDisabledReason({ isEnablingUnavailable: true }),
+    /Requires OpenRouter/,
+  );
+  // Disable direction: caller passes isEnablingUnavailable=false when
+  // effectiveZdr is already true, so the toggle stays clickable.
+  assert.equal(getPrivacyToggleDisabledReason({ isEnablingUnavailable: false }), null);
+});
+
+test('resolveEffectiveZdr ignores the settings default off-provider but keeps explicit metadata', () => {
+  // No conversation-level choice: a bare preference must not brick sends.
+  assert.equal(
+    resolveEffectiveZdr({ metadata: {} }, { zdrEnabled: true }, false),
+    false,
+  );
+  assert.equal(
+    resolveEffectiveZdr({ metadata: {} }, { zdrEnabled: true }, true),
+    true,
+  );
+  // Explicit conversation metadata (the privacy promise) survives regardless
+  // of provider availability — the backend rejects it loudly instead.
+  assert.equal(
+    resolveEffectiveZdr({ metadata: { zdr_enabled: true } }, {}, false),
+    true,
+  );
+  assert.equal(
+    resolveEffectiveZdr({ metadata: { zdr_enabled: false } }, { zdrEnabled: true }, false),
+    false,
   );
 });
 

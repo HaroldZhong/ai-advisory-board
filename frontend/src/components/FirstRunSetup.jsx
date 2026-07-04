@@ -26,7 +26,7 @@ import { cn } from '@/lib/utils';
 import {
   FIRST_RUN_BUDGET_PRESETS,
   buildFirstRunSettings,
-  looksLikeOpenRouterKey,
+  isAcceptableApiKey,
   mapConnectivityResult,
 } from '@/utils/firstRunSetup';
 import {
@@ -59,7 +59,7 @@ function ChoiceButton({ selected, children, className = '', ...props }) {
   );
 }
 
-export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
+export default function FirstRunSetup({ isOpen, onComplete, onDismiss, providerKind = 'openrouter' }) {
   const [step, setStep] = useState(0);
   const [apiKey, setApiKey] = useState('');
   const [zdrChoice, setZdrChoice] = useState(null);
@@ -70,7 +70,7 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
   const [connectionResult, setConnectionResult] = useState(null);
 
   const trimmedApiKey = apiKey.trim();
-  const keyIsValid = looksLikeOpenRouterKey(trimmedApiKey);
+  const keyIsValid = isAcceptableApiKey(trimmedApiKey, providerKind);
   const currentStep = STEPS[step];
   const latestApiKeyRef = useRef(trimmedApiKey);
   latestApiKeyRef.current = trimmedApiKey;
@@ -158,7 +158,7 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
               <div className="space-y-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium" htmlFor="openrouter-api-key">
-                    OpenRouter API key
+                    {providerKind === 'openai-compatible' ? 'API key' : 'OpenRouter API key'}
                   </label>
                   <Input
                     id="openrouter-api-key"
@@ -168,7 +168,7 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
                       setApiKey(event.target.value);
                       setConnectionResult(null);
                     }}
-                    placeholder="sk-or-v1-..."
+                    placeholder={providerKind === 'openai-compatible' ? 'Enter your API key' : 'sk-or-v1-...'}
                     autoFocus
                     autoComplete="off"
                   />
@@ -178,7 +178,9 @@ export default function FirstRunSetup({ isOpen, onComplete, onDismiss }) {
                 </div>
                 {trimmedApiKey && !keyIsValid && (
                   <p className="text-sm text-destructive" role="alert">
-                    Enter an OpenRouter key that starts with sk-or-.
+                    {providerKind === 'openai-compatible'
+                      ? 'Enter the API key for your provider.'
+                      : 'Enter an OpenRouter key that starts with sk-or-.'}
                   </p>
                 )}
 

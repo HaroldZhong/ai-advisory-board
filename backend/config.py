@@ -3,6 +3,7 @@
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -105,6 +106,43 @@ OPENROUTER_BASE_URL = (
     or "https://openrouter.ai/api/v1"
 ).rstrip("/")
 OPENROUTER_API_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
+
+# Provider kind: "openrouter" (default) uses OpenRouter-specific request
+# fields (ZDR routing, ZDR endpoint discovery); "openai-compatible" degrades
+# gracefully for generic relays/local servers (Ollama, LM Studio, etc.) that
+# only implement the plain OpenAI chat-completions surface.
+_VALID_PROVIDER_KINDS = {"openrouter", "openai-compatible"}
+
+
+def _base_url_host_is_openrouter(base_url: str) -> bool:
+    host = urlparse(base_url).hostname or ""
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def _resolve_provider_kind() -> str:
+    raw = os.getenv("LLM_PROVIDER_KIND", "").strip().lower()
+    if not raw:
+        if not _base_url_host_is_openrouter(OPENROUTER_BASE_URL):
+            paths_logger.info(
+                "Inferred LLM_PROVIDER_KIND=openai-compatible from OPENROUTER_BASE_URL=%s",
+                OPENROUTER_BASE_URL,
+            )
+            return "openai-compatible"
+        return "openrouter"
+    if raw not in _VALID_PROVIDER_KINDS:
+        paths_logger.warning(
+            "Invalid LLM_PROVIDER_KIND=%r; falling back to openrouter", raw
+        )
+        return "openrouter"
+    return raw
+
+
+PROVIDER_KIND = _resolve_provider_kind()
+
+
+def provider_is_openrouter() -> bool:
+    """Whether the configured provider is OpenRouter itself (vs. a generic relay)."""
+    return PROVIDER_KIND == "openrouter"
 
 # Data directory for conversation storage
 DATA_DIR = str(app_paths.get_conversations_dir())

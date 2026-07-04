@@ -25,6 +25,7 @@ import {
   estimateSelectionCost,
   filterModelsForRole,
   canConfirmModelSelection,
+  canStartPresetWithProvider,
   canStartPresetWithZdr,
   getEffectivePresetZdr,
   getProvider,
@@ -90,6 +91,7 @@ export default function ModelSelector({
   initialCouncil = DEFAULT_COUNCIL,
   initialChairman = '',
   defaultBudgetUsd = null,
+  zdrAvailable = true,
 }) {
   const { settings } = useSettings();
   const [models, setModels] = useState([]);
@@ -147,9 +149,14 @@ export default function ModelSelector({
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
     [presets, selectedPresetId],
   );
+  // The provider may not support ZDR at all (off-OpenRouter): the toggle is
+  // hidden in that case, but a stale saved preference must not silently
+  // still request ZDR — force it off at the source instead of trusting the
+  // hidden control's last value.
+  const effectiveZdrEnabled = zdrAvailable && zdrEnabled;
   const effectivePresetZdr = conversationMode === 'council' && activeTab === 'presets'
-    ? getEffectivePresetZdr(selectedPreset, zdrEnabled)
-    : zdrEnabled;
+    ? getEffectivePresetZdr(selectedPreset, effectiveZdrEnabled)
+    : effectiveZdrEnabled;
   const presetModels = useMemo(
     () => resolvePresetModels(selectedPreset, models, effectivePresetZdr),
     [effectivePresetZdr, models, selectedPreset],
@@ -163,12 +170,13 @@ export default function ModelSelector({
     ? []
     : (activeTab === 'presets' ? presetModels.council : customCouncil);
   const selectedPresetAvailable = activeTab !== 'presets'
-    || canStartPresetWithZdr(selectedPreset, models, effectivePresetZdr);
+    || (canStartPresetWithProvider(selectedPreset, zdrAvailable)
+      && canStartPresetWithZdr(selectedPreset, models, effectivePresetZdr));
   const zdrToggleLocked = conversationMode === 'council' && activeTab === 'presets' && selectedPreset?.requires_zdr;
   const estimatedCost = estimateSelectionCost({ chairman: activeChairman, council: activeCouncil });
   const roleModels = useMemo(
-    () => filterModelsForRole(models, conversationMode === 'chat' ? 'chairman' : customRole, zdrEnabled),
-    [models, conversationMode, customRole, zdrEnabled],
+    () => filterModelsForRole(models, conversationMode === 'chat' ? 'chairman' : customRole, effectiveZdrEnabled),
+    [models, conversationMode, customRole, effectiveZdrEnabled],
   );
   const groupedModels = useMemo(() => groupModelsByProvider(roleModels), [roleModels]);
   const providers = useMemo(() => ['all', ...groupedModels.map(([provider]) => provider)], [groupedModels]);
@@ -180,7 +188,7 @@ export default function ModelSelector({
 
   useEffect(() => {
     const editingCustomSelection = conversationMode === 'chat' || activeTab === 'custom';
-    if (!zdrEnabled || models.length === 0 || !editingCustomSelection) return;
+    if (!effectiveZdrEnabled || models.length === 0 || !editingCustomSelection) return;
     const compatibleIds = new Set(models.filter((model) => model.supports_zdr).map((model) => model.id));
     setSelectedCouncil((prev) => prev.filter((id) => compatibleIds.has(id)));
     setSelectedChairman((prev) => {
@@ -188,10 +196,10 @@ export default function ModelSelector({
       const fallback = models.find((model) => model.supports_zdr && ['chairman', 'both'].includes(model.type));
       return fallback?.id || '';
     });
-  }, [activeTab, conversationMode, models, zdrEnabled]);
+  }, [activeTab, conversationMode, models, effectiveZdrEnabled]);
 
   const applyPresetToCustom = (preset) => {
-    const resolved = resolvePresetModels(preset, models, zdrEnabled || preset.requires_zdr);
+    const resolved = resolvePresetModels(preset, models, effectiveZdrEnabled || preset.requires_zdr);
     setSelectedPresetId(preset.id);
     setSelectedChairman(resolved.chairman?.id || '');
     setSelectedCouncil(resolved.council.map((model) => model.id));
@@ -222,7 +230,7 @@ export default function ModelSelector({
         councilMembers: null,
         chairmanModel: customChairman.id,
         presetId: null,
-        zdrEnabled,
+        zdrEnabled: effectiveZdrEnabled,
         budgetUsd: defaultBudgetUsd,
         defaultMode: 'chat',
       });
@@ -234,7 +242,7 @@ export default function ModelSelector({
       councilMembers: activeTab === 'presets' ? null : activeCouncil.map((model) => model.id),
       chairmanModel: activeTab === 'presets' ? null : activeChairman.id,
       presetId: activeTab === 'presets' ? selectedPresetId : null,
-      zdrEnabled: activeTab === 'presets' ? effectivePresetZdr : zdrEnabled,
+      zdrEnabled: activeTab === 'presets' ? effectivePresetZdr : effectiveZdrEnabled,
       budgetUsd: defaultBudgetUsd,
       defaultMode: 'council',
     });
@@ -253,12 +261,17 @@ export default function ModelSelector({
     });
 
   const renderPresetCard = (preset) => {
-    const presetZdr = getEffectivePresetZdr(preset, zdrEnabled);
+    const presetZdr = getEffectivePresetZdr(preset, effectiveZdrEnabled);
     const resolved = resolvePresetModels(preset, models, presetZdr);
-    const availableForZdr = canStartPresetWithZdr(preset, models, presetZdr);
+    const availableForProvider = canStartPresetWithProvider(preset, zdrAvailable);
+    const availableForZdr = availableForProvider && canStartPresetWithZdr(preset, models, presetZdr);
     const isSelected = selectedPresetId === preset.id;
     const cost = estimateSelectionCost({ chairman: resolved.chairman, council: resolved.council });
-    const disabledReason = !availableForZdr ? 'Contains models that do not support ZDR' : null;
+    const disabledReason = !availableForProvider
+      ? 'Requires OpenRouter'
+      : !availableForZdr
+        ? 'Contains models that do not support ZDR'
+        : null;
 
     return (
       <Card
@@ -266,6 +279,7 @@ export default function ModelSelector({
         role="button"
         tabIndex={availableForZdr ? 0 : -1}
         aria-pressed={isSelected}
+        title={disabledReason || undefined}
         className={cn(
           'p-4 transition-all',
           availableForZdr ? 'cursor-pointer hover:border-primary/50' : 'cursor-not-allowed opacity-50',
@@ -393,29 +407,31 @@ export default function ModelSelector({
               <DialogDescription className="sr-only">
                 Choose a preset or customize the chairman, council members, routing privacy, and estimated cost for a new conversation.
               </DialogDescription>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant={effectivePresetZdr ? 'default' : 'outline'}
-                    size="sm"
-                    aria-disabled={zdrToggleLocked}
-                    className={cn(zdrToggleLocked && 'cursor-not-allowed')}
-                    onClick={() => {
-                      if (zdrToggleLocked) return;
-                      setZdrEnabled((value) => !value);
-                    }}
-                  >
-                    <Lock className="mr-2 h-4 w-4" />
-                    ZDR only
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {zdrToggleLocked
-                    ? 'This preset requires Zero Data Retention model routes.'
-                    : 'Restrict this conversation to Zero Data Retention model routes.'}
-                </TooltipContent>
-              </Tooltip>
+              {zdrAvailable && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={effectivePresetZdr ? 'default' : 'outline'}
+                      size="sm"
+                      aria-disabled={zdrToggleLocked}
+                      className={cn(zdrToggleLocked && 'cursor-not-allowed')}
+                      onClick={() => {
+                        if (zdrToggleLocked) return;
+                        setZdrEnabled((value) => !value);
+                      }}
+                    >
+                      <Lock className="mr-2 h-4 w-4" />
+                      ZDR only
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {zdrToggleLocked
+                      ? 'This preset requires Zero Data Retention model routes.'
+                      : 'Restrict this conversation to Zero Data Retention model routes.'}
+                  </TooltipContent>
+                </Tooltip>
+              )}
             </div>
           </DialogHeader>
 
@@ -604,8 +620,8 @@ export default function ModelSelector({
                   <StatPill>{activeCouncil.length} council</StatPill>
                 )}
                 <StatPill>{formatCost(estimatedCost)} est.</StatPill>
-                <StatPill tone={(conversationMode === 'chat' ? zdrEnabled : effectivePresetZdr) ? 'green' : 'default'}>
-                  {(conversationMode === 'chat' ? zdrEnabled : effectivePresetZdr) ? 'ZDR on' : 'Standard routing'}
+                <StatPill tone={(conversationMode === 'chat' ? effectiveZdrEnabled : effectivePresetZdr) ? 'green' : 'default'}>
+                  {(conversationMode === 'chat' ? effectiveZdrEnabled : effectivePresetZdr) ? 'ZDR on' : 'Standard routing'}
                 </StatPill>
                 {defaultBudgetUsd != null && <StatPill>Budget ${defaultBudgetUsd}</StatPill>}
               </div>
