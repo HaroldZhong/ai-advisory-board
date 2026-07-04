@@ -21,6 +21,11 @@ test('edit mid-conversation predicts chat', () => {
   assert.equal(predictNextMessageMode({ messageCount: 4, editIndex: 2 }), 'chat');
 });
 
+
+test('stale editIndex beyond the stored count clamps to the real count', () => {
+  assert.equal(predictNextMessageMode({ messageCount: 0, editIndex: 2 }), 'council');
+});
+
 test('no arguments defaults to council (new conversation)', () => {
   assert.equal(predictNextMessageMode(), 'council');
 });

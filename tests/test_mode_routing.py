@@ -122,3 +122,19 @@ async def test_auto_with_edit_mid_conversation_runs_chat(monkeypatch, tmp_path):
     )
 
     assert result["type"] == "chat"
+
+@pytest.mark.asyncio
+async def test_auto_with_stale_edit_index_beyond_count_runs_council_when_empty(monkeypatch, tmp_path):
+    """A stale client edit_index larger than the stored count clamps to the
+    real count: an empty conversation routes to council regardless."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation("conv-stale-edit")
+    _setup_council_fakes(monkeypatch, main)
+
+    result = await main.send_message(
+        "conv-stale-edit",
+        main.SendMessageRequest(content="Question", mode="auto", edit_index=2),
+    )
+
+    assert result["type"] == "council"

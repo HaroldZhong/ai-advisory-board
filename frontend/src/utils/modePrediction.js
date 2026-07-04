@@ -8,6 +8,8 @@
  * apply — and mirrors the backend rule exactly.
  */
 export function predictNextMessageMode({ messageCount = 0, editIndex = -1 } = {}) {
-  const effectiveCount = editIndex >= 0 ? editIndex : messageCount;
+  // Clamped like the backend: truncation keeps messages[:editIndex], so a
+  // stale editIndex beyond the stored count still leaves messageCount messages.
+  const effectiveCount = editIndex >= 0 ? Math.min(editIndex, messageCount) : messageCount;
   return effectiveCount === 0 ? 'council' : 'chat';
 }
