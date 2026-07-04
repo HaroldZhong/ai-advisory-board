@@ -69,6 +69,14 @@ class CouncilRAG:
         self.store = {}
         self.index_file = ""
         self.version_file = ""
+        # ponytail: per-conversation lock, not a global one -- a global lock
+        # would serialize unrelated conversations' writes for no reason. This
+        # is a single-process desktop app, so an in-process asyncio.Lock per
+        # conversation id is enough to make append+compress atomic against
+        # itself; created on demand since conversation ids aren't known
+        # up front. Upgrade to a real per-account/process lock if this ever
+        # becomes multi-process.
+        self._conversation_write_locks: Dict[str, asyncio.Lock] = {}
         try:
             if persist_path is None:
                 persist_path = str(get_pageindex_dir())
@@ -206,6 +214,11 @@ class CouncilRAG:
             )
         return removed
 
+    def _get_write_lock(self, conversation_id: str) -> asyncio.Lock:
+        """Get-or-create the per-conversation write lock (setdefault, not a
+        defaultdict, so this stays a plain dict elsewhere)."""
+        return self._conversation_write_locks.setdefault(conversation_id, asyncio.Lock())
+
     def _backup_corrupt_index(self) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
         backup_path = f"{self.index_file}.corrupt-{timestamp}"
@@ -303,18 +316,27 @@ class CouncilRAG:
             logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
             return None
 
-        # Ensure conversation exists in store
-        if conversation_id not in self.store:
-            self.store[conversation_id] = {
-                "folder_id": "root",
-                "turns": []
-            }
-
         stage3_model = stage3_result.get('model', 'unknown')
         final_text = stage3_result.get('response', '')
+        if not final_text:
+            return None
 
-        # Only index the user's question and the final synthesized answer to save context tokens for reasoning retrieve
-        if final_text:
+        # Codex round 3: append + compress must be atomic per conversation.
+        # _maybe_compress_oldest_half awaits an LLM call after snapshotting
+        # the turns list; without this lock, a concurrent index_session/
+        # index_chat_turn call for the SAME conversation can append its own
+        # turn during that await, and the stale snapshot's write-back would
+        # silently drop it. A per-conversation lock (not global) serializes
+        # writers to one conversation without blocking unrelated ones.
+        async with self._get_write_lock(conversation_id):
+            # Ensure conversation exists in store
+            if conversation_id not in self.store:
+                self.store[conversation_id] = {
+                    "folder_id": "root",
+                    "turns": []
+                }
+
+            # Only index the user's question and the final synthesized answer to save context tokens for reasoning retrieve
             turn_memory = {
                 "turn": turn_index,
                 "topics": topics,
@@ -326,12 +348,10 @@ class CouncilRAG:
             if self.enabled:
                 logger.info("[PHASE1] Indexed turn %d for conv=%s into PageIndex", turn_index, conversation_id)
             return usage
-        return None
 
     async def index_chat_turn(
         self,
         conversation_id: str,
-        turn_index: int,
         question: str,
         answer: str,
         topics: List[str],
@@ -342,6 +362,15 @@ class CouncilRAG:
         IDENTICAL to a council turn's (question/answer/topics folded into the
         same "memory" text field) so retrieve_with_stats_async's block builder
         and the topic pre-filter need no special-casing.
+
+        Turn number is computed here (not by the caller): Codex round 3 --
+        the RAG summary tier can shrink self.store[cid]["turns"] via
+        compaction, so a caller-side `len(turns)` reuses a number that
+        compaction already freed up. The next number is one past the max
+        "turn" seen across ALL entries (including a summary entry, which
+        keeps the max turn number it covers), computed under the same lock
+        that guards the append -- so two concurrent chat turns for the same
+        conversation can never compute the same number.
 
         Returns the summary-compression LLM call's usage dict when the P5-T5
         summary tier compressed this conversation's oldest turns, else None.
@@ -358,23 +387,29 @@ class CouncilRAG:
             logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
             return None
 
-        if conversation_id not in self.store:
-            self.store[conversation_id] = {"folder_id": "root", "turns": []}
-
         if not answer:
             return None
 
-        turn_memory = {
-            "turn": turn_index,
-            "topics": topics,
-            "memory": f"Q: {question}\nA: {answer}",
-        }
-        self.store[conversation_id]["turns"].append(turn_memory)
-        usage = await self._maybe_compress_oldest_half(conversation_id)
-        self._save_store()
-        if self.enabled:
-            logger.info("[RAG] Indexed chat turn %d for conv=%s into PageIndex", turn_index, conversation_id)
-        return usage
+        # Codex round 3: append + compress must be atomic per conversation,
+        # same rationale as index_session's lock above.
+        async with self._get_write_lock(conversation_id):
+            if conversation_id not in self.store:
+                self.store[conversation_id] = {"folder_id": "root", "turns": []}
+
+            turns = self.store[conversation_id]["turns"]
+            turn_index = max((entry.get("turn", -1) for entry in turns), default=-1) + 1
+
+            turn_memory = {
+                "turn": turn_index,
+                "topics": topics,
+                "memory": f"Q: {question}\nA: {answer}",
+            }
+            turns.append(turn_memory)
+            usage = await self._maybe_compress_oldest_half(conversation_id)
+            self._save_store()
+            if self.enabled:
+                logger.info("[RAG] Indexed chat turn %d for conv=%s into PageIndex", turn_index, conversation_id)
+            return usage
 
     async def _maybe_compress_oldest_half(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """P5-T5 feature 3: bounded per-conversation memory growth.
@@ -426,6 +461,14 @@ class CouncilRAG:
             "summary": response["content"].strip(),
             "turns_compressed": half,
         }
+        # Codex round 3: this write-back replaces the whole turns list with a
+        # snapshot taken before the query_model await above. Callers
+        # (index_session/index_chat_turn) hold this conversation's write lock
+        # for their entire body, so no other writer can have appended to
+        # `turns` during that await -- `rest` is still accurate. The kept
+        # `rest` entries' own "turn" numbers are untouched, so the next
+        # index_chat_turn's max()+1 scan still yields a correct, monotonic
+        # number regardless of what number this summary entry carries.
         self.store[conversation_id]["turns"] = [summary_entry] + rest
         return response.get("usage") or {}
 

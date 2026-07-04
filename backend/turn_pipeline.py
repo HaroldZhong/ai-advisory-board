@@ -523,16 +523,18 @@ async def run_turn(
             # branch's stage3_result.get("model") != "error" guard above.
             if not zdr_enabled and not response_dict.get("error"):
                 from .council import extract_topics
-                chat_turn_index = len(main.rag_system.store.get(conversation_id, {}).get("turns", []))
                 combined_text = request.content + " " + response_dict.get("content", "")
                 chat_topics = await extract_topics(
                     combined_text,
                     max_topics=3,
                     zdr_enabled=zdr_enabled,
                 )
+                # Turn numbering (Codex round 3) now lives inside
+                # index_chat_turn itself, computed under its write lock, so
+                # concurrent chat turns for this conversation can't collide
+                # and compaction can't cause a number to be reused.
                 summary_usage = await main.rag_system.index_chat_turn(
                     conversation_id,
-                    chat_turn_index,
                     request.content,
                     response_dict.get("content", ""),
                     chat_topics,

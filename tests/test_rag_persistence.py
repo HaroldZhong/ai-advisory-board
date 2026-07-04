@@ -591,7 +591,7 @@ async def test_index_chat_turn_stores_entry_shape_compatible_with_retrieval(tmp_
     storage.create_conversation("conv-1")
 
     rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
-    await rag.index_chat_turn("conv-1", 0, "What is our budget?", "It is $10k.", ["budget"])
+    await rag.index_chat_turn("conv-1", "What is our budget?", "It is $10k.", ["budget"])
 
     turns = rag.store["conv-1"]["turns"]
     assert len(turns) == 1
@@ -612,7 +612,7 @@ async def test_index_chat_turn_write_barrier_blocks_zdr_conversation(tmp_path, m
     storage.create_conversation("conv-zdr", {"zdr_enabled": True})
 
     rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
-    await rag.index_chat_turn("conv-zdr", 0, "question", "answer", ["topic"])
+    await rag.index_chat_turn("conv-zdr", "question", "answer", ["topic"])
 
     assert rag.store == {}
 
@@ -641,7 +641,7 @@ async def test_summary_tier_compresses_oldest_half_above_threshold(tmp_path, mon
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
 
-    usage = await rag.index_chat_turn("conv-1", SUMMARY_COMPRESSION_THRESHOLD, "new question", "new answer", ["newtopic"])
+    usage = await rag.index_chat_turn("conv-1", "new question", "new answer", ["newtopic"])
 
     turns = rag.store["conv-1"]["turns"]
     # Oldest half (of the post-append length) replaced by one summary entry.
@@ -679,7 +679,7 @@ async def test_summary_tier_skips_compression_on_llm_failure(tmp_path, monkeypat
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
 
     with caplog.at_level("WARNING"):
-        usage = await rag.index_chat_turn("conv-1", SUMMARY_COMPRESSION_THRESHOLD, "new question", "new answer", ["newtopic"])
+        usage = await rag.index_chat_turn("conv-1", "new question", "new answer", ["newtopic"])
 
     turns = rag.store["conv-1"]["turns"]
     # No data loss: all turns intact (original + the new one), no summary entry.
@@ -841,3 +841,124 @@ async def test_summary_compression_usage_bills_totals_but_not_persisted_running_
     assert conversation["total_cost"] == pytest.approx(expected_total)
     # The already-persisted message running_cost snapshot excludes it.
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(chairman_cost)
+
+
+# --- Codex round 3 on PR #80: per-conversation write serialization + monotonic turn numbers ---
+
+
+@pytest.mark.asyncio
+async def test_concurrent_index_chat_turn_calls_do_not_drop_a_write(tmp_path, monkeypatch):
+    """Codex P2: _maybe_compress_oldest_half snapshots turns, awaits an LLM
+    call, then replaces the whole list with [summary] + stale `rest`. Without
+    a per-conversation lock around the whole append+compress body, a second
+    concurrent index_chat_turn for the SAME conversation can append its turn
+    during that await and have it silently dropped by the first call's stale
+    write-back.
+
+    Drives two REAL concurrent tasks for the same conversation (not
+    sequential awaits -- the fixed code serializes them via the write lock,
+    so awaiting the second call directly while the first still holds the
+    lock would just deadlock the test, which is itself proof the lock works).
+    The first call's compression LLM fake blocks on an asyncio.Event; the
+    test asserts the second task is still pending -- provably blocked on the
+    lock, not free to interleave -- before releasing the first. This fails
+    pre-fix because there IS no lock to block on: the second call would run
+    to completion immediately, appending during the first's stale-snapshot
+    window, and then get silently overwritten by the first call's write-back.
+    """
+    import asyncio
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+
+    release_compression = asyncio.Event()
+
+    async def blocking_query_model(*args, **kwargs):
+        # The FIRST index_chat_turn call (which triggers compression because
+        # it pushes the store past the threshold) blocks here, still holding
+        # the per-conversation write lock, until the test releases it.
+        await release_compression.wait()
+        return {"content": "Dense summary.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", blocking_query_model)
+
+    first_task = asyncio.create_task(
+        rag.index_chat_turn("conv-1", "first new question", "first new answer", ["a"])
+    )
+    await asyncio.sleep(0)  # let the first call append + hit the threshold + block on query_model
+
+    second_task = asyncio.create_task(
+        rag.index_chat_turn("conv-1", "second new question", "second new answer", ["b"])
+    )
+    await asyncio.sleep(0)
+
+    # The lock must be blocking the second call right now -- it cannot have
+    # appended yet, proving there is no window for its write to be dropped.
+    assert not second_task.done()
+
+    release_compression.set()
+    await first_task
+    await second_task
+
+    turns = rag.store["conv-1"]["turns"]
+    all_memories = [t.get("memory", "") for t in turns]
+    assert any("first new question" in m and "first new answer" in m for m in all_memories)
+    assert any("second new question" in m and "second new answer" in m for m in all_memories), (
+        "the second concurrent write must survive, not be silently dropped by the first "
+        "call's stale write-back"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_numbering_is_monotonic_after_compaction(tmp_path, monkeypatch):
+    """Codex P2: len(turns) reuses a number once compression shrinks the
+    list (e.g. 12 turns -> compress oldest 6 into 1 summary -> len is now 7,
+    same as the turn number the summary itself covers). The next indexed
+    turn's number must be strictly greater than every existing turn number,
+    regardless of compaction."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+
+    async def fake_query_model(*args, **kwargs):
+        return {"content": "Dense summary.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    # This call pushes the store past the threshold and triggers compaction
+    # (oldest half replaced by one summary entry).
+    await rag.index_chat_turn("conv-1", "triggers compaction", "answer", ["c"])
+    turns_after_compaction = rag.store["conv-1"]["turns"]
+    max_turn_after_compaction = max(t["turn"] for t in turns_after_compaction)
+
+    # A naive len(turns) would now be len(turns_after_compaction), which can
+    # collide with an existing turn number post-compaction (the bug: a
+    # duplicate 7). The next real turn must be strictly greater than every
+    # existing turn number.
+    await rag.index_chat_turn("conv-1", "next turn after compaction", "answer", ["d"])
+    new_entry = rag.store["conv-1"]["turns"][-1]
+
+    assert new_entry["turn"] > max_turn_after_compaction
+    all_turn_numbers = [t["turn"] for t in rag.store["conv-1"]["turns"]]
+    assert len(all_turn_numbers) == len(set(all_turn_numbers)), "no duplicate turn numbers"
