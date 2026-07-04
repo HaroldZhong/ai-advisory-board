@@ -2,7 +2,7 @@
 import asyncio
 import httpx
 import pytest
-from backend.openrouter import classify_openrouter_error
+from backend.openrouter import classify_openrouter_error, connect_timeout_for
 
 
 def _status_error(code: int) -> httpx.HTTPStatusError:
@@ -28,3 +28,8 @@ def _status_error(code: int) -> httpx.HTTPStatusError:
 ])
 def test_classify_openrouter_error(exc, expected):
     assert classify_openrouter_error(exc) == expected
+
+
+def test_connect_deadline_stays_below_wall_clock():
+    assert connect_timeout_for(120.0) == 10.0
+    assert connect_timeout_for(10.0) == 5.0  # ties would race asyncio.wait_for

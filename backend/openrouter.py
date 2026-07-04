@@ -7,6 +7,13 @@ from .config import OPENROUTER_API_URL, get_openrouter_api_key
 from .logger import logger
 
 
+def connect_timeout_for(total_timeout: float) -> float:
+    """Connect deadline strictly below the wall-clock timeout, so a blocked
+    network raises ConnectTimeout (kind=network) before asyncio.wait_for
+    cancels the request (kind=timeout). Some callers pass timeout=10.0."""
+    return min(10.0, total_timeout / 2)
+
+
 def classify_openrouter_error(exc: Exception) -> str:
     """Map an exception from an OpenRouter call to a coarse failure kind."""
     # NetworkError covers Connect/Read/Write/CloseError; ProxyError is a
@@ -72,7 +79,7 @@ async def query_model(
 
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=10.0)
+            timeout=httpx.Timeout(timeout, connect=connect_timeout_for(timeout))
         ) as client:
             response = await asyncio.wait_for(
                 client.post(
