@@ -55,6 +55,15 @@ export function streamReducer(state, event, context = {}) {
         loading: { ...msg.loading, stage1: true },
       }));
 
+    case 'stage1_model_complete':
+      // Progressive per-model card (audit §11, P3-W5): append into the
+      // in-progress list. The aggregate stage1_complete below still fires
+      // last and overwrites with the authoritative full list.
+      return updateLastMessage(state, (msg) => ({
+        ...msg,
+        stage1: [...(msg.stage1 || []), event.data],
+      }));
+
     case 'stage1_complete':
       return updateLastMessage(state, (msg) => {
         const stage1 = mergeReasoningBuffersIntoResults(

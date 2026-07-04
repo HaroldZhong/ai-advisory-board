@@ -45,15 +45,19 @@ async def test_send_message_all_fail_skips_indexing_and_returns_error(monkeypatc
     async def fake_steward(*args, **kwargs):
         return EvidencePack(run_id="r", query="q", tools_used=[], key_facts=[], limits=UsageLimits()), None
 
-    async def all_fail_stage1(*args, **kwargs):
-        return []
+    # stage1_collect_responses_progressive is the pipeline seam (P3-T6): an
+    # async generator yielding ("model_complete", index, result) per model
+    # then ("complete", stage1_results, None) with the full list. All models
+    # failing means no model_complete events, just an empty aggregate.
+    async def all_fail_stage1_progressive(*args, **kwargs):
+        yield "complete", [], None
 
     async def fake_title(*args, **kwargs):
         return "title"
 
     indexed = []
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
-    monkeypatch.setattr(main, "stage1_collect_responses", all_fail_stage1)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", all_fail_stage1_progressive)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
     monkeypatch.setattr(main.rag_system, "index_session", lambda *a, **k: indexed.append(a))
 

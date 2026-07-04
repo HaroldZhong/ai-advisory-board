@@ -12,7 +12,7 @@ import json
 import asyncio
 
 from . import app_paths, config, storage
-from .council import generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, chat_with_chairman, run_tool_steward_phase
+from .council import generate_conversation_title, stage1_collect_responses, stage1_collect_responses_progressive, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, chat_with_chairman, run_tool_steward_phase
 from .turn_pipeline import run_turn
 from .conversation_export import (
     build_conversation_markdown,
