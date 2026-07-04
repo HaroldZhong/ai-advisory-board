@@ -5,8 +5,10 @@ import time
 from typing import Dict, List, Any, Optional
 from .logger import logger
 
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
-OPENROUTER_ZDR_ENDPOINTS_URL = "https://openrouter.ai/api/v1/endpoints/zdr"
+from .config import OPENROUTER_BASE_URL
+
+OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+OPENROUTER_ZDR_ENDPOINTS_URL = f"{OPENROUTER_BASE_URL}/endpoints/zdr"
 CACHE_TTL_SECONDS = 3600  # 1 hour cache
 
 # In-memory cache
