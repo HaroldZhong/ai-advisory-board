@@ -9,3 +9,19 @@ export function languageFromClassName(className) {
     const lang = match.slice('language-'.length);
     return lang.length > 0 ? lang : null;
 }
+
+/**
+ * Flatten a React children tree back to plain text. rehype-highlight
+ * wraps tokens in <span> elements, so a highlighted code block's
+ * children are nested element-like objects, not plain strings -- this
+ * walks them the same way React would render them. Pure + node-testable
+ * (element-like objects here just need a `.props.children` field, not
+ * real React elements).
+ */
+export function extractNodeText(node) {
+    if (node == null || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(extractNodeText).join('');
+    if (typeof node === 'object' && node.props) return extractNodeText(node.props.children);
+    return '';
+}

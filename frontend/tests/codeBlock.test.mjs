@@ -1,7 +1,7 @@
 // frontend/tests/codeBlock.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { languageFromClassName } from '../src/utils/codeLanguage.js';
+import { languageFromClassName, extractNodeText } from '../src/utils/codeLanguage.js';
 import { isSafeImageSrc } from '../src/utils/safeHref.js';
 
 test('languageFromClassName extracts the language from a language-x class', () => {
@@ -38,4 +38,28 @@ test('isSafeImageSrc blocks relative paths, anchors, and mailto (unlike isSafeHr
   assert.equal(isSafeImageSrc('#anchor'), false);
   assert.equal(isSafeImageSrc('mailto:a@b.com'), false);
   assert.equal(isSafeImageSrc(undefined), false);
+});
+
+test('extractNodeText returns plain strings and numbers as-is', () => {
+  assert.equal(extractNodeText('const x = 1;'), 'const x = 1;');
+  assert.equal(extractNodeText(42), '42');
+});
+
+test('extractNodeText joins an array of strings', () => {
+  assert.equal(extractNodeText(['const x', ' = ', '1;']), 'const x = 1;');
+});
+
+test('extractNodeText recurses into element-like objects (highlighted token spans)', () => {
+  const tokenSpan = { props: { className: 'hljs-keyword', children: 'const' } };
+  const plainText = ' x = ';
+  const numberSpan = { props: { className: 'hljs-number', children: ['1'] } };
+  assert.equal(extractNodeText([tokenSpan, plainText, numberSpan, ';']), 'const x = 1;');
+});
+
+test('extractNodeText treats null, undefined, and booleans as empty', () => {
+  assert.equal(extractNodeText(null), '');
+  assert.equal(extractNodeText(undefined), '');
+  assert.equal(extractNodeText(true), '');
+  assert.equal(extractNodeText(false), '');
+  assert.equal(extractNodeText([null, 'a', false, 'b', undefined]), 'ab');
 });

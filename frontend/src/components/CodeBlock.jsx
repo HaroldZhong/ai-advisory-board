@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
-import { languageFromClassName } from '../utils/codeLanguage';
+import { languageFromClassName, extractNodeText } from '../utils/codeLanguage';
 
 export { languageFromClassName };
 
@@ -13,8 +13,9 @@ export function CodeBlock({ children, ...rest }) {
     const codeElement = Array.isArray(children) ? children[0] : children;
     const className = codeElement?.props?.className;
     const language = languageFromClassName(className);
-    const rawText = codeElement?.props?.children;
-    const codeText = Array.isArray(rawText) ? rawText.join('') : String(rawText ?? '');
+    // rehype-highlight wraps tokens in <span> elements, so this can be a
+    // tree of element-like objects, not just strings -- flatten it.
+    const codeText = extractNodeText(codeElement?.props?.children);
 
     const [copied, setCopied] = useState(false);
 
