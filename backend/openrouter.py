@@ -9,7 +9,9 @@ from .logger import logger
 
 def classify_openrouter_error(exc: Exception) -> str:
     """Map an exception from an OpenRouter call to a coarse failure kind."""
-    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+    # NetworkError covers Connect/Read/Write/CloseError; ProxyError is a
+    # separate TransportError subclass (failed tunnel = network problem too).
+    if isinstance(exc, (httpx.NetworkError, httpx.ProxyError, httpx.ConnectTimeout)):
         return "network"
     if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, asyncio.TimeoutError)):
         return "timeout"

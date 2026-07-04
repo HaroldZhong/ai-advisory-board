@@ -14,6 +14,9 @@ def _status_error(code: int) -> httpx.HTTPStatusError:
 @pytest.mark.parametrize("exc,expected", [
     (httpx.ConnectError("dns fail"), "network"),
     (httpx.ConnectTimeout("connect timeout"), "network"),
+    (httpx.ReadError("connection reset"), "network"),
+    (httpx.WriteError("broken pipe"), "network"),
+    (httpx.ProxyError("tunnel failed"), "network"),
     (httpx.ReadTimeout("read timeout"), "timeout"),
     (asyncio.TimeoutError(), "timeout"),
     (_status_error(401), "auth"),
