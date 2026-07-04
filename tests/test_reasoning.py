@@ -10,7 +10,10 @@ from backend.openrouter import extract_reasoning
 # backend/model_registry.json so this test tracks the single source of truth.
 NON_REASONING_MODEL = "openai/gpt-5.3-chat"  # supports_reasoning: false
 FIELD_MODEL = "google/gemini-3.1-pro-preview"  # reasoning_extraction: "field"
-TAGS_MODEL = "anthropic/claude-sonnet-4.6"  # reasoning_extraction: "tags"
+TAGS_MODEL = "deepseek/deepseek-v4-pro"  # reasoning_extraction: "tags"
+# Anthropic models get reasoning via OpenRouter's normalized fields, never
+# inline <think> tags (docs: guides/best-practices/reasoning-tokens).
+ANTHROPIC_MODELS = ("anthropic/claude-opus-4.7", "anthropic/claude-sonnet-4.6")
 
 
 def test_capability_check():
@@ -71,6 +74,16 @@ def test_field_extraction_dict_without_text_or_summary_falls_back_to_str():
 
     assert reasoning == str(message["reasoning_details"])
     assert clean_content == "Final answer"
+
+
+def test_anthropic_models_extract_field_reasoning():
+    content = "Final answer"
+    message = {"reasoning": "Claude thinking arrives in the normalized field"}
+
+    for model in ANTHROPIC_MODELS:
+        clean_content, reasoning = extract_reasoning(content, message, model)
+        assert reasoning == "Claude thinking arrives in the normalized field", model
+        assert clean_content == "Final answer"
 
 
 def test_tag_parsing():
