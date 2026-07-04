@@ -11,7 +11,7 @@ Reference: https://openrouter.ai/docs/guides/overview/multimodal/pdfs
 import base64
 import httpx
 from typing import Dict, Any, Optional, Literal
-from .config import get_openrouter_api_key, OPENROUTER_API_URL, UTILITY_MODEL
+from .config import get_openrouter_api_key, OPENROUTER_API_URL, UTILITY_MODEL, provider_is_openrouter
 from .logger import logger
 
 # Derived from OPENROUTER_BASE_URL so relay/proxy overrides cover PDF extraction too.
@@ -66,7 +66,16 @@ async def extract_pdf_with_openrouter(
         - usage: Token usage info
         - cost: Estimated cost
         - annotations: File annotations for caching
+
+    Raises:
+        ValueError: use_zdr is True but the configured provider isn't
+            OpenRouter — same rule as backend.openrouter.query_model: a ZDR
+            request off-provider must be refused outright, before any
+            request is built, never silently sent without ZDR routing.
     """
+    if use_zdr and not provider_is_openrouter():
+        raise ValueError("ZDR routing requires OpenRouter")
+
     api_key = get_openrouter_api_key()
     if not api_key:
         return {
@@ -114,8 +123,11 @@ async def extract_pdf_with_openrouter(
         ]
     }
     
-    # Add ZDR if enabled
-    if use_zdr:
+    # ZDR routing is an OpenRouter-specific `provider` field; the raise above
+    # already guarantees use_zdr implies OpenRouter, but gate explicitly
+    # (matching backend.openrouter.query_model) rather than relying on that
+    # invariant holding forever.
+    if use_zdr and provider_is_openrouter():
         payload["provider"] = {"zdr": True}
     
     headers = {

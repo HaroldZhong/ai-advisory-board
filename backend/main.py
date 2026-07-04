@@ -1115,16 +1115,22 @@ async def enhance_attachment_endpoint(
 ):
     """
     Re-extract attachment content using OpenRouter enhanced PDF processing.
-    
+
     Use this when local extraction failed or produced poor results.
-    
+
     Args:
         engine: "pdf-text" (free) or "mistral-ocr" (paid, better for scans)
         use_zdr: Enable Zero Data Retention for privacy
     """
+    if use_zdr and not config.provider_is_openrouter():
+        raise HTTPException(
+            status_code=400,
+            detail="ZDR requires OpenRouter. Disable ZDR for this upload or switch providers.",
+        )
+
     from .openrouter_pdf import extract_pdf_with_openrouter, estimate_pdf_cost
     from .attachment_storage import get_attachment_raw
-    
+
     attachment = get_attachment(attachment_id)
     if not attachment:
         raise HTTPException(status_code=404, detail="Attachment not found")

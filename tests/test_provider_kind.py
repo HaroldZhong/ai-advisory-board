@@ -15,11 +15,12 @@ def _reload_provider_modules(monkeypatch):
     """Reload config + consumers with dotenv disabled, so a developer's local
     .env cannot leak into the test (mirrors tests/test_openrouter_base_url.py)."""
     monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
-    from backend import config, openrouter, openrouter_client
+    from backend import config, openrouter, openrouter_client, openrouter_pdf
     importlib.reload(config)
     importlib.reload(openrouter)
     importlib.reload(openrouter_client)
-    return config, openrouter, openrouter_client
+    importlib.reload(openrouter_pdf)
+    return config, openrouter, openrouter_client, openrouter_pdf
 
 
 def _restore(monkeypatch):
@@ -35,7 +36,7 @@ def _restore(monkeypatch):
 def test_default_provider_kind_is_openrouter(monkeypatch):
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_PROVIDER_KIND", raising=False)
-    config, _openrouter, _client = _reload_provider_modules(monkeypatch)
+    config, _openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
     assert config.PROVIDER_KIND == "openrouter"
     assert config.provider_is_openrouter() is True
     _restore(monkeypatch)
@@ -43,7 +44,7 @@ def test_default_provider_kind_is_openrouter(monkeypatch):
 
 def test_explicit_openai_compatible_kind(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
-    config, _openrouter, _client = _reload_provider_modules(monkeypatch)
+    config, _openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
     assert config.PROVIDER_KIND == "openai-compatible"
     assert config.provider_is_openrouter() is False
     _restore(monkeypatch)
@@ -52,7 +53,7 @@ def test_explicit_openai_compatible_kind(monkeypatch):
 def test_kind_inferred_from_non_openrouter_base_url(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER_KIND", raising=False)
     monkeypatch.setenv("OPENROUTER_BASE_URL", "http://localhost:11434/v1")
-    config, _openrouter, _client = _reload_provider_modules(monkeypatch)
+    config, _openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
     assert config.PROVIDER_KIND == "openai-compatible"
     _restore(monkeypatch)
 
@@ -60,14 +61,14 @@ def test_kind_inferred_from_non_openrouter_base_url(monkeypatch):
 def test_kind_not_inferred_when_base_url_is_openrouter(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER_KIND", raising=False)
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-    config, _openrouter, _client = _reload_provider_modules(monkeypatch)
+    config, _openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
     assert config.PROVIDER_KIND == "openrouter"
     _restore(monkeypatch)
 
 
 def test_invalid_kind_value_falls_back_to_openrouter(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "totally-bogus")
-    config, _openrouter, _client = _reload_provider_modules(monkeypatch)
+    config, _openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
     assert config.PROVIDER_KIND == "openrouter"
     _restore(monkeypatch)
 
@@ -76,7 +77,7 @@ def test_explicit_kind_wins_over_inference(monkeypatch):
     """An explicit LLM_PROVIDER_KIND=openrouter overrides base-url inference."""
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openrouter")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "http://localhost:11434/v1")
-    config, _openrouter, _client = _reload_provider_modules(monkeypatch)
+    config, _openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
     assert config.PROVIDER_KIND == "openrouter"
     _restore(monkeypatch)
 
@@ -112,7 +113,7 @@ async def test_openai_compatible_refuses_zdr_rather_than_silently_stripping_it(m
     non-ZDR request in this same openai-compatible config stays unaffected."""
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
 
     captured_payloads = []
 
@@ -153,7 +154,7 @@ async def test_openai_compatible_refuses_zdr_rather_than_silently_stripping_it(m
 async def test_openrouter_default_still_sends_provider_field_when_zdr(monkeypatch):
     """Regression: the default OpenRouter path must stay byte-identical."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
 
     captured_payloads = []
 
@@ -187,7 +188,7 @@ async def test_openrouter_default_still_sends_provider_field_when_zdr(monkeypatc
 async def test_400_with_reasoning_retried_once_without_it(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
 
     # Registry model with supports_reasoning=True so `reasoning` gets added.
     reasoning_model = next(
@@ -234,7 +235,7 @@ async def test_400_with_reasoning_retried_once_without_it(monkeypatch):
 @pytest.mark.asyncio
 async def test_openai_compatible_skips_zdr_endpoint_fetch(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
-    _config, _openrouter, client = _reload_provider_modules(monkeypatch)
+    _config, _openrouter, client, _pdf = _reload_provider_modules(monkeypatch)
 
     async def fail_if_called():
         raise AssertionError("ZDR endpoint fetch must be skipped off-OpenRouter")
@@ -253,7 +254,7 @@ async def test_openai_compatible_skips_zdr_endpoint_fetch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pricing_fallback_keeps_curated_pricing_when_live_lacks_it(monkeypatch):
-    _config, _openrouter, client = _reload_provider_modules(monkeypatch)
+    _config, _openrouter, client, _pdf = _reload_provider_modules(monkeypatch)
     client.clear_cache()
 
     async def fake_fetch_models():
@@ -395,7 +396,7 @@ async def test_config_status_reports_openrouter_by_default(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_key_probe_404_reports_unknown_key_status(monkeypatch):
-    _config, _openrouter, client = _reload_provider_modules(monkeypatch)
+    _config, _openrouter, client, _pdf = _reload_provider_modules(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/models"):
@@ -425,7 +426,7 @@ async def test_key_probe_404_reports_unknown_key_status(monkeypatch):
 async def test_end_to_end_chat_turn_against_openai_compatible_mock(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/chat/completions")
@@ -573,7 +574,7 @@ async def test_send_message_per_request_zdr_succeeds_on_openrouter(monkeypatch, 
 async def test_query_model_refuses_zdr_off_openrouter_without_any_request(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
 
     call_count = 0
 
@@ -607,7 +608,7 @@ async def test_query_model_refuses_zdr_off_openrouter_without_any_request(monkey
 async def test_query_model_zdr_still_works_on_openrouter(monkeypatch):
     """Regression: the raise must not fire for the default provider."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
@@ -670,5 +671,155 @@ def test_upload_attachment_zdr_proceeds_on_openrouter(monkeypatch):
     # just proves the pre-flight didn't block a legitimate ZDR upload.
     assert response.status_code == 200
     assert response.json()["status"] in ("success", "partial")
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+# ---------------------------------------------------------------------------
+# PDF extraction path (backend/openrouter_pdf.py) — same degradation rule as
+# query_model: never leak the OpenRouter-only `provider` field, never
+# silently downgrade a ZDR request off-provider (folded into P4-T2 scope,
+# flagged as a follow-up on the round-5 Codex threads and now included here).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pdf_extraction_refuses_zdr_off_openrouter_without_any_request(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, _openrouter, _client, openrouter_pdf = _reload_provider_modules(monkeypatch)
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "text"}}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = openrouter_pdf.httpx.AsyncClient
+
+    class PatchedAsyncClient(real_async_client):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(openrouter_pdf.httpx, "AsyncClient", PatchedAsyncClient)
+
+    with pytest.raises(ValueError, match="ZDR routing requires OpenRouter"):
+        await openrouter_pdf.extract_pdf_with_openrouter(
+            b"%PDF-1.4 fake",
+            "doc.pdf",
+            use_zdr=True,
+        )
+
+    assert call_count == 0
+    _restore(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_pdf_extraction_never_sends_provider_field_off_openrouter(monkeypatch):
+    """Non-ZDR request in the same openai-compatible config: no `provider` key."""
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, _openrouter, _client, openrouter_pdf = _reload_provider_modules(monkeypatch)
+
+    captured_payloads = []
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, *args, **kwargs):
+            captured_payloads.append(dict(kwargs["json"]))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "text"}}]})
+
+    monkeypatch.setattr(openrouter_pdf.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await openrouter_pdf.extract_pdf_with_openrouter(
+        b"%PDF-1.4 fake",
+        "doc.pdf",
+    )
+
+    assert result["status"] == "success"
+    assert "provider" not in captured_payloads[0]
+    _restore(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_pdf_extraction_zdr_unchanged_on_openrouter(monkeypatch):
+    """Regression: the default OpenRouter path must stay byte-identical."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, _openrouter, _client, openrouter_pdf = _reload_provider_modules(monkeypatch)
+
+    captured_payloads = []
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, *args, **kwargs):
+            captured_payloads.append(dict(kwargs["json"]))
+            return httpx.Response(200, json={"choices": [{"message": {"content": "text"}}]})
+
+    monkeypatch.setattr(openrouter_pdf.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = await openrouter_pdf.extract_pdf_with_openrouter(
+        b"%PDF-1.4 fake",
+        "doc.pdf",
+        use_zdr=True,
+    )
+
+    assert result["status"] == "success"
+    assert captured_payloads[0]["provider"] == {"zdr": True}
+    _restore(monkeypatch)
+
+
+def test_enhance_attachment_rejects_zdr_off_openrouter(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/attachments/nonexistent-id/enhance",
+        params={"use_zdr": "true"},
+    )
+
+    # The pre-flight rejects before the 404-attachment-not-found check runs.
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "ZDR requires OpenRouter. Disable ZDR for this upload or switch providers."
+    )
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+def test_enhance_attachment_zdr_not_blocked_on_openrouter(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    main = _import_main(monkeypatch)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/attachments/nonexistent-id/enhance",
+        params={"use_zdr": "true"},
+    )
+
+    # Pre-flight doesn't block; falls through to the real 404 (attachment
+    # doesn't exist) rather than the 400 ZDR gate.
+    assert response.status_code == 404
     _restore(monkeypatch)
     importlib.reload(main)
