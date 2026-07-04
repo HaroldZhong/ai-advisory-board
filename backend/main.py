@@ -1006,6 +1006,12 @@ async def create_attachment_endpoint(
     Upload a file and create an attachment.
     Returns attachment_id and status. Extraction happens async.
     """
+    if use_zdr and not config.provider_is_openrouter():
+        raise HTTPException(
+            status_code=400,
+            detail="ZDR requires OpenRouter. Disable ZDR for this upload or switch providers.",
+        )
+
     content = await file.read()
     mime_type = get_mime_type(file.filename, file.content_type)
     

@@ -104,7 +104,12 @@ class _FakeResponse:
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_never_sends_provider_field_even_with_zdr(monkeypatch):
+async def test_openai_compatible_refuses_zdr_rather_than_silently_stripping_it(monkeypatch):
+    """query_model must never silently drop the ZDR provider field and send
+    the request anyway (Codex round 5) — it has to refuse outright, before
+    any request is built. See test_query_model_refuses_zdr_off_openrouter_
+    without_any_request below for the no-HTTP-call assertion; this pins the
+    non-ZDR request in this same openai-compatible config stays unaffected."""
     monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     _config, openrouter, _client = _reload_provider_modules(monkeypatch)
@@ -127,12 +132,18 @@ async def test_openai_compatible_never_sends_provider_field_even_with_zdr(monkey
 
     monkeypatch.setattr(openrouter.httpx, "AsyncClient", FakeAsyncClient)
 
+    with pytest.raises(ValueError, match="ZDR routing requires OpenRouter"):
+        await openrouter.query_model(
+            "model-a",
+            [{"role": "user", "content": "hi"}],
+            zdr_enabled=True,
+        )
+    assert captured_payloads == []
+
     result = await openrouter.query_model(
         "model-a",
         [{"role": "user", "content": "hi"}],
-        zdr_enabled=True,
     )
-
     assert result["content"] == "ok"
     assert "provider" not in captured_payloads[0]
     _restore(monkeypatch)
@@ -436,10 +447,13 @@ async def test_end_to_end_chat_turn_against_openai_compatible_mock(monkeypatch):
 
     monkeypatch.setattr(openrouter.httpx, "AsyncClient", PatchedAsyncClient)
 
+    # Not ZDR: a ZDR request off-provider is refused outright (see the
+    # dedicated refuses_zdr tests) rather than silently downgraded, so an
+    # end-to-end "does a plain turn work against this mock" check must not
+    # ask for ZDR.
     result = await openrouter.query_model(
         "openai/gpt-4o-mini",
         [{"role": "user", "content": "hi"}],
-        zdr_enabled=True,
     )
 
     assert result["content"] == "Hello from a local model"
@@ -544,5 +558,117 @@ async def test_send_message_per_request_zdr_succeeds_on_openrouter(monkeypatch, 
     )
 
     assert result is not None
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+# ---------------------------------------------------------------------------
+# Utility-call ZDR bypass (Codex round 5): query_model must refuse a ZDR
+# request off-OpenRouter before issuing any HTTP call, and the /api/attachments
+# upload endpoint (a query_model caller that does NOT route through
+# prepare_turn) must reject use_zdr=true off-OpenRouter before processing.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_query_model_refuses_zdr_off_openrouter_without_any_request(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = openrouter.httpx.AsyncClient
+
+    class PatchedAsyncClient(real_async_client):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", PatchedAsyncClient)
+
+    with pytest.raises(ValueError, match="ZDR routing requires OpenRouter"):
+        await openrouter.query_model(
+            "model-a",
+            [{"role": "user", "content": "hi"}],
+            zdr_enabled=True,
+        )
+
+    assert call_count == 0
+    _restore(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_query_model_zdr_still_works_on_openrouter(monkeypatch):
+    """Regression: the raise must not fire for the default provider."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client = _reload_provider_modules(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = openrouter.httpx.AsyncClient
+
+    class PatchedAsyncClient(real_async_client):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", PatchedAsyncClient)
+
+    result = await openrouter.query_model(
+        "model-a",
+        [{"role": "user", "content": "hi"}],
+        zdr_enabled=True,
+    )
+
+    assert result["content"] == "ok"
+    _restore(monkeypatch)
+
+
+def test_upload_attachment_rejects_zdr_off_openrouter(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/attachments",
+        params={"use_zdr": "true"},
+        files={"file": ("note.txt", b"hello world", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "ZDR requires OpenRouter. Disable ZDR for this upload or switch providers."
+    )
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+def test_upload_attachment_zdr_proceeds_on_openrouter(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    main = _import_main(monkeypatch)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/api/attachments",
+        params={"use_zdr": "true"},
+        files={"file": ("note.txt", b"hello world", "text/plain")},
+    )
+
+    # Plain text is extracted locally (no query_model call needed), so this
+    # just proves the pre-flight didn't block a legitimate ZDR upload.
+    assert response.status_code == 200
+    assert response.json()["status"] in ("success", "partial")
     _restore(monkeypatch)
     importlib.reload(main)

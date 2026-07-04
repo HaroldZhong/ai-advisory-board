@@ -57,7 +57,24 @@ async def query_model(
 
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
+
+    Raises:
+        ValueError: zdr_enabled is True but the configured provider isn't
+            OpenRouter. ZDR routing is an OpenRouter-specific `provider`
+            field a generic OpenAI-compatible endpoint (relay, Ollama, LM
+            Studio) has no notion of — silently dropping it would send
+            content to that endpoint while callers still believe it was
+            ZDR-routed. backend.main.prepare_turn rejects zdr_enabled turns
+            before they reach here for normal chat/council traffic; this
+            raise is the hard backstop for any other caller (e.g. the
+            attachment upload/vision-extraction path) that doesn't go
+            through that pre-flight.
     """
+    # Raised BEFORE any network call is prepared — a caller error here must
+    # never silently downgrade to an unprotected request.
+    if zdr_enabled and not provider_is_openrouter():
+        raise ValueError("ZDR routing requires OpenRouter")
+
     api_key = get_openrouter_api_key()
     if not api_key:
         logger.error("OpenRouter API key not configured")
@@ -72,13 +89,7 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
-    # ZDR routing is an OpenRouter-specific `provider` field; a generic
-    # OpenAI-compatible endpoint (relay, Ollama, LM Studio) has no notion of
-    # it. backend.main.prepare_turn rejects zdr_enabled turns before they
-    # reach here when off-OpenRouter, so zdr_enabled should never be True in
-    # that case for turn traffic — this gate is defense-in-depth for any
-    # direct/utility caller that bypasses that pre-flight.
-    if zdr_enabled and provider_is_openrouter():
+    if zdr_enabled:
         payload["provider"] = {"zdr": True}
     if thinking_effort and model_supports_reasoning(model):
         payload["reasoning"] = {"effort": thinking_effort}
