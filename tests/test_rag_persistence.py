@@ -20,6 +20,23 @@ def test_rag_preserves_corrupt_pageindex_file(tmp_path):
     assert not index_file.exists()
 
 
+@pytest.mark.parametrize("bad_top_level_json", ["[]", '"a string"'])
+def test_rag_resets_store_with_valid_json_but_wrong_top_level_type(tmp_path, caplog, bad_top_level_json):
+    """Codex P2: json.load succeeds for e.g. `[]`, skipping the
+    JSONDecodeError recovery path, so the store would not be a dict and the
+    startup ZDR cleanup sweep's self.store.keys() would raise AttributeError,
+    aborting backend startup. Must reset to {} the same way corrupt JSON does."""
+    index_file = tmp_path / "pageindex_memory.json"
+    index_file.write_text(bad_top_level_json, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        rag = CouncilRAG(persist_path=str(tmp_path))
+
+    assert rag.enabled is True
+    assert rag.store == {}
+    assert any("invalid top-level type" in record.message for record in caplog.records)
+
+
 def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatch):
     rag = CouncilRAG(persist_path=str(tmp_path))
 

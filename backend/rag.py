@@ -49,6 +49,15 @@ class CouncilRAG:
                         backup_path,
                     )
                     self.store = {}
+                if not isinstance(self.store, dict):
+                    # Valid JSON but the wrong top-level type (e.g. "[]") skips
+                    # the JSONDecodeError path above; memory is derived data,
+                    # so resetting is the same safe recovery as the corrupt case.
+                    logger.warning(
+                        "[RAG] PageIndex store has invalid top-level type %s; resetting",
+                        type(self.store).__name__,
+                    )
+                    self.store = {}
             else:
                 self.store = {}
                 
