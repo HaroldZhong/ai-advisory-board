@@ -54,6 +54,22 @@ def find_reasoning_metadata_mismatches(
     return mismatches
 
 
+def find_invalid_reasoning_extraction(registry: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Find models whose reasoning_extraction mode disagrees with supports_reasoning."""
+    valid_modes = {"field", "tags"}
+    invalid = []
+
+    for model in registry.get("models", []):
+        supports_reasoning = model.get("supports_reasoning")
+        extraction = model.get("reasoning_extraction")
+        if supports_reasoning is True and extraction not in valid_modes:
+            invalid.append({"id": model.get("id"), "supports_reasoning": True, "reasoning_extraction": extraction})
+        elif supports_reasoning is not True and extraction is not None:
+            invalid.append({"id": model.get("id"), "supports_reasoning": supports_reasoning, "reasoning_extraction": extraction})
+
+    return invalid
+
+
 def main() -> int:
     registry = load_registry()
     live_response = fetch_live_models()
@@ -64,6 +80,7 @@ def main() -> int:
         live_reasoning_response,
         live_response,
     )
+    invalid_extraction = find_invalid_reasoning_extraction(registry)
 
     print(f"registry_models={len(registry.get('models', []))}")
     print(f"live_models={len(live_response.get('data', []))}")
@@ -76,8 +93,14 @@ def main() -> int:
             f"{mismatch['id']} supports_reasoning={mismatch['actual']} "
             f"expected={mismatch['expected']}"
         )
+    print(f"invalid_reasoning_extraction={len(invalid_extraction)}")
+    for entry in invalid_extraction:
+        print(
+            f"{entry['id']} supports_reasoning={entry['supports_reasoning']} "
+            f"reasoning_extraction={entry['reasoning_extraction']!r}"
+        )
 
-    return 1 if missing or reasoning_mismatches else 0
+    return 1 if missing or reasoning_mismatches or invalid_extraction else 0
 
 
 if __name__ == "__main__":

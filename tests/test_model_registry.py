@@ -208,6 +208,28 @@ def test_validate_registry_finds_missing_live_ids():
     assert missing == ["model/b"]
 
 
+def test_reasoning_models_have_valid_extraction_mode(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+    valid_modes = {"field", "tags"}
+
+    for model in config.CURATED_MODELS:
+        extraction = model.get("reasoning_extraction")
+        if model.get("supports_reasoning") is True:
+            assert extraction in valid_modes, (
+                f"{model['id']} supports_reasoning=True but reasoning_extraction={extraction!r}"
+            )
+        else:
+            assert extraction in (None,), (
+                f"{model['id']} supports_reasoning=False but reasoning_extraction={extraction!r}"
+            )
+
+
+def test_config_no_longer_exposes_reasoning_models_dict(monkeypatch):
+    config = import_module_with_api_key(monkeypatch, "backend.config")
+
+    assert not hasattr(config, "REASONING_MODELS")
+
+
 def test_validate_registry_finds_reasoning_metadata_mismatches():
     validate_registry = importlib.import_module("scripts.validate_model_registry")
 

@@ -79,25 +79,6 @@ MODEL_REGISTRY = load_model_registry()
 # Council members - list of OpenRouter model identifiers
 COUNCIL_MODELS = MODEL_REGISTRY["council_models"]
 
-# Models known to support reasoning/thinking
-# Capabilities:
-# - use_field: Look for 'reasoning' or 'reasoning_details' in API response
-# - parse_tags: Look for <think> or <thinking> tags in content
-REASONING_MODELS = {
-    "openai/gpt-5.5": {"use_field": True},
-    "openai/gpt-5.5-pro": {"use_field": True},
-    "openai/gpt-5.4": {"use_field": True},
-    "openai/gpt-5.4-mini": {"use_field": True},
-    "anthropic/claude-opus-4.7": {"parse_tags": True},
-    "anthropic/claude-sonnet-4.6": {"parse_tags": True},
-    "deepseek/deepseek-v4-pro": {"parse_tags": True},
-    "deepseek/deepseek-v4-flash": {"parse_tags": True},
-    "moonshotai/kimi-k2.6": {"parse_tags": True},
-    "z-ai/glm-5.1": {"use_field": True},
-    "qwen/qwen3-max-thinking": {"parse_tags": True},
-    "google/gemini-3.1-pro-preview": {"use_field": True},
-}
-
 # Curated Models Registry (for UI selection)
 CURATED_MODELS = MODEL_REGISTRY["models"]
 

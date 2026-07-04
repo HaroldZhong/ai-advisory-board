@@ -117,11 +117,16 @@ async def query_model(
         return None
 
 
-def model_supports_reasoning(model: str) -> bool:
-    """Return whether the curated registry says a model accepts reasoning controls."""
+def _lookup_registry_model(model: str) -> Optional[Dict[str, Any]]:
+    """Look up a model's curated registry entry by id, or None if not found."""
     from .config import CURATED_MODELS
 
-    registry_model = next((candidate for candidate in CURATED_MODELS if candidate["id"] == model), None)
+    return next((candidate for candidate in CURATED_MODELS if candidate["id"] == model), None)
+
+
+def model_supports_reasoning(model: str) -> bool:
+    """Return whether the curated registry says a model accepts reasoning controls."""
+    registry_model = _lookup_registry_model(model)
     return registry_model is not None and registry_model.get("supports_reasoning") is True
 
 
@@ -137,19 +142,19 @@ def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tupl
     Returns:
         Tuple of (clean_content, extracted_reasoning)
     """
-    from .config import REASONING_MODELS
     import re
-    
+
     # 1. Capability Check
     # If model is not in our registry, do not extract reasoning
-    if model not in REASONING_MODELS:
+    registry_model = _lookup_registry_model(model)
+    extraction_mode = registry_model.get("reasoning_extraction") if registry_model else None
+    if extraction_mode not in ("field", "tags"):
         return content, ""
-        
-    capabilities = REASONING_MODELS[model]
+
     reasoning = ""
-    
+
     # 2. Field Extraction (Precedence 1)
-    if capabilities.get("use_field"):
+    if extraction_mode == "field":
         if message.get("reasoning"):
             reasoning = message["reasoning"]
         elif message.get("reasoning_details"):
@@ -163,8 +168,8 @@ def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tupl
                 reasoning = str(rd) 
     
     # 3. Tag Parsing (Precedence 2)
-    # Only if no reasoning found yet OR explicit parse_tags is requested
-    if not reasoning and capabilities.get("parse_tags"):
+    # Only if no reasoning found yet OR explicit tags mode is requested
+    if not reasoning and extraction_mode == "tags":
         # Non-greedy regex to find <think> or <thinking> blocks
         # Matches: <think>...</think> OR <thinking>...</thinking>
         pattern = r"<(think|thinking)>([\s\S]*?)</\1>"
