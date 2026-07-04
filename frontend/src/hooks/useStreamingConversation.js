@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { streamReducer } from '../utils/streamReducer';
 import { applyStreamUpdateToActiveConversation } from '../utils/reasoningMessages';
@@ -38,6 +38,22 @@ export function useStreamingConversation({
   zdrAvailable = true,
 }) {
   const [isLoading, setIsLoading] = useState(false);
+
+  // Warn before an accidental tab close/reload mid-stream (P3-T8 item 5) —
+  // standard browser confirm dialog, only attached while a turn is in
+  // flight. The desktop WebView shell has no navigation chrome to trigger
+  // this from, so it's a harmless no-op there.
+  useEffect(() => {
+    if (!isLoading) return undefined;
+
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isLoading]);
 
   const sendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1, options = {}) => {
     const { mode: explicitMode } = options;

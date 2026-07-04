@@ -152,12 +152,13 @@ export function setConversationPrivacyMetadata(currentConversation, conversation
 }
 
 export function getPrivacyToggleDisabledReason({
-  isLoading = false,
   isUploading = false,
   isUpdatingPrivacy = false,
   isEnablingUnavailable = false,
 } = {}) {
-  if (isLoading) return 'Privacy changes are disabled while a response is streaming';
+  // A streaming turn no longer blocks this toggle (P3-T8 item 2): privacy
+  // changes apply going forward and only conflict with an upload or another
+  // in-flight privacy update, both of which already track their own state.
   if (isUploading) return 'Privacy changes are disabled while attachments are uploading';
   if (isUpdatingPrivacy) return 'Privacy update is being saved';
   if (isEnablingUnavailable) return 'Requires OpenRouter';

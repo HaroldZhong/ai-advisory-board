@@ -35,6 +35,10 @@ import {
   resolvePresetModels,
   resolveInitialZdrPreference,
 } from '../utils/modelPresets';
+import {
+  readModelSelectorSelection,
+  writeModelSelectorSelection,
+} from '../utils/modelSelectorPersistence';
 
 const DEFAULT_COUNCIL = [];
 const MAX_COUNCIL_SIZE = 8;
@@ -98,11 +102,15 @@ export default function ModelSelector({
   const [presets, setPresets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [conversationMode, setConversationMode] = useState('chat');
+  // Pre-populate from the last saved selection (P3-T8 item 1). The lazy
+  // initializer only runs on first mount; the isOpen effect below re-reads
+  // it on every reopen too, since this dialog stays mounted and toggles via
+  // the Dialog's `open` prop rather than mounting fresh each time.
+  const [conversationMode, setConversationMode] = useState(() => readModelSelectorSelection().conversationMode);
   const [activeTab, setActiveTab] = useState('presets');
-  const [selectedPresetId, setSelectedPresetId] = useState('balanced');
-  const [selectedCouncil, setSelectedCouncil] = useState([]);
-  const [selectedChairman, setSelectedChairman] = useState('');
+  const [selectedPresetId, setSelectedPresetId] = useState(() => readModelSelectorSelection().selectedPresetId);
+  const [selectedCouncil, setSelectedCouncil] = useState(() => readModelSelectorSelection().selectedCouncil);
+  const [selectedChairman, setSelectedChairman] = useState(() => readModelSelectorSelection().selectedChairman);
   const [zdrEnabled, setZdrEnabled] = useState(false);
   const [customRole, setCustomRole] = useState('council');
   const [activeProvider, setActiveProvider] = useState('all');
@@ -112,7 +120,8 @@ export default function ModelSelector({
 
     setLoading(true);
     setError(null);
-    setConversationMode('chat');
+    const saved = readModelSelectorSelection();
+    setConversationMode(saved.conversationMode);
     setActiveTab('presets');
     setCustomRole('council');
     setActiveProvider('all');
@@ -125,16 +134,31 @@ export default function ModelSelector({
         setModels(loadedModels);
         setPresets(loadedPresets);
 
-        const defaultPreset = loadedPresets.find((preset) => preset.id === 'balanced') || loadedPresets[0];
+        const defaultPreset = loadedPresets.find((preset) => preset.id === saved.selectedPresetId)
+          || loadedPresets.find((preset) => preset.id === 'balanced')
+          || loadedPresets[0];
         const initialPresetId = defaultPreset?.id || '';
         setSelectedPresetId(initialPresetId);
 
         const presetSelection = resolvePresetModels(defaultPreset, loadedModels, false);
-        setSelectedChairman(initialChairman || presetSelection.chairman?.id || data.defaults?.chairman || '');
+        const savedCouncilStillValid = saved.selectedCouncil.length > 0
+          && saved.selectedCouncil.every((id) => loadedModels.some((model) => model.id === id));
+        const savedChairmanStillValid = saved.selectedChairman
+          && loadedModels.some((model) => model.id === saved.selectedChairman);
+
+        setSelectedChairman(
+          initialChairman
+          || (savedChairmanStillValid ? saved.selectedChairman : '')
+          || presetSelection.chairman?.id
+          || data.defaults?.chairman
+          || '',
+        );
         setSelectedCouncil(
           initialCouncil.length > 0
             ? initialCouncil
-            : presetSelection.council.map((model) => model.id),
+            : savedCouncilStillValid
+              ? saved.selectedCouncil
+              : presetSelection.council.map((model) => model.id),
         );
       })
       .catch((err) => {
@@ -224,6 +248,16 @@ export default function ModelSelector({
 
   const handleConfirm = () => {
     if (!canConfirm) return;
+
+    // Remember this selection for next time (P3-T8 item 1) — no API key or
+    // other sensitive value is ever part of this record, see
+    // modelSelectorPersistence.js.
+    writeModelSelectorSelection({
+      conversationMode,
+      selectedPresetId,
+      selectedCouncil,
+      selectedChairman,
+    });
 
     if (conversationMode === 'chat') {
       onConfirm({

@@ -240,10 +240,6 @@ test('local privacy metadata update only applies to the active conversation', ()
 test('privacy toggle is disabled for active data-routing operations', () => {
   assert.equal(getPrivacyToggleDisabledReason(), null);
   assert.match(
-    getPrivacyToggleDisabledReason({ isLoading: true }),
-    /streaming/,
-  );
-  assert.match(
     getPrivacyToggleDisabledReason({ isUploading: true }),
     /attachments are uploading/,
   );
@@ -251,6 +247,12 @@ test('privacy toggle is disabled for active data-routing operations', () => {
     getPrivacyToggleDisabledReason({ isUpdatingPrivacy: true }),
     /being saved/,
   );
+});
+
+test('privacy toggle is NOT disabled just because a stream is running (P3-T8 item 2)', () => {
+  // isLoading/isStreaming is no longer an accepted key at all — a stream by
+  // itself must not block this toggle, only an active upload or privacy save.
+  assert.equal(getPrivacyToggleDisabledReason({ isLoading: true }), null);
 });
 
 test('privacy toggle blocks enabling ZDR off-provider but not disabling it', () => {
