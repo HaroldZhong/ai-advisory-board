@@ -90,7 +90,10 @@ export default function ChatInterface({
   const sessionPolicy = conversation?.session_policy || {};
   const sessionBudget = sessionPolicy.budget_usd ?? null;
   // Display-only prediction; routing itself is backend-owned (mode "auto").
-  const nextMessageMode = predictNextMessageMode({ messageCount: conversation?.messages?.length || 0 });
+  const nextMessageMode = predictNextMessageMode({
+    messageCount: conversation?.messages?.length || 0,
+    defaultMode: conversation?.metadata?.default_mode,
+  });
   const effectiveZdr = resolveEffectiveZdr(conversation, settings);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
   const composerDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;

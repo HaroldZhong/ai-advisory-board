@@ -74,7 +74,10 @@ async def query_model(
     }
     # ZDR routing is an OpenRouter-specific `provider` field; a generic
     # OpenAI-compatible endpoint (relay, Ollama, LM Studio) has no notion of
-    # it, so never send it off-OpenRouter.
+    # it. backend.main.prepare_turn rejects zdr_enabled turns before they
+    # reach here when off-OpenRouter, so zdr_enabled should never be True in
+    # that case for turn traffic — this gate is defense-in-depth for any
+    # direct/utility caller that bypasses that pre-flight.
     if zdr_enabled and provider_is_openrouter():
         payload["provider"] = {"zdr": True}
     if thinking_effort and model_supports_reasoning(model):

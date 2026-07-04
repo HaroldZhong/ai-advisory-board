@@ -98,6 +98,7 @@ export default function ModelSelector({
   const [presets, setPresets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [conversationMode, setConversationMode] = useState('chat');
   const [activeTab, setActiveTab] = useState('presets');
   const [selectedPresetId, setSelectedPresetId] = useState('balanced');
   const [selectedCouncil, setSelectedCouncil] = useState([]);
@@ -111,6 +112,7 @@ export default function ModelSelector({
 
     setLoading(true);
     setError(null);
+    setConversationMode('chat');
     setActiveTab('presets');
     setCustomRole('council');
     setActiveProvider('all');
@@ -152,7 +154,7 @@ export default function ModelSelector({
   // still request ZDR — force it off at the source instead of trusting the
   // hidden control's last value.
   const effectiveZdrEnabled = zdrAvailable && zdrEnabled;
-  const effectivePresetZdr = activeTab === 'presets'
+  const effectivePresetZdr = conversationMode === 'council' && activeTab === 'presets'
     ? getEffectivePresetZdr(selectedPreset, effectiveZdrEnabled)
     : effectiveZdrEnabled;
   const presetModels = useMemo(
@@ -161,16 +163,20 @@ export default function ModelSelector({
   );
   const customChairman = byId.get(selectedChairman) || null;
   const customCouncil = selectedCouncil.map((id) => byId.get(id)).filter(Boolean);
-  const activeChairman = activeTab === 'presets' ? presetModels.chairman : customChairman;
-  const activeCouncil = activeTab === 'presets' ? presetModels.council : customCouncil;
+  const activeChairman = conversationMode === 'chat'
+    ? customChairman
+    : (activeTab === 'presets' ? presetModels.chairman : customChairman);
+  const activeCouncil = conversationMode === 'chat'
+    ? []
+    : (activeTab === 'presets' ? presetModels.council : customCouncil);
   const selectedPresetAvailable = activeTab !== 'presets'
     || (canStartPresetWithProvider(selectedPreset, zdrAvailable)
       && canStartPresetWithZdr(selectedPreset, models, effectivePresetZdr));
-  const zdrToggleLocked = activeTab === 'presets' && selectedPreset?.requires_zdr;
+  const zdrToggleLocked = conversationMode === 'council' && activeTab === 'presets' && selectedPreset?.requires_zdr;
   const estimatedCost = estimateSelectionCost({ chairman: activeChairman, council: activeCouncil });
   const roleModels = useMemo(
-    () => filterModelsForRole(models, customRole, effectiveZdrEnabled),
-    [models, customRole, effectiveZdrEnabled],
+    () => filterModelsForRole(models, conversationMode === 'chat' ? 'chairman' : customRole, effectiveZdrEnabled),
+    [models, conversationMode, customRole, effectiveZdrEnabled],
   );
   const groupedModels = useMemo(() => groupModelsByProvider(roleModels), [roleModels]);
   const providers = useMemo(() => ['all', ...groupedModels.map(([provider]) => provider)], [groupedModels]);
@@ -181,7 +187,8 @@ export default function ModelSelector({
   ), [activeProvider, groupedModels]);
 
   useEffect(() => {
-    if (!effectiveZdrEnabled || models.length === 0 || activeTab !== 'custom') return;
+    const editingCustomSelection = conversationMode === 'chat' || activeTab === 'custom';
+    if (!effectiveZdrEnabled || models.length === 0 || !editingCustomSelection) return;
     const compatibleIds = new Set(models.filter((model) => model.supports_zdr).map((model) => model.id));
     setSelectedCouncil((prev) => prev.filter((id) => compatibleIds.has(id)));
     setSelectedChairman((prev) => {
@@ -189,7 +196,7 @@ export default function ModelSelector({
       const fallback = models.find((model) => model.supports_zdr && ['chairman', 'both'].includes(model.type));
       return fallback?.id || '';
     });
-  }, [activeTab, models, effectiveZdrEnabled]);
+  }, [activeTab, conversationMode, models, effectiveZdrEnabled]);
 
   const applyPresetToCustom = (preset) => {
     const resolved = resolvePresetModels(preset, models, effectiveZdrEnabled || preset.requires_zdr);
@@ -218,24 +225,40 @@ export default function ModelSelector({
   const handleConfirm = () => {
     if (!canConfirm) return;
 
+    if (conversationMode === 'chat') {
+      onConfirm({
+        councilMembers: null,
+        chairmanModel: customChairman.id,
+        presetId: null,
+        zdrEnabled: effectiveZdrEnabled,
+        budgetUsd: defaultBudgetUsd,
+        defaultMode: 'chat',
+      });
+      onClose();
+      return;
+    }
+
     onConfirm({
       councilMembers: activeTab === 'presets' ? null : activeCouncil.map((model) => model.id),
       chairmanModel: activeTab === 'presets' ? null : activeChairman.id,
       presetId: activeTab === 'presets' ? selectedPresetId : null,
       zdrEnabled: activeTab === 'presets' ? effectivePresetZdr : effectiveZdrEnabled,
       budgetUsd: defaultBudgetUsd,
+      defaultMode: 'council',
     });
     onClose();
   };
 
-  const canConfirm = canConfirmModelSelection({
-    chairman: activeChairman,
-    council: activeCouncil,
-    selectedPresetAvailable,
-    loading,
-    error,
-    minCouncilSize: MIN_COUNCIL_SIZE,
-  });
+  const canConfirm = conversationMode === 'chat'
+    ? Boolean(customChairman) && !loading && !error
+    : canConfirmModelSelection({
+      chairman: activeChairman,
+      council: activeCouncil,
+      selectedPresetAvailable,
+      loading,
+      error,
+      minCouncilSize: MIN_COUNCIL_SIZE,
+    });
 
   const renderPresetCard = (preset) => {
     const presetZdr = getEffectivePresetZdr(preset, effectiveZdrEnabled);
@@ -325,7 +348,7 @@ export default function ModelSelector({
   };
 
   const renderModelCard = (model) => {
-    const isChairman = customRole === 'chairman';
+    const isChairman = conversationMode === 'chat' || customRole === 'chairman';
     const isSelected = isChairman ? selectedChairman === model.id : selectedCouncil.includes(model.id);
     const isDisabled = !isChairman && !isSelected && selectedCouncil.length >= MAX_COUNCIL_SIZE;
 
@@ -413,25 +436,51 @@ export default function ModelSelector({
           </DialogHeader>
 
           <div className="shrink-0 border-b px-4 py-3 sm:px-6">
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Conversation mode">
               <Button
                 type="button"
                 size="sm"
-                variant={activeTab === 'presets' ? 'default' : 'outline'}
-                onClick={() => setActiveTab('presets')}
+                variant={conversationMode === 'chat' ? 'default' : 'outline'}
+                aria-pressed={conversationMode === 'chat'}
+                onClick={() => setConversationMode('chat')}
               >
-                Presets
+                Chat
               </Button>
               <Button
                 type="button"
                 size="sm"
-                variant={activeTab === 'custom' ? 'default' : 'outline'}
-                onClick={() => setActiveTab('custom')}
+                variant={conversationMode === 'council' ? 'default' : 'outline'}
+                aria-pressed={conversationMode === 'council'}
+                onClick={() => setConversationMode('council')}
               >
-                Custom
+                <Users className="mr-2 h-4 w-4" />
+                Council
               </Button>
             </div>
           </div>
+
+          {conversationMode === 'council' && (
+            <div className="shrink-0 border-b px-4 py-3 sm:px-6">
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeTab === 'presets' ? 'default' : 'outline'}
+                  onClick={() => setActiveTab('presets')}
+                >
+                  Presets
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeTab === 'custom' ? 'default' : 'outline'}
+                  onClick={() => setActiveTab('custom')}
+                >
+                  Custom
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className={getResponsiveModalBodyClass()}>
             <ScrollArea className="h-full px-4 py-4 sm:px-6">
@@ -439,6 +488,50 @@ export default function ModelSelector({
                 <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">Loading models...</div>
               ) : error ? (
                 <div className="text-center text-destructive">{error}</div>
+              ) : conversationMode === 'chat' ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-muted-foreground">Model</div>
+                  </div>
+
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {providers.map((provider) => {
+                      const count = provider === 'all'
+                        ? roleModels.length
+                        : groupedModels.find(([name]) => name === provider)?.[1]?.length || 0;
+                      return (
+                        <Button
+                          key={provider}
+                          type="button"
+                          variant={activeProvider === provider ? 'default' : 'outline'}
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => setActiveProvider(provider)}
+                        >
+                          {provider !== 'all' && (
+                            <span className={cn('mr-2 h-2 w-2 rounded-full', PROVIDER_COLORS[provider] || PROVIDER_COLORS.Other)} />
+                          )}
+                          {provider === 'all' ? 'All' : provider}
+                          <span className="ml-1.5 text-xs opacity-70">{count}</span>
+                        </Button>
+                      );
+                    })}
+                  </div>
+
+                  {filteredGroups.map(([provider, providerModels]) => (
+                    <div key={provider} className="space-y-3">
+                      <div className="flex items-center gap-2">
+                        <span className={cn('h-3 w-3 rounded-full', PROVIDER_COLORS[provider] || PROVIDER_COLORS.Other)} />
+                        <span className="font-semibold">{provider}</span>
+                        <span className="text-xs text-muted-foreground">({providerModels.length})</span>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+                        {providerModels.map(renderModelCard)}
+                      </div>
+                      <Separator />
+                    </div>
+                  ))}
+                </div>
               ) : activeTab === 'presets' ? (
                 <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
                   {presets.map(renderPresetCard)}
@@ -521,10 +614,14 @@ export default function ModelSelector({
           <DialogFooter className="shrink-0 border-t bg-muted/10 px-4 py-4 sm:px-6">
             <div className="flex w-full flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-wrap gap-2">
-                <StatPill>{activeCouncil.length} council</StatPill>
+                {conversationMode === 'chat' ? (
+                  <StatPill>{customChairman ? getShortName(customChairman.name) : 'No model selected'}</StatPill>
+                ) : (
+                  <StatPill>{activeCouncil.length} council</StatPill>
+                )}
                 <StatPill>{formatCost(estimatedCost)} est.</StatPill>
-                <StatPill tone={effectivePresetZdr ? 'green' : 'default'}>
-                  {effectivePresetZdr ? 'ZDR on' : 'Standard routing'}
+                <StatPill tone={(conversationMode === 'chat' ? effectiveZdrEnabled : effectivePresetZdr) ? 'green' : 'default'}>
+                  {(conversationMode === 'chat' ? effectiveZdrEnabled : effectivePresetZdr) ? 'ZDR on' : 'Standard routing'}
                 </StatPill>
                 {defaultBudgetUsd != null && <StatPill>Budget ${defaultBudgetUsd}</StatPill>}
               </div>

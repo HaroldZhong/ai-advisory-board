@@ -4,6 +4,7 @@ Covers provider-kind resolution, request/catalog degradation off-OpenRouter,
 ZDR gating, and the default OpenRouter path staying byte-identical.
 """
 import importlib
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -443,3 +444,105 @@ async def test_end_to_end_chat_turn_against_openai_compatible_mock(monkeypatch):
 
     assert result["content"] == "Hello from a local model"
     _restore(monkeypatch)
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight ZDR rejection in prepare_turn (send_message/send_message_stream)
+# ---------------------------------------------------------------------------
+
+def _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, metadata):
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id, metadata)
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return ""
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "response", "usage": {}}
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+
+@pytest.mark.asyncio
+async def test_send_message_rejects_conversation_metadata_zdr_off_openrouter(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    conversation_id = "conv-preflight-metadata-zdr"
+    _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, {
+        "chairman_model": "openai/gpt-4o-mini", "zdr_enabled": True,
+    })
+
+    with pytest.raises(HTTPException) as exc:
+        await main.send_message(
+            conversation_id,
+            main.SendMessageRequest(content="Follow up", mode="chat"),
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "ZDR requires OpenRouter. Disable ZDR for this conversation or switch providers."
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_send_message_rejects_per_request_zdr_off_openrouter(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    main = _import_main(monkeypatch)
+    conversation_id = "conv-preflight-request-zdr"
+    _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, {
+        "chairman_model": "openai/gpt-4o-mini",
+    })
+
+    with pytest.raises(HTTPException) as exc:
+        await main.send_message(
+            conversation_id,
+            main.SendMessageRequest(content="Follow up", mode="chat", zdr_enabled=True),
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "ZDR requires OpenRouter. Disable ZDR for this conversation or switch providers."
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_send_message_conversation_metadata_zdr_succeeds_on_openrouter(monkeypatch, tmp_path):
+    main = _import_main(monkeypatch)
+    conversation_id = "conv-preflight-metadata-zdr-ok"
+    _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, {
+        "chairman_model": "openai/gpt-4o-mini", "zdr_enabled": True,
+    })
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result is not None
+    _restore(monkeypatch)
+    importlib.reload(main)
+
+
+@pytest.mark.asyncio
+async def test_send_message_per_request_zdr_succeeds_on_openrouter(monkeypatch, tmp_path):
+    main = _import_main(monkeypatch)
+    conversation_id = "conv-preflight-request-zdr-ok"
+    _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, {
+        "chairman_model": "openai/gpt-4o-mini",
+    })
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat", zdr_enabled=True),
+    )
+
+    assert result is not None
+    _restore(monkeypatch)
+    importlib.reload(main)

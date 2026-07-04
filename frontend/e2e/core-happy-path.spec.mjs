@@ -320,6 +320,9 @@ test('first-run setup creates a private preset conversation and renders streamed
   await page.getByRole('button', { name: /Finish/ }).click();
 
   await expect(page.getByRole('heading', { name: 'New conversation' })).toBeVisible();
+  // The dialog defaults to Chat mode (P3-T3); switch to Council to reach the
+  // preset picker this test exercises.
+  await page.getByRole('button', { name: 'Council' }).click();
   await expect(page.getByRole('button', { name: /Research/ })).toContainText('hidden by ZDR');
   await page.getByRole('button', { name: /Private ZDR-only panel/ }).click();
   await page.getByRole('button', { name: 'Start conversation' }).click();

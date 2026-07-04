@@ -120,7 +120,7 @@ export default function TrustRow({
           icon={Users}
           label={state.council.label}
           detail={state.council.detail}
-          title={`Council: ${state.council.label}, ${state.council.detail}`}
+          title={`${state.council.label}: ${state.council.detail}`}
         />
 
         <TrustTile

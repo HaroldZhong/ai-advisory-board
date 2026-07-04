@@ -128,6 +128,7 @@ function ConversationView({
     presetId,
     zdrEnabled,
     budgetUsd,
+    defaultMode,
   }) => {
     try {
       const newConv = await createConversationWithDefaults({
@@ -138,6 +139,7 @@ function ConversationView({
         presetId,
         zdrEnabled,
         defaultSessionBudgetUsd: budgetUsd ?? settings.defaultSessionBudgetUsd,
+        defaultMode,
       });
 
       // Update conversations list
@@ -460,9 +462,18 @@ function AppContent() {
     } catch (e) { console.error('Failed to move conversation:', e); }
   };
 
-  const handleFirstRunComplete = (settingsUpdate) => {
+  const handleFirstRunComplete = async (settingsUpdate) => {
     updateSettings(settingsUpdate);
-    setConfigStatus({ loading: false, hasApiKey: true });
+    // Refetch instead of hand-constructing the status object — a
+    // hand-built object silently drops fields like providerKind, which
+    // would make the ZDR UI reappear off-OpenRouter right after setup.
+    try {
+      const status = await api.getConfigStatus();
+      setConfigStatus(buildConfigStatusSuccessState(status).configStatus);
+    } catch (error) {
+      console.error('Failed to refresh configuration status:', error);
+      setConfigStatus((prev) => ({ ...prev, loading: false, hasApiKey: true }));
+    }
     setShowFirstRunSetup(false);
     setOpenModelPickerSignal((value) => value + 1);
   };
