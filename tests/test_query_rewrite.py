@@ -1,79 +1,42 @@
-"""
-Manual test script for Phase 1: Query Rewriting
+"""Unit tests for rewrite_query heuristics (backend/council.py)."""
+import pytest
+from backend import council
 
-Run this with a few test conversations to verify query rewriting works.
-"""
 
-async def test_query_rewriting():
-    from backend.council import rewrite_query
-    
-    # Test Case 1: Short follow-up with coreference
-    print("=" * 60)
-    print("TEST 1: Short follow-up with coreference")
-    print("=" * 60)
-    
-    conversation_history = [
+@pytest.mark.asyncio
+async def test_long_query_skips_rewrite(monkeypatch):
+    async def explode(*args, **kwargs):
+        raise AssertionError("must not call the LLM for self-contained queries")
+    monkeypatch.setattr(council, "query_model", explode)
+    query = "What are the main differences between RAG and fine-tuning for domain adaptation tasks?"
+    assert await council.rewrite_query(query, [{"role": "user", "content": "hi"}] * 4) == query
+
+
+@pytest.mark.asyncio
+async def test_no_history_skips_rewrite(monkeypatch):
+    async def explode(*args, **kwargs):
+        raise AssertionError("must not call the LLM without context")
+    monkeypatch.setattr(council, "query_model", explode)
+    assert await council.rewrite_query("why?", []) == "why?"
+
+
+@pytest.mark.asyncio
+async def test_short_followup_uses_llm_rewrite(monkeypatch):
+    async def fake_llm(model, messages, **kwargs):
+        return {"content": "How does RAG handle document updates?", "usage": {}}
+    monkeypatch.setattr(council, "query_model", fake_llm)
+    history = [
         {"role": "user", "content": "How does RAG work?"},
-        {"role": "assistant", "stage3": {
-            "response": "RAG (Retrieval-Augmented Generation) combines information retrieval with language generation. It first retrieves relevant documents from a knowledge base..."
-        }},
+        {"role": "assistant", "stage3": {"response": "RAG combines retrieval with generation..."}},
     ]
-    
-    query = "What about its limitations?"
-    rewritten = await rewrite_query(query, conversation_history)
-    print(f"Original:  {query}")
-    print(f"Rewritten: {rewritten}")
-    assert "RAG" in rewritten or "retrieval" in rewritten.lower()
-    print("✅ PASS: Coreference resolved\n")
-    
-    # Test Case 2: Already self-contained (should skip)
-    print("=" * 60)
-    print("TEST 2: Self-contained query (should skip rewriting)")
-    print("=" * 60)
-    
-    long_query = "Can you explain how vector embeddings work in semantic search systems?"
-    rewritten2 = await rewrite_query(long_query, conversation_history)
-    print(f"Original:  {long_query}")
-    print(f"Rewritten: {rewritten2}")
-    assert rewritten2 == long_query  # Should be unchanged
-    print("✅ PASS: Skipped rewrite for self-contained query\n")
-    
-    # Test Case 3: Empty history (should skip)
-    print("=" * 60)
-    print("TEST 3: No context available (should skip)")
-    print("=" * 60)
-    
-    query3 = "What about Python?"
-    rewritten3 = await rewrite_query(query3, [])
-    print(f"Original:  {query3}")
-    print(f"Rewritten: {rewritten3}")
-    assert rewritten3 == query3  # Should be unchanged
-    print("✅ PASS: Skipped rewrite when no context\n")
-    
-    # Test Case 4: Feature flag disabled
-    print("=" * 60)
-    print("TEST 4: Feature flag disabled")
-    print("=" * 60)
-    
-    from backend import config
-    original_flag = config.ENABLE_QUERY_REWRITE
-    config.ENABLE_QUERY_REWRITE = False
-    
-    query4 = "What about its downsides?"
-    rewritten4 = await rewrite_query(query4, conversation_history)
-    print(f"Original:  {query4}")
-    print(f"Rewritten: {rewritten4}")
-    assert rewritten4 == query4  # Should be unchanged when disabled
-    print("✅ PASS: Feature flag works\n")
-    
-    # Restore flag
-    config.ENABLE_QUERY_REWRITE = original_flag
-    
-    print("=" * 60)
-    print("ALL TESTS PASSED! 🎉")
-    print("=" * 60)
+    assert await council.rewrite_query("what about updates?", history) == "How does RAG handle document updates?"
 
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(test_query_rewriting())
+@pytest.mark.asyncio
+async def test_llm_failure_falls_back_to_original(monkeypatch):
+    async def fail(*args, **kwargs):
+        return None
+    monkeypatch.setattr(council, "query_model", fail)
+    history = [{"role": "user", "content": "How does RAG work?"},
+               {"role": "assistant", "content": "..."}]
+    assert await council.rewrite_query("what about it?", history) == "what about it?"
