@@ -125,6 +125,31 @@ async def test_retrieve_keeps_header_when_single_block_exceeds_cap(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_retrieve_drops_tail_entirely_when_budget_leaves_no_room(tmp_path, monkeypatch):
+    rag = CouncilRAG(persist_path=str(tmp_path))
+
+    big_memory = "x" * 5000
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [{"turn": 0, "memory": big_memory}],
+        },
+    }
+
+    # cap = min(60_000, 1 * 4) = 4 chars: smaller than the header alone, so
+    # tail_budget computes to 0. content[-0:] would (incorrectly) return the
+    # WHOLE string; the guard must instead yield an empty tail.
+    max_tokens = 1
+    memory_section = await _retrieve_and_capture_memory_section(rag, monkeypatch, max_tokens)
+
+    header = "[Memory from Chat: other | Turn: 0]"
+    assert memory_section == header + "\n…"
+    assert big_memory not in memory_section
+    assert len(memory_section) <= len(header) + len("\n…")
+
+
+@pytest.mark.asyncio
 async def test_retrieve_defaults_to_legacy_60k_cap_when_max_tokens_none(tmp_path, monkeypatch):
     rag = CouncilRAG(persist_path=str(tmp_path))
 

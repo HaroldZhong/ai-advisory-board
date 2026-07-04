@@ -258,7 +258,9 @@ class CouncilRAG:
                 header, _, content = memory_blocks[-1].partition("\n")
                 header_line = header + "\n"
                 tail_budget = max(cap - len(header_line) - 1, 0)
-                kept = [header_line + "…" + content[-tail_budget:]]
+                # content[-0:] would slice the WHOLE string, defeating the cap; guard it.
+                tail = content[-tail_budget:] if tail_budget > 0 else ""
+                kept = [header_line + "…" + tail]
             memory_text = "\n\n".join(reversed(kept))
             
         # 2. Reasoning Extraction step
