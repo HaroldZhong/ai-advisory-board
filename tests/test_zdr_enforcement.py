@@ -411,7 +411,7 @@ async def test_council_turn_with_metadata_zdr_skips_memory_indexing(monkeypatch,
     main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
 
     rag_system = SimpleNamespace(
-        index_session=AsyncMock(),
+        index_session=AsyncMock(return_value=None),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -435,7 +435,7 @@ async def test_council_turn_with_per_message_zdr_skips_memory_indexing(monkeypat
     main.storage.create_conversation(conversation_id)  # no metadata ZDR
 
     rag_system = SimpleNamespace(
-        index_session=AsyncMock(),
+        index_session=AsyncMock(return_value=None),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -459,7 +459,7 @@ async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
     main.storage.create_conversation(conversation_id)
 
     rag_system = SimpleNamespace(
-        index_session=AsyncMock(),
+        index_session=AsyncMock(return_value=None),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )
@@ -555,7 +555,7 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
     main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
 
     rag_system = SimpleNamespace(
-        index_session=AsyncMock(),
+        index_session=AsyncMock(return_value=None),
         index_document=Mock(),
         refresh_hybrid_index=Mock(),
     )

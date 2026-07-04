@@ -1,11 +1,18 @@
+import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from backend.rag import CouncilRAG, score_topic_overlap
 from backend import rag as rag_module
 from backend import storage
+
+
+def import_module_with_api_key(monkeypatch, module_name):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    return importlib.import_module(module_name)
 
 
 def test_rag_preserves_corrupt_pageindex_file(tmp_path):
@@ -705,3 +712,132 @@ async def test_summary_tier_renders_as_a_retrieval_block_with_header(tmp_path, m
 
     assert "summary of 6 earlier turns" in memory_section.lower()
     assert "Summary of 6 earlier turns about budget." in memory_section
+
+
+# --- Codex round on PR #80: error turns must not become memory ---
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_where_chairman_raises_is_not_indexed(monkeypatch, tmp_path):
+    """Codex P2: the except handler in turn_pipeline's chat branch fabricates
+    an apology response_dict when chat_with_chairman raises. That fabricated
+    text must never be written into cross-conversation memory -- mirrors the
+    council branch's stage3_result.get("model") != "error" guard. Root fix is
+    an explicit response_dict["error"] flag, not string-matching the apology."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-chairman-raises"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id)
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def raising_chat_with_chairman(*args, **kwargs):
+        raise RuntimeError("chairman exploded")
+
+    index_calls = []
+
+    async def spy_index_chat_turn(*args, **kwargs):
+        index_calls.append(args)
+        return None
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(main, "chat_with_chairman", raising_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=spy_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["type"] == "chat"
+    assert "I apologize" in result["content"]
+    assert index_calls == []
+
+
+@pytest.mark.asyncio
+async def test_summary_compression_usage_bills_totals_but_not_persisted_running_cost(monkeypatch, tmp_path):
+    """Codex P2: summary-compression usage is discovered AFTER turn_cost is
+    computed and the message is persisted (persistence-first: indexing must
+    never risk losing the saved answer). The fix bills it as a delta added to
+    the in-memory turn_cost, which reaches update_conversation_cost/
+    record_session_usage/the completion event -- but the message's already
+    -persisted running_cost snapshot predates the delta and must stay
+    unchanged."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-compression-billing"
+
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    compression_usage = {"prompt_tokens": 100_000, "completion_tokens": 10_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics(*args, **kwargs):
+        return ["topic"]
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return compression_usage
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    # openai/gpt-4o-mini pricing: input=$0.15/M, output=$0.6/M
+    chairman_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    # google/gemini-2.5-flash (UTILITY_MODEL) pricing: input=$0.3/M, output=$2.5/M
+    compression_cost = (100_000 / 1_000_000) * 0.3 + (10_000 / 1_000_000) * 2.5
+    expected_total = chairman_cost + compression_cost
+
+    conversation = main.storage.get_conversation(conversation_id)
+
+    # Completion payload / conversation total DO include the compression delta.
+    assert result["turn_cost"] == pytest.approx(expected_total)
+    assert result["total_cost"] == pytest.approx(expected_total)
+    assert conversation["total_cost"] == pytest.approx(expected_total)
+    # The already-persisted message running_cost snapshot excludes it.
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(chairman_cost)

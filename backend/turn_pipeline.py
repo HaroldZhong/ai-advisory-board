@@ -366,7 +366,17 @@ async def run_turn(
                     quality_metrics,
                 )
                 if summary_usage:
-                    extra_usage_records.append({"model": config.UTILITY_MODEL, "usage": summary_usage})
+                    # Codex P2: turn_cost (and the message's persisted
+                    # running_cost) was already computed/saved above, before
+                    # this compression call could run -- indexing happens
+                    # after persistence on purpose (a crash during indexing
+                    # must not lose the saved answer). Billing this as a
+                    # DELTA on top of the already-computed turn_cost, rather
+                    # than appending to extra_usage_records (which nothing
+                    # re-reads for this turn), gets it into the conversation
+                    # total, session budget, and the completion payload --
+                    # just not into the per-message running_cost snapshot.
+                    turn_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                 logger.info("[PHASE1] Session indexed successfully")
 
                 # Refresh hybrid index after indexing
@@ -469,7 +479,8 @@ async def run_turn(
                 logger.error(f"[CHAT] Error from chairman: {e}")
                 response_dict = {
                     "content": f"I apologize, but I encountered an error: {str(e)}",
-                    "usage": {}
+                    "usage": {},
+                    "error": True,
                 }
 
             for event in main.build_reasoning_stream_events(
@@ -505,8 +516,12 @@ async def run_turn(
             # council branch's guard: this is a cheap early skip, not the
             # authoritative guard -- CouncilRAG.index_chat_turn's own write
             # barrier re-checks CURRENT metadata synchronously immediately
-            # before it mutates the store.
-            if not zdr_enabled:
+            # before it mutates the store. Also skip when the chairman call
+            # itself failed (Codex P2): response_dict["content"] is a
+            # fabricated apology in that case, not a real answer, and must
+            # not become cross-conversation memory -- mirrors the council
+            # branch's stage3_result.get("model") != "error" guard above.
+            if not zdr_enabled and not response_dict.get("error"):
                 from .council import extract_topics
                 chat_turn_index = len(main.rag_system.store.get(conversation_id, {}).get("turns", []))
                 combined_text = request.content + " " + response_dict.get("content", "")
@@ -523,7 +538,14 @@ async def run_turn(
                     chat_topics,
                 )
                 if summary_usage:
-                    extra_usage_records.append({"model": config.UTILITY_MODEL, "usage": summary_usage})
+                    # Codex P2: same delta-billing approach as the council
+                    # branch -- turn_cost/running_cost were already computed
+                    # and persisted above (persistence-first: a crash during
+                    # indexing must not lose the saved answer), so the
+                    # compression cost is added as a delta that reaches the
+                    # conversation total/session budget/completion payload
+                    # but not the already-saved message's running_cost.
+                    turn_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                 main.rag_system.refresh_hybrid_index()
 
             yield {"type": "chat_response", "data": response_dict}
