@@ -158,14 +158,27 @@ def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tupl
         if message.get("reasoning"):
             reasoning = message["reasoning"]
         elif message.get("reasoning_details"):
-            # reasoning_details might be a dict or string depending on provider
+            # reasoning_details may be a string, a dict, or (OpenRouter's
+            # documented non-streaming shape) a list of reasoning blocks
+            # carrying `text` or `summary` — same normalization as
+            # reasoning_stream.ReasoningStreamState.
             rd = message["reasoning_details"]
             if isinstance(rd, str):
                 reasoning = rd
-            elif isinstance(rd, dict):
-                # Try to extract text from dict structure if possible
-                # This is provider specific, but common pattern is 'text' or 'content'
-                reasoning = str(rd) 
+            else:
+                blocks = rd if isinstance(rd, list) else [rd]
+                parts = []
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    if isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+                    elif isinstance(block.get("summary"), str):
+                        parts.append(block["summary"])
+                reasoning = "\n\n".join(parts)
+                if not reasoning and isinstance(rd, dict):
+                    # provider-specific dict without text/summary: keep legacy behavior
+                    reasoning = str(rd)
     
     # 3. Tag Parsing (Precedence 2)
     # Only if no reasoning found yet OR explicit tags mode is requested

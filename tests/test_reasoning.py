@@ -33,6 +33,46 @@ def test_field_extraction():
     assert clean_content == "Final answer"
 
 
+def test_field_extraction_list_of_text_blocks():
+    content = "Final answer"
+    message = {
+        "reasoning_details": [
+            {"type": "reasoning.text", "text": "Step 1"},
+            {"type": "reasoning.text", "text": "Step 2"},
+        ]
+    }
+
+    clean_content, reasoning = extract_reasoning(content, message, FIELD_MODEL)
+
+    assert reasoning == "Step 1\n\nStep 2"
+    assert clean_content == "Final answer"
+
+
+def test_field_extraction_list_of_summary_blocks():
+    content = "Final answer"
+    message = {
+        "reasoning_details": [
+            {"type": "reasoning.summary", "summary": "Summary 1"},
+            {"type": "reasoning.summary", "summary": "Summary 2"},
+        ]
+    }
+
+    clean_content, reasoning = extract_reasoning(content, message, FIELD_MODEL)
+
+    assert reasoning == "Summary 1\n\nSummary 2"
+    assert clean_content == "Final answer"
+
+
+def test_field_extraction_dict_without_text_or_summary_falls_back_to_str():
+    content = "Final answer"
+    message = {"reasoning_details": {"type": "reasoning.opaque", "value": "mystery"}}
+
+    clean_content, reasoning = extract_reasoning(content, message, FIELD_MODEL)
+
+    assert reasoning == str(message["reasoning_details"])
+    assert clean_content == "Final answer"
+
+
 def test_tag_parsing():
     content = "<think>Step 1: Think\nStep 2: Solve</think>Final Answer"
     message = {}
