@@ -7,6 +7,22 @@ from .config import OPENROUTER_API_URL, get_openrouter_api_key
 from .logger import logger
 
 
+def classify_openrouter_error(exc: Exception) -> str:
+    """Map an exception from an OpenRouter call to a coarse failure kind."""
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        return "network"
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, asyncio.TimeoutError)):
+        return "timeout"
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return "auth"
+        if code == 402:
+            return "quota"
+        return "other"
+    return "other"
+
+
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
@@ -47,7 +63,9 @@ async def query_model(
         payload["reasoning"] = {"effort": thinking_effort}
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=10.0)
+        ) as client:
             response = await asyncio.wait_for(
                 client.post(
                     OPENROUTER_API_URL,
@@ -76,11 +94,11 @@ async def query_model(
                 'usage': usage
             }
 
-    except asyncio.TimeoutError:
-        logger.error(f"OpenRouter request to {model} timed out after {timeout:.1f}s")
-        return None
     except Exception as e:
-        logger.error(f"Error querying model {model}: {e}")
+        logger.error(
+            "OpenRouter call failed model=%s kind=%s error=%s",
+            model, classify_openrouter_error(e), e,
+        )
         return None
 
 

@@ -1,0 +1,25 @@
+"""Distinguish network / auth / quota / timeout failures (audit §4.2, §4.3)."""
+import asyncio
+import httpx
+import pytest
+from backend.openrouter import classify_openrouter_error
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    resp = httpx.Response(code, request=req)
+    return httpx.HTTPStatusError("boom", request=req, response=resp)
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (httpx.ConnectError("dns fail"), "network"),
+    (httpx.ConnectTimeout("connect timeout"), "network"),
+    (httpx.ReadTimeout("read timeout"), "timeout"),
+    (asyncio.TimeoutError(), "timeout"),
+    (_status_error(401), "auth"),
+    (_status_error(402), "quota"),
+    (_status_error(500), "other"),
+    (ValueError("weird"), "other"),
+])
+def test_classify_openrouter_error(exc, expected):
+    assert classify_openrouter_error(exc) == expected
