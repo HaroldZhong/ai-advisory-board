@@ -386,15 +386,26 @@ class CouncilRAG:
         if not other_convs:
             return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
 
-        # 1b. Topic pre-filter (P5-T4, audit §12): scoring every stored turn
-        # against the query's tokens and keeping only the ones that overlap
-        # cuts down how much irrelevant history gets stuffed into the
+        # 1b. Topic pre-filter (P5-T4, audit §12): scoring every stored SESSION
+        # turn against the query's tokens and keeping only the ones that
+        # overlap cuts down how much irrelevant history gets stuffed into the
         # extraction prompt. This is a pre-filter, not a search engine: if
-        # NOTHING overlaps, fall back to ALL turns so the filter can never
-        # return less context than before it existed (quality floor).
-        all_turns = [(cid, turn) for cid, data in other_convs.items() for turn in data["turns"]]
-        scored_turns = [(cid, turn) for cid, turn in all_turns if score_topic_overlap(query, turn.get("topics")) > 0]
-        turns_to_use = scored_turns or all_turns
+        # NOTHING overlaps, fall back to ALL session turns so the filter can
+        # never return less context than before it existed (quality floor).
+        #
+        # Document memories (index_document, sentinel turn == -1) are ALWAYS
+        # kept regardless of the filter's outcome: their stored "topics" is
+        # just [f"document:{filename}"], derived from the filename alone, not
+        # from the document's actual content -- it can't be trusted as a
+        # relevance signal. The extraction model inspects the document body
+        # itself to decide relevance, the same as it always has.
+        all_entries = [(cid, turn) for cid, data in other_convs.items() for turn in data["turns"]]
+        document_entries = [(cid, turn) for cid, turn in all_entries if turn.get("turn") == -1]
+        session_turns = [(cid, turn) for cid, turn in all_entries if turn.get("turn") != -1]
+        scored_session_turns = [
+            (cid, turn) for cid, turn in session_turns if score_topic_overlap(query, turn.get("topics")) > 0
+        ]
+        turns_to_use = (scored_session_turns or session_turns) + document_entries
 
         # Flatten into a prompt-friendly string
         memory_blocks = [

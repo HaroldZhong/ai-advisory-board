@@ -334,6 +334,68 @@ async def test_retrieve_filter_composes_with_block_boundary_budget_cap(tmp_path,
     assert "Turn: 0" not in memory_section
 
 
+@pytest.mark.asyncio
+async def test_retrieve_always_includes_document_memories_regardless_of_topic_filter(tmp_path, monkeypatch):
+    """Codex P2: document memories (index_document) store topics derived only
+    from the filename (["document:{filename}"]), which can't be trusted as a
+    relevance signal -- the extraction model inspects the document body
+    itself instead. So when a session turn's topics DO overlap the query
+    (triggering the filter), an unrelated-filename document must still ride
+    along unconditionally, not get filtered out alongside non-overlapping
+    turns."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {"turn": 0, "topics": ["budget"], "memory": "budget memory"},
+                {
+                    "turn": -1,
+                    "topics": ["document:quarterly_report.pdf"],
+                    "memory": "[Uploaded Document: quarterly_report.pdf]\ndocument body text",
+                },
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget"
+    )
+
+    assert "budget memory" in memory_section
+    assert "document body text" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_keeps_document_memory_when_filename_does_not_match_query(tmp_path, monkeypatch):
+    """Explicit fallback check for a document-only store: even though the
+    general fallback (no turn overlaps) would already keep everything, this
+    pins down that a document whose filename shares nothing with the query
+    is still surfaced -- the extraction model, not the filter, judges its
+    relevance."""
+    rag = CouncilRAG(persist_path=str(tmp_path))
+    rag.store = {
+        "current": {"folder_id": "root", "turns": []},
+        "other": {
+            "folder_id": "root",
+            "turns": [
+                {
+                    "turn": -1,
+                    "topics": ["document:random_notes.txt"],
+                    "memory": "[Uploaded Document: random_notes.txt]\nunrelated filename document body",
+                },
+            ],
+        },
+    }
+
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was our budget plan"
+    )
+
+    assert "unrelated filename document body" in memory_section
+
+
 # --- P5-T4: store hygiene (warn, never auto-evict) ---
 
 
