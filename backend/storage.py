@@ -3,7 +3,7 @@
 import json
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR, SESSION_POLICY_DEFAULTS
@@ -51,7 +51,7 @@ def create_conversation(conversation_id: str, metadata: Dict[str, Any] = None) -
 
     conversation = {
         "id": conversation_id,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "title": "New Conversation",
         "messages": [],
         "metadata": metadata or {},
@@ -61,7 +61,7 @@ def create_conversation(conversation_id: str, metadata: Dict[str, Any] = None) -
     # Save to file atomically
     path = get_conversation_path(conversation_id)
     temp_path = path + ".tmp"
-    with open(temp_path, 'w') as f:
+    with open(temp_path, 'w', encoding="utf-8") as f:
         json.dump(conversation, f, indent=2)
     os.replace(temp_path, path)
 
@@ -83,7 +83,7 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(path):
         return None
 
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -98,7 +98,7 @@ def save_conversation(conversation: Dict[str, Any]):
 
     path = get_conversation_path(conversation['id'])
     temp_path = path + ".tmp"
-    with open(temp_path, 'w') as f:
+    with open(temp_path, 'w', encoding="utf-8") as f:
         json.dump(conversation, f, indent=2)
     os.replace(temp_path, path)
 
@@ -116,7 +116,7 @@ def list_conversations() -> List[Dict[str, Any]]:
     for filename in os.listdir(DATA_DIR):
         if filename.endswith('.json') and filename != 'folders.json':
             path = os.path.join(DATA_DIR, filename)
-            with open(path, 'r') as f:
+            with open(path, 'r', encoding="utf-8") as f:
                 data = json.load(f)
                 # Return metadata only
                 conversations.append({
@@ -511,7 +511,7 @@ def _read_folders() -> List[Dict[str, Any]]:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return []
@@ -521,7 +521,7 @@ def _write_folders(folders: List[Dict[str, Any]]):
     ensure_data_dir()
     path = get_folders_path()
     temp_path = path + ".tmp"
-    with open(temp_path, 'w') as f:
+    with open(temp_path, 'w', encoding="utf-8") as f:
         json.dump(folders, f, indent=2)
     os.replace(temp_path, path)
 
@@ -542,8 +542,8 @@ def create_folder(folder_id: str, name: str, color: str = None) -> Dict[str, Any
             "id": folder_id,
             "name": name,
             "color": color,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
         folders.append(new_folder)
         _write_folders(folders)
@@ -560,7 +560,7 @@ def update_folder(folder_id: str, updates: Dict[str, Any]) -> Optional[Dict[str,
                     f["name"] = updates["name"]
                 if "color" in updates:
                     f["color"] = updates["color"]
-                f["updated_at"] = datetime.utcnow().isoformat()
+                f["updated_at"] = datetime.now(timezone.utc).isoformat()
                 _write_folders(folders)
                 return f
         return None

@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
@@ -68,7 +68,7 @@ def get_cache_index() -> Dict[str, str]:
     """Load SHA256 -> attachment_id cache index."""
     ensure_dirs()
     if os.path.exists(CACHE_INDEX_PATH):
-        with open(CACHE_INDEX_PATH, 'r') as f:
+        with open(CACHE_INDEX_PATH, 'r', encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -76,7 +76,7 @@ def get_cache_index() -> Dict[str, str]:
 def save_cache_index(index: Dict[str, str]):
     """Save SHA256 -> attachment_id cache index."""
     ensure_dirs()
-    with open(CACHE_INDEX_PATH, 'w') as f:
+    with open(CACHE_INDEX_PATH, 'w', encoding="utf-8") as f:
         json.dump(index, f, indent=2)
 
 
@@ -126,7 +126,7 @@ def create_attachment(
     
     # Create new attachment
     attachment_id = f"att_{uuid.uuid4().hex[:12]}"
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     
     attachment = Attachment(
         attachment_id=attachment_id,
@@ -164,7 +164,7 @@ def get_attachment(attachment_id: str) -> Optional[Attachment]:
     if not os.path.exists(meta_path):
         return None
     
-    with open(meta_path, 'r') as f:
+    with open(meta_path, 'r', encoding="utf-8") as f:
         data = json.load(f)
     
     return Attachment(**data)
@@ -175,7 +175,7 @@ def save_attachment(attachment: Attachment):
     ensure_dirs()
     meta_path = os.path.join(ATTACHMENTS_META_DIR, f"{attachment.attachment_id}.json")
     
-    with open(meta_path, 'w') as f:
+    with open(meta_path, 'w', encoding="utf-8") as f:
         json.dump(attachment.model_dump(), f, indent=2)
 
 

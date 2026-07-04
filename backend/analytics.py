@@ -21,7 +21,7 @@ def get_analytics() -> Dict[str, Any]:
             continue
             
         try:
-            with open(os.path.join(DATA_DIR, filename), 'r') as f:
+            with open(os.path.join(DATA_DIR, filename), 'r', encoding="utf-8") as f:
                 data = json.load(f)
                 
             for msg in data.get('messages', []):
