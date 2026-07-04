@@ -5,7 +5,7 @@ import time
 from typing import Dict, List, Any, Optional
 from .logger import logger
 
-from .config import OPENROUTER_BASE_URL
+from .config import OPENROUTER_BASE_URL, provider_is_openrouter
 
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 OPENROUTER_ZDR_ENDPOINTS_URL = f"{OPENROUTER_BASE_URL}/endpoints/zdr"
@@ -120,15 +120,17 @@ async def get_openrouter_models_cached() -> Optional[Dict[str, Dict[str, Any]]]:
     
     # Fetch fresh data
     raw_models = await fetch_openrouter_models()
-    
+
     if raw_models is None:
         # If fetch failed but we have cached data, use it even if stale
         if _cache["models"] is not None:
             logger.warning("[OpenRouter] Using stale cache after fetch failure")
             return _cache["models"]
         return None
-    
-    zdr_model_ids = await fetch_openrouter_zdr_model_ids()
+
+    # ZDR endpoint discovery is an OpenRouter-only API; generic OpenAI-compatible
+    # endpoints have no equivalent, so skip the fetch and mark nothing ZDR-capable.
+    zdr_model_ids = await fetch_openrouter_zdr_model_ids() if provider_is_openrouter() else set()
 
     # Parse and cache
     parsed = {}
@@ -183,7 +185,15 @@ async def get_enriched_models(curated_models: List[Dict[str, Any]]) -> List[Dict
         if openrouter_data and model_id in openrouter_data:
             live = openrouter_data[model_id]
             enriched_model["name"] = live.get("name", curated.get("name", model_id))
-            enriched_model["pricing"] = live.get("pricing", curated.get("pricing", {"input": 0, "output": 0}))
+            live_pricing = live.get("pricing") or {}
+            curated_pricing = curated.get("pricing") or {"input": 0, "output": 0}
+            # A live entry with zero/missing pricing (common on OpenAI-compatible
+            # relays that don't report cost) must not clobber known curated
+            # pricing with a misleading "free" figure.
+            if live_pricing.get("input") or live_pricing.get("output"):
+                enriched_model["pricing"] = live_pricing
+            else:
+                enriched_model["pricing"] = curated_pricing
             enriched_model["context_length"] = live.get("context_length", 0)
             supports_zdr = live.get("supports_zdr")
             enriched_model["supports_zdr"] = curated.get("supports_zdr", False) if supports_zdr is None else supports_zdr

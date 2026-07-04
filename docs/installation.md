@@ -131,3 +131,30 @@ OpenRouter connection (or your API key), not a model download.
 - **Logs:** check `logs/app.log` under the app data folder
   (`%LOCALAPPDATA%\HaroldZhong\AI Advisory Board\` on Windows). On the old
   v1.0.0 build, `desktop.log` is next to the `.exe` instead.
+
+### Using another OpenAI-compatible provider
+
+`OPENROUTER_BASE_URL` isn't limited to OpenRouter relays — it can point at
+any OpenAI-compatible chat-completions endpoint. Set `LLM_PROVIDER_KIND=
+openai-compatible` (or just point the base URL at a non-`openrouter.ai` host
+and let the app infer it) to disable OpenRouter-only behavior:
+
+- Zero Data Retention (ZDR) routing is **unavailable** off-OpenRouter — the
+  app rejects `zdr_enabled=true` on conversation creation/update, and the UI
+  hides the ZDR toggle when `provider_kind` isn't `openrouter`.
+- The `reasoning` field is still sent for models flagged as reasoning-capable;
+  if the endpoint rejects it with HTTP 400, the request is retried once
+  without it.
+- Model catalog pricing still shows curated figures when the endpoint doesn't
+  report its own.
+
+Pointing at a local server (e.g. Ollama or LM Studio) uses the same
+`OPENROUTER_BASE_URL=http://localhost:11434/v1` plus any non-empty API key —
+but be aware the model picker only ever offers the curated models baked into
+`backend/model_registry.json`, and conversation creation rejects any model id
+not in that registry. To use a local model today you have to manually add its
+id to that registry file yourself (advanced, unsupported by the UI). First-class
+local-model support (discovering and picking whatever the local server
+actually serves) is a planned follow-up, not implemented yet. The first-run
+setup screen accepts any non-empty key when `LLM_PROVIDER_KIND=openai-compatible`,
+instead of requiring OpenRouter's `sk-or-` key format.

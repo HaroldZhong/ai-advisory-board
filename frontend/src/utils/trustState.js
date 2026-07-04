@@ -104,10 +104,16 @@ export function getBudgetCapBlockState(conversation) {
   };
 }
 
-export function resolveEffectiveZdr(conversation, settings = {}) {
+export function resolveEffectiveZdr(conversation, settings = {}, zdrAvailable = true) {
   const metadataZdr = conversation?.metadata?.zdr_enabled;
+  // An explicit conversation-level ZDR choice is the privacy promise made at
+  // creation time — it must still surface (and be rejectable by the backend)
+  // even off-OpenRouter, so the user consciously turns it off rather than
+  // having it silently downgraded.
   if (metadataZdr === true || metadataZdr === false) return metadataZdr;
-  return settings.zdrEnabled === true;
+  // A bare global default preference is not a promise to anyone — don't let
+  // it brick sends on a provider that can't do ZDR at all.
+  return zdrAvailable && settings.zdrEnabled === true;
 }
 
 export function resolveAttachmentEnhancementZdr(effectiveZdr, settings = {}) {
@@ -149,10 +155,12 @@ export function getPrivacyToggleDisabledReason({
   isLoading = false,
   isUploading = false,
   isUpdatingPrivacy = false,
+  isEnablingUnavailable = false,
 } = {}) {
   if (isLoading) return 'Privacy changes are disabled while a response is streaming';
   if (isUploading) return 'Privacy changes are disabled while attachments are uploading';
   if (isUpdatingPrivacy) return 'Privacy update is being saved';
+  if (isEnablingUnavailable) return 'Requires OpenRouter';
   return null;
 }
 
@@ -172,12 +180,13 @@ export function formatTrustRowState({
   conversation,
   settings = {},
   attachmentCount = 0,
+  zdrAvailable = true,
 } = {}) {
   const metadata = conversation?.metadata || {};
   const policy = conversation?.session_policy || {};
   const usage = conversation?.session_usage || {};
   const council = metadata.council_models || [];
-  const effectiveZdr = resolveEffectiveZdr(conversation, settings);
+  const effectiveZdr = resolveEffectiveZdr(conversation, settings, zdrAvailable);
   const spentUsd = Number(usage.spent_usd || 0);
   const budgetUsd = policy.budget_usd ?? null;
   const spentPct = getSpentPct(conversation, policy, usage);

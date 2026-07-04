@@ -22,6 +22,12 @@ export function canStartPresetWithZdr(preset, models, zdrEnabled) {
   return !effectiveZdr || isPresetAvailableForZdr(preset, models);
 }
 
+// A requires_zdr preset (e.g. "private") always implies ZDR regardless of the
+// toggle, so it's unusable whenever the provider can't do ZDR at all.
+export function canStartPresetWithProvider(preset, zdrAvailable) {
+  return zdrAvailable || !preset?.requires_zdr;
+}
+
 export function canConfirmModelSelection({
   chairman,
   council,

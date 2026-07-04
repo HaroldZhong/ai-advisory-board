@@ -9,6 +9,17 @@ export function looksLikeOpenRouterKey(value) {
   return typeof value === 'string' && /^sk-or-[A-Za-z0-9_-]{12,}/.test(value.trim());
 }
 
+/**
+ * Provider-aware key acceptance for first-run setup. OpenRouter enforces its
+ * sk-or- key shape; a generic OpenAI-compatible endpoint (relay, Ollama, LM
+ * Studio) accepts arbitrary keys, so only require a non-empty value there.
+ */
+export function isAcceptableApiKey(value, providerKind) {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  if (providerKind === 'openai-compatible') return trimmed.length > 0;
+  return looksLikeOpenRouterKey(trimmed);
+}
+
 export function buildFirstRunSettings({ zdrChoice, budgetUsd }) {
   return {
     defaultZdrEnabled: zdrChoice === 'on',

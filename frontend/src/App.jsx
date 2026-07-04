@@ -19,6 +19,7 @@ import {
   buildConfigStatusFailureState,
   buildConfigStatusSuccessState,
   getConfigStatusRetryDelayMs,
+  isZdrAvailableForProvider,
 } from './utils/configStatus';
 import { createConversationWithDefaults } from './utils/conversationCreation';
 import {
@@ -42,6 +43,7 @@ function ConversationView({
   conversations,
   onConversationsChange,
   availableModels,
+  providerKind = 'openrouter',
   onShowAnalytics,
   showAnalytics,
   onCloseAnalytics,
@@ -199,6 +201,7 @@ function ConversationView({
     availableModels,
     loadConversations,
     settings,
+    zdrAvailable: isZdrAvailableForProvider(providerKind),
   });
 
   const handleUpdateSessionPolicy = async (policyUpdate) => {
@@ -315,6 +318,7 @@ function ConversationView({
           budgetWarning={budgetWarning}
           onDismissBudgetWarning={() => setBudgetWarning(null)}
           isLoading={isLoading}
+          zdrAvailable={isZdrAvailableForProvider(providerKind)}
         />
       </main>
 
@@ -323,6 +327,7 @@ function ConversationView({
         onClose={() => setIsModelSelectorOpen(false)}
         onConfirm={handleModelConfirm}
         defaultBudgetUsd={settings.defaultSessionBudgetUsd}
+        zdrAvailable={isZdrAvailableForProvider(providerKind)}
       />
       {showAnalytics && (
         <AnalyticsDashboard onClose={onCloseAnalytics} />
@@ -459,9 +464,18 @@ function AppContent() {
     } catch (e) { console.error('Failed to move conversation:', e); }
   };
 
-  const handleFirstRunComplete = (settingsUpdate) => {
+  const handleFirstRunComplete = async (settingsUpdate) => {
     updateSettings(settingsUpdate);
-    setConfigStatus({ loading: false, hasApiKey: true });
+    // Refetch instead of hand-constructing the status object — a
+    // hand-built object silently drops fields like providerKind, which
+    // would make the ZDR UI reappear off-OpenRouter right after setup.
+    try {
+      const status = await api.getConfigStatus();
+      setConfigStatus(buildConfigStatusSuccessState(status).configStatus);
+    } catch (error) {
+      console.error('Failed to refresh configuration status:', error);
+      setConfigStatus((prev) => ({ ...prev, loading: false, hasApiKey: true }));
+    }
     setShowFirstRunSetup(false);
     setOpenModelPickerSignal((value) => value + 1);
   };
@@ -489,6 +503,7 @@ function AppContent() {
                   conversations={conversations}
                   onConversationsChange={setConversations}
                   availableModels={availableModels}
+                  providerKind={configStatus.providerKind}
                   onShowAnalytics={() => setShowAnalytics(true)}
                   showAnalytics={showAnalytics}
                   onCloseAnalytics={() => setShowAnalytics(false)}
@@ -512,6 +527,7 @@ function AppContent() {
                   conversations={conversations}
                   onConversationsChange={setConversations}
                   availableModels={availableModels}
+                  providerKind={configStatus.providerKind}
                   onShowAnalytics={() => setShowAnalytics(true)}
                   showAnalytics={showAnalytics}
                   onCloseAnalytics={() => setShowAnalytics(false)}
@@ -536,6 +552,7 @@ function AppContent() {
           isOpen={showFirstRunSetup}
           onComplete={handleFirstRunComplete}
           onDismiss={handleFirstRunDismiss}
+          providerKind={configStatus.providerKind}
         />
       )}
     </>
