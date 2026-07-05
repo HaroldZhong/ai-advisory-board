@@ -68,7 +68,11 @@ def _zdr_flipped_on(main, conversation_id: str) -> bool:
     also stay out of the topics utility call itself. Fail closed on
     unreadable records.
     """
-    conversation = main.storage.get_conversation(conversation_id)
+    try:
+        conversation = main.storage.get_conversation(conversation_id)
+    except Exception:
+        logger.info("[ZDR] get_conversation failed in _zdr_flipped_on; failing closed for %s", conversation_id)
+        return True
     if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict):
         return True
     return bool(conversation["metadata"].get("zdr_enabled"))

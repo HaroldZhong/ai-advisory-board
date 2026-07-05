@@ -2523,3 +2523,56 @@ async def test_council_indexing_failure_does_not_become_an_error_event(monkeypat
     assert result["type"] == "council"
     assert result["stage3"]["response"] == "Final answer"
     assert result["turn_cost"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_zdr_flipped_on_guard_fails_closed_when_get_conversation_raises(monkeypatch, tmp_path):
+    """Codex round 16 P2: _zdr_flipped_on's storage.get_conversation() call
+    can raise (corrupt file, removed mid-read) -- it runs BEFORE the
+    best-effort indexing try blocks, so an unhandled raise there used to
+    escape to run_turn's outer handler and turn an already-delivered answer
+    into an error event. Fixed: the call is wrapped in try/except, failing
+    closed (returns True, matching the docstring) and logging. The raising
+    fake is installed via a record_session_usage wrapper so get_conversation
+    only starts raising AFTER the base cost is persisted, mirroring the
+    guard's real call site (after persistence, before indexing)."""
+    conversation_id = "conv-zdr-guard-raises"
+
+    async def raising_index_chat_turn(*args, **kwargs):
+        raise AssertionError("index_chat_turn must not run when the ZDR guard fails closed")
+
+    main = _chat_turn_setup(monkeypatch, tmp_path, conversation_id, index_chat_turn=raising_index_chat_turn)
+    real_record_session_usage = main.storage.record_session_usage
+    real_get_conversation = main.storage.get_conversation
+
+    def one_shot_raising_get_conversation(*args, **kwargs):
+        # Only the very next call raises (the ZDR guard's) -- restore the
+        # real function immediately after, so the LATER get_conversation
+        # call (re-reading total_cost for the `complete` event) succeeds
+        # normally. This isolates the guard's call site precisely.
+        monkeypatch.setattr(main.storage, "get_conversation", real_get_conversation)
+        raise OSError("simulated corrupt read")
+
+    def wrapped_record_session_usage(*args, **kwargs):
+        # The base cost (update_conversation_cost + record_session_usage) is
+        # recorded right before the ZDR guard's call -- let it run for real
+        # first, then make get_conversation raise on its NEXT call only
+        # (the guard's).
+        result = real_record_session_usage(*args, **kwargs)
+        monkeypatch.setattr(main.storage, "get_conversation", one_shot_raising_get_conversation)
+        return result
+
+    monkeypatch.setattr(main.storage, "record_session_usage", wrapped_record_session_usage)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["type"] == "chat"
+    assert result["content"] == "Budget-aware response"
+
+    # Restore the real get_conversation to inspect final persisted state.
+    monkeypatch.setattr(main.storage, "get_conversation", real_get_conversation)
+    conversation = main.storage.get_conversation(conversation_id)
+    assert conversation["messages"][-1]["content"] == "Budget-aware response"
