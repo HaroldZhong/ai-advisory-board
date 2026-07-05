@@ -167,28 +167,34 @@ OPENROUTER_BASE_URL=...       # Optional relay base (see docs/installation.md �
 HTTPS_PROXY=...               # Honored by the backend; Windows system proxy is NOT read
 ```
 
-### Model Configuration (`backend/config.py`)
+### Model Configuration (`backend/model_registry.json`)
 
-```python
-# Default council members (sent in Stage 1)
-COUNCIL_MODELS = [
-    "openai/gpt-5.1",
+Defaults are registry-driven, not hardcoded in `config.py` — `config.py` just
+loads `backend/model_registry.json` at startup and exposes its fields as
+`COUNCIL_MODELS`, `CHAIRMAN_MODEL`, and `CURATED_MODELS`. The current
+defaults:
+
+```json
+{
+  "chairman_model": "anthropic/claude-opus-4.8",
+  "council_models": [
     "google/gemini-3.1-pro-preview",
     "anthropic/claude-sonnet-4.6",
-    "x-ai/grok-4-fast",
-    "moonshotai/kimi-k2.5",
-    "deepseek/deepseek-v3.2-exp",
-]
-
-# Chairman (synthesizes in Stage 3)
-CHAIRMAN_MODEL = "google/gemini-2.5-flash"
+    "deepseek/deepseek-v4-pro",
+    "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.1",
+    "qwen/qwen3.5-35b-a3b"
+  ]
+}
 ```
 
-Models can be changed at runtime via the Model Selector in the UI. The curated registry (`CURATED_MODELS` in `config.py`) includes 40+ models across tiers:
-
-- **Chairman Tier**: GPT-5.2, Gemini 3.1 Pro, Claude Opus 4.6, Kimi K2.5
-- **Workhorse Tier**: GPT-5.1, GPT-5.3 Chat, Claude Sonnet 4.6, DeepSeek V3.2
-- **Free Tier**: GPT-OSS 120B/20B, Devstral 2512
+Users change models via the in-app Model Selector rather than editing
+`config.py` — pick one of the built-in presets (Balanced, Research, Budget,
+Private) or override the chairman/council picks directly. The curated
+registry (`CURATED_MODELS`, also sourced from `model_registry.json`) lists
+40+ models across providers. On an OpenAI-compatible provider (not
+OpenRouter), a free-text custom model id is also accepted — see
+`docs/installation.md` → "Using another OpenAI-compatible provider".
 
 ### In-App Settings
 
