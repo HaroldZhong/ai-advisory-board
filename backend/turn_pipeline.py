@@ -322,6 +322,15 @@ async def run_turn(
                 running_cost=turn_cost,
             )
 
+            # Codex round 10 (P2): record the BASE cost immediately, right
+            # after the message that earned it is persisted -- synchronous,
+            # cancellation-safe. If a client disconnect cancels this
+            # generator during the indexing awaits below, this base amount
+            # is already saved; only a small topics/compression delta could
+            # be lost (bounded, and noted below where the delta is applied).
+            main.storage.update_conversation_cost(conversation_id, turn_cost)
+            budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
             # skip for effective-turn ZDR (audit §12, Decision #5): covers the
@@ -333,16 +342,12 @@ async def run_turn(
             # barrier re-checks CURRENT metadata synchronously immediately
             # before it mutates the store, closing that race at the root
             # regardless of how many awaits happen in between.
+            delta_cost = 0.0
             if stage3_result.get("model") != "error" and not zdr_enabled:
                 logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
 
                 # Extract topics from question + final answer. Codex round 6:
-                # this call burns UTILITY_MODEL tokens on every council turn;
-                # bill it the same delta way as compression usage below --
-                # turn_cost was already computed/persisted above, so this is
-                # a delta added on top, reaching conversation total/session
-                # budget/completion payload but not the persisted
-                # running_cost snapshot.
+                # this call burns UTILITY_MODEL tokens on every council turn.
                 from .council import extract_topics_with_usage
                 combined_text = request.content + " " + stage3_result.get("response", "")
                 topics, topics_usage = await extract_topics_with_usage(
@@ -351,7 +356,7 @@ async def run_turn(
                     zdr_enabled=zdr_enabled,
                 )
                 if topics_usage:
-                    turn_cost += main.calculate_cost(topics_usage, config.UTILITY_MODEL)
+                    delta_cost += main.calculate_cost(topics_usage, config.UTILITY_MODEL)
                 logger.info("[PHASE1] Topics extracted: %s", topics)
 
                 logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
@@ -369,22 +374,23 @@ async def run_turn(
                     quality_metrics,
                 )
                 if summary_usage:
-                    # Codex P2: turn_cost (and the message's persisted
-                    # running_cost) was already computed/saved above, before
-                    # this compression call could run -- indexing happens
-                    # after persistence on purpose (a crash during indexing
-                    # must not lose the saved answer). Billing this as a
-                    # DELTA on top of the already-computed turn_cost, rather
-                    # than appending to extra_usage_records (which nothing
-                    # re-reads for this turn), gets it into the conversation
-                    # total, session budget, and the completion payload --
-                    # just not into the per-message running_cost snapshot.
-                    turn_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
+                    delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                 logger.info("[PHASE1] Session indexed successfully")
 
                 # Refresh hybrid index after indexing
                 main.rag_system.refresh_hybrid_index()
                 logger.info("[PHASE1] Hybrid index refreshed")
+
+            # Codex round 10 (P2): topics/compression usage discovered during
+            # indexing is billed as a SECOND, incremental call for this same
+            # turn -- on top of the base cost already recorded above, not
+            # into the message's persisted running_cost snapshot (indexing
+            # runs after persistence on purpose). count_message=False: this
+            # is the same turn as the base call, not an extra message.
+            if delta_cost:
+                turn_cost += delta_cost
+                main.storage.update_conversation_cost(conversation_id, delta_cost)
+                budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
 
         else:
             # Chat mode
@@ -514,6 +520,15 @@ async def run_turn(
                 reasoning=response_dict.get("reasoning"),
             )
 
+            # Codex round 10 (P2): record the BASE cost immediately, right
+            # after the message that earned it is persisted -- synchronous,
+            # cancellation-safe. If a client disconnect cancels this
+            # generator during the indexing awaits below, this base amount
+            # is already saved; only a small topics/compression delta could
+            # be lost (bounded, and noted below where the delta is applied).
+            main.storage.update_conversation_cost(conversation_id, turn_cost)
+            budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+
             # Chat turns previously left no memory (P5-T5 feature 2). Skip
             # for effective-turn ZDR (audit §12, Decision #5), mirroring the
             # council branch's guard: this is a cheap early skip, not the
@@ -524,6 +539,7 @@ async def run_turn(
             # fabricated apology in that case, not a real answer, and must
             # not become cross-conversation memory -- mirrors the council
             # branch's stage3_result.get("model") != "error" guard above.
+            delta_cost = 0.0
             if not zdr_enabled and not response_dict.get("error"):
                 from .council import extract_topics_with_usage
                 combined_text = request.content + " " + response_dict.get("content", "")
@@ -533,11 +549,7 @@ async def run_turn(
                     zdr_enabled=zdr_enabled,
                 )
                 if chat_topics_usage:
-                    # Codex round 6: same delta-billing approach as the
-                    # council branch and as compression usage below --
-                    # turn_cost/running_cost were already computed and
-                    # persisted above.
-                    turn_cost += main.calculate_cost(chat_topics_usage, config.UTILITY_MODEL)
+                    delta_cost += main.calculate_cost(chat_topics_usage, config.UTILITY_MODEL)
                 # Turn numbering (Codex round 3) now lives inside
                 # index_chat_turn itself, computed under its write lock, so
                 # concurrent chat turns for this conversation can't collide
@@ -549,24 +561,25 @@ async def run_turn(
                     chat_topics,
                 )
                 if summary_usage:
-                    # Codex P2: same delta-billing approach as the council
-                    # branch -- turn_cost/running_cost were already computed
-                    # and persisted above (persistence-first: a crash during
-                    # indexing must not lose the saved answer), so the
-                    # compression cost is added as a delta that reaches the
-                    # conversation total/session budget/completion payload
-                    # but not the already-saved message's running_cost.
-                    turn_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
+                    delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                 main.rag_system.refresh_hybrid_index()
+
+            # Codex round 10 (P2): same incremental delta-billing as the
+            # council branch -- on top of the base cost already recorded
+            # above, not into the message's persisted running_cost snapshot.
+            # count_message=False: same turn as the base call above.
+            if delta_cost:
+                turn_cost += delta_cost
+                main.storage.update_conversation_cost(conversation_id, delta_cost)
+                budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
 
             yield {"type": "chat_response", "data": response_dict}
             logger.info("[CHAT] Chat response sent to client")
 
-        # Update conversation cost
-        main.storage.update_conversation_cost(conversation_id, turn_cost)
-
-        # Update session usage after current turn cost before checking warnings.
-        budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+        # Codex round 10 (P2): budget_state here is whichever call was LAST
+        # for this turn -- the base call above if there was no delta, or the
+        # delta call if indexing found one. Either way it reflects the
+        # correct final totals for this turn's warning/completion payload.
         warning_level = budget_state["warning_level"]
 
         # Send budget warning if threshold crossed

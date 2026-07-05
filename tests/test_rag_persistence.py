@@ -124,6 +124,13 @@ async def _retrieve_and_capture_memory_section(rag, monkeypatch, max_tokens, que
         return {"content": "irrelevant"}
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+    # Codex round 10 read barrier: retrieve_with_stats_async now checks each
+    # source conversation's CURRENT metadata via get_conversation before
+    # including its memories. These pure topic-filter/budget-cap tests seed
+    # rag.store directly without real conversation files, so fake a valid
+    # non-ZDR conversation for any id -- the barrier itself is exercised
+    # separately by test_retrieve_read_barrier_excludes_zdr_source_conversation.
+    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}})
 
     await rag.retrieve_async(query, "current", max_tokens=max_tokens)
 
@@ -1604,3 +1611,178 @@ async def test_compression_does_not_recompress_an_existing_summary_entry(tmp_pat
     # A second, distinct summary entry now also exists for the newer turns.
     assert len(summary_entries) == 2
     assert any(s["summary"] == "Second summary of newer plain turns." for s in summary_entries)
+
+
+# --- Codex round 10 on PR #80: retrieval read barrier ---
+
+
+@pytest.mark.asyncio
+async def test_retrieve_read_barrier_excludes_zdr_source_conversation(tmp_path, monkeypatch):
+    """Codex P1: while a compression call holds a conversation's write lock,
+    a ZDR flip or deletion's purge (delete_conversation_memories) is QUEUED
+    behind that lock for as long as the LLM call takes -- but retrieval for
+    a DIFFERENT conversation reads self.store directly, with no lock and no
+    metadata check, so it could surface the source conversation's now-ZDR
+    memory for that whole window. Simulates the pending-purge window
+    directly (no purge call needed): seed memories for conv-a, flip its
+    metadata to zdr_enabled=True in real storage, then retrieve for conv-b
+    and assert conv-a's blocks are absent from the extraction prompt --
+    fails pre-fix (the read barrier is the only thing that can catch this,
+    since the store itself still has conv-a's entries)."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.create_conversation("conv-b")
+    storage.create_conversation("conv-c")  # legitimate other source, so retrieval still has something to build a prompt from
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    rag.store["conv-a"] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "topics": [], "memory": "SECRET_A_CONTENT should not leak"}],
+    }
+    rag.store["conv-c"] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "topics": [], "memory": "ordinary conv-c memory should still retrieve"}],
+    }
+
+    # Simulate the pending-purge window: metadata already flipped to ZDR
+    # (as update_conversation would do synchronously) but no purge call has
+    # run yet (as if it were still queued behind another writer's lock).
+    storage.update_conversation_metadata("conv-a", {"zdr_enabled": True})
+    assert "conv-a" in rag.store  # the store itself is untouched -- only the read barrier can catch this
+
+    captured_kwargs = {}
+
+    async def fake_query_model(*args, **kwargs):
+        captured_kwargs["messages"] = args[1]
+        return {"content": "irrelevant"}
+
+    # Deliberately NOT using _retrieve_and_capture_memory_section's shared
+    # get_conversation fake here -- this test needs the REAL storage-backed
+    # get_conversation (already monkeypatched above) so the barrier actually
+    # sees conv-a's just-flipped ZDR metadata.
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    await rag.retrieve_async("current question", "conv-b", max_tokens=None)
+
+    prompt = captured_kwargs["messages"][0]["content"]
+    memory_section = prompt.split("USER MEMORY LOGS:\n", 1)[1]
+
+    assert "SECRET_A_CONTENT" not in memory_section
+    assert "conv-a" not in memory_section
+    assert "ordinary conv-c memory should still retrieve" in memory_section
+
+
+# --- Codex round 10 on PR #80: cancellation-safe two-step cost recording ---
+
+
+@pytest.mark.asyncio
+async def test_cancelling_generator_during_indexing_still_records_base_cost(monkeypatch, tmp_path):
+    """Codex P2: a client disconnect during the post-response indexing
+    awaits used to cancel run_turn's generator BEFORE
+    update_conversation_cost/record_session_usage ran at all (they used to
+    be a single shot at the very end) -- the saved chat message's cost never
+    reached conversation total_cost or session usage. Fixed with two-step
+    accounting: the BASE cost is recorded synchronously, immediately after
+    the message is persisted, before any indexing awaits. This drives a
+    real cancellation (gen.aclose()) while index_chat_turn is blocked on an
+    event, and asserts the base cost already landed in both totals despite
+    the cancellation -- fails pre-fix (both stay at zero)."""
+    import asyncio
+
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-cancel-mid-indexing"
+
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}
+
+    index_started = asyncio.Event()
+    never_releases = asyncio.Event()
+
+    async def blocking_index_chat_turn(*args, **kwargs):
+        index_started.set()
+        await never_releases.wait()  # never set -- simulates the client disconnecting here
+        return None
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=blocking_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    conversation, mode, zdr_enabled, thinking_effort, is_first_message = main.prepare_turn(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+    gen = main.run_turn(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+        conversation=conversation,
+        mode=mode,
+        zdr_enabled=zdr_enabled,
+        thinking_effort=thinking_effort,
+        is_first_message=is_first_message,
+    )
+
+    # chat_response is yielded AFTER index_chat_turn returns, but
+    # index_chat_turn never returns here -- so consuming the generator must
+    # run as a background task, not inline, or this coroutine would block
+    # forever waiting for an event that can't happen before the cancellation
+    # this test is trying to trigger.
+    async def consume():
+        async for _event in gen:
+            pass
+
+    consumer_task = asyncio.create_task(consume())
+
+    # index_chat_turn has started (and is blocked mid-await) -- the message
+    # was already saved and the base cost already recorded by this point.
+    # Cancel the CONSUMER task, exactly like Starlette does on a client
+    # disconnect: the cancellation propagates into the generator at its
+    # suspended await. (aclose() while the consumer is mid-anext would
+    # raise "generator is already running".)
+    await index_started.wait()
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
+    await gen.aclose()
+
+    # openai/gpt-4o-mini pricing: input=$0.15/M, output=$0.6/M
+    base_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+
+    conversation = main.storage.get_conversation(conversation_id)
+    usage = main.storage.get_session_usage(conversation_id)
+
+    assert conversation["total_cost"] == pytest.approx(base_cost)
+    assert usage["spent_usd"] == pytest.approx(base_cost)
+    assert usage["messages"] == 1

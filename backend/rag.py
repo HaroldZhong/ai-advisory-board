@@ -701,6 +701,27 @@ class CouncilRAG:
             if cid != conversation_id
         }
 
+        # Codex round 10 (P1): read barrier -- mirrors the write barrier. A
+        # ZDR flip or conversation deletion's purge (delete_conversation_memories)
+        # can be QUEUED behind another writer's write lock (e.g. an in-flight
+        # compression) for as long as that writer's LLM call takes. Without
+        # this check, retrieval for a DIFFERENT conversation reads self.store
+        # directly with no lock and no metadata check, so it could surface a
+        # source conversation's now-ZDR/deleted memory for that whole window
+        # -- a purge waiting on the write lock cannot be undone by a write
+        # (round 4), but it also must not leak through a read that runs
+        # before the purge gets its turn. Fail closed: skip a source
+        # conversation whose CURRENT state is missing, malformed, or ZDR.
+        # The purge itself still completes after the in-flight write
+        # finishes (that delay is fine); this only closes the READ leak.
+        filtered_convs = {}
+        for cid, data in other_convs.items():
+            source_conversation = get_conversation(cid)
+            if not isinstance(source_conversation, dict) or not isinstance(source_conversation.get("metadata"), dict) or source_conversation["metadata"].get("zdr_enabled"):
+                continue
+            filtered_convs[cid] = data
+        other_convs = filtered_convs
+
         if not other_convs:
             return {"context": "", "used_tokens": 0, "pieces": 0, "usage": {}}
 

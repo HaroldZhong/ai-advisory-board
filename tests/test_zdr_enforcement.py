@@ -369,6 +369,9 @@ async def test_reasoning_rag_passes_zdr_to_openrouter(monkeypatch, tmp_path):
         return {"content": "Relevant prior memory"}
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+    # Codex round 10 read barrier: fake a valid non-ZDR source conversation
+    # for "other" (this test isn't about the barrier itself).
+    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}})
 
     context, usage = await rag.retrieve_async("current question", "current", zdr_enabled=True)
 
@@ -779,6 +782,13 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
     storage.create_conversation("conv-zdr", {"zdr_enabled": True})
     storage.create_conversation("conv-current")
+    # Codex round 10 read barrier: retrieve_with_stats_async now checks each
+    # source conversation's CURRENT metadata via get_conversation, so
+    # "conv-other" (seeded below with memory but no real conversation file)
+    # needs a real, non-ZDR conversation record too, or the barrier would
+    # (correctly) exclude it as unreadable/orphaned -- same as a real
+    # deployment would.
+    storage.create_conversation("conv-other")
 
     pageindex_dir = tmp_path / "pageindex"
     monkeypatch.setattr("backend.rag.get_conversation", storage.get_conversation)

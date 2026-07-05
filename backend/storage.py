@@ -386,10 +386,17 @@ def _get_new_warning_level(policy: Dict[str, Any], usage: Dict[str, Any]) -> Opt
     return max(crossed)
 
 
-def record_session_usage(conversation_id: str, cost_delta: float) -> Dict[str, Any]:
+def record_session_usage(conversation_id: str, cost_delta: float, count_message: bool = True) -> Dict[str, Any]:
     """
     Add a turn's cost to session usage and return the updated budget state.
     Warning calculation happens after the current turn cost is included.
+
+    count_message: increment the "messages" counter. Codex round 10 --
+    turn_pipeline now records a turn's BASE cost immediately (cancellation-
+    safe) and, if indexing later discovers small usage deltas (topics/
+    compression), applies them as a SECOND, incremental call for the SAME
+    turn. That second call must not double-count "messages" -- callers pass
+    count_message=False for a same-turn delta follow-up.
     """
     with ConversationLock.get_lock(conversation_id):
         conversation = get_conversation(conversation_id)
@@ -404,7 +411,8 @@ def record_session_usage(conversation_id: str, cost_delta: float) -> Dict[str, A
         })
 
         usage["spent_usd"] = usage.get("spent_usd", 0.0) + cost_delta
-        usage["messages"] = usage.get("messages", 0) + 1
+        if count_message:
+            usage["messages"] = usage.get("messages", 0) + 1
 
         warning_level = _get_new_warning_level(policy, usage)
         if warning_level is not None:
