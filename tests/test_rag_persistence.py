@@ -1752,11 +1752,12 @@ async def test_cancelling_generator_during_indexing_still_records_base_cost(monk
         is_first_message=is_first_message,
     )
 
-    # chat_response is yielded AFTER index_chat_turn returns, but
-    # index_chat_turn never returns here -- so consuming the generator must
-    # run as a background task, not inline, or this coroutine would block
-    # forever waiting for an event that can't happen before the cancellation
-    # this test is trying to trigger.
+    # Codex round 15: chat_response is now yielded BEFORE index_chat_turn
+    # runs (the answer is delivered first; memory indexing is best-effort
+    # afterward) -- but index_chat_turn still never returns here, so the
+    # generator as a whole never reaches its final `complete` event/StopAsyncIteration.
+    # Consuming must still run as a background task, not inline, or this
+    # coroutine would block forever waiting for the generator to finish.
     async def consume():
         async for _event in gen:
             pass
@@ -2328,3 +2329,197 @@ async def test_delete_attachment_endpoint_sweeps_document_memories(monkeypatch, 
     monkeypatch.setattr(main, "delete_attachment", lambda attachment_id, force=False: {"found": True, "deleted": False})
     await main.delete_attachment_endpoint("att-y")
     purge_document_memories.assert_not_awaited()
+
+
+# --- Codex round 15 on PR #80: chat_response must not wait on memory indexing ---
+
+
+def _chat_turn_setup(monkeypatch, tmp_path, conversation_id, *, index_chat_turn, extract_topics_with_usage=None):
+    """Shared setup for the round-15 tests below: a real chat turn through
+    run_turn, with only index_chat_turn (and optionally extract_topics_with_usage)
+    swapped out for the behavior under test."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": {}}
+
+    async def default_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id, {"chairman_model": "openai/gpt-4o-mini"})
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr(
+        "backend.council.extract_topics_with_usage",
+        extract_topics_with_usage or default_extract_topics_with_usage,
+    )
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+    return main
+
+
+@pytest.mark.asyncio
+async def test_chat_response_does_not_wait_on_memory_indexing(monkeypatch, tmp_path):
+    """Codex P2: topic extraction + index_chat_turn (up to ~25s of
+    utility-LLM time) used to run BETWEEN add_chat_message and the
+    chat_response yield, so the UI showed a finished answer as still
+    streaming, the sync endpoint stalled, and the answer was invisible until
+    indexing finished. Fixed: chat_response is yielded immediately after the
+    answer is persisted, before indexing. This drives index_chat_turn as a
+    permanently blocked call (never releases) and asserts chat_response
+    still arrives -- with a short asyncio.wait_for timeout so this fails
+    loudly (TimeoutError) instead of hanging pre-fix, where chat_response
+    would never arrive at all until the block was released."""
+    import asyncio
+
+    conversation_id = "conv-chat-response-first"
+    block = asyncio.Event()  # never set
+
+    async def blocking_index_chat_turn(*args, **kwargs):
+        await block.wait()
+        return None
+
+    main = _chat_turn_setup(monkeypatch, tmp_path, conversation_id, index_chat_turn=blocking_index_chat_turn)
+
+    conversation, mode, zdr_enabled, thinking_effort, is_first_message = main.prepare_turn(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+    gen = main.run_turn(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+        conversation=conversation,
+        mode=mode,
+        zdr_enabled=zdr_enabled,
+        thinking_effort=thinking_effort,
+        is_first_message=is_first_message,
+    )
+
+    async def consume_until_chat_response():
+        async for event in gen:
+            if event.get("type") == "chat_response":
+                return event
+        raise AssertionError("generator finished without ever yielding chat_response")
+
+    chat_response_event = await asyncio.wait_for(consume_until_chat_response(), timeout=5.0)
+
+    assert chat_response_event["data"]["content"] == "Budget-aware response"
+    await gen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_indexing_failure_does_not_become_an_error_event(monkeypatch, tmp_path):
+    """Codex P2: a memory-indexing exception must never turn an
+    already-successful chat answer into an error event -- indexing is
+    best-effort. Both chat_response and complete must still be emitted, no
+    error event, and the base cost (chairman usage only) must still be
+    recorded despite index_chat_turn raising."""
+    conversation_id = "conv-chat-indexing-raises"
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    async def raising_index_chat_turn(*args, **kwargs):
+        raise RuntimeError("simulated indexing failure")
+
+    main = _chat_turn_setup(monkeypatch, tmp_path, conversation_id, index_chat_turn=raising_index_chat_turn)
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["type"] == "chat"
+    assert result["content"] == "Budget-aware response"
+
+    # openai/gpt-4o-mini pricing: input=$0.15/M, output=$0.6/M
+    base_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    assert result["turn_cost"] == pytest.approx(base_cost)
+
+    conversation = main.storage.get_conversation(conversation_id)
+    assert conversation["total_cost"] == pytest.approx(base_cost)
+    assert conversation["messages"][-1]["content"] == "Budget-aware response"
+
+
+@pytest.mark.asyncio
+async def test_council_indexing_failure_does_not_become_an_error_event(monkeypatch, tmp_path):
+    """Codex P2: same best-effort guarantee on the council branch --
+    stage3_complete/the answer are already committed before indexing runs;
+    an indexing exception (extract_topics_with_usage raising, here) must
+    not turn the turn into an error event."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-council-indexing-raises"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id)
+
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {}
+
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        return {"model": "model-a", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    async def raising_extract_topics_with_usage(*args, **kwargs):
+        raise RuntimeError("simulated topics failure")
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", raising_extract_topics_with_usage)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            index_session=lambda *a, **k: None,  # never reached if extract_topics_with_usage raises first
+            refresh_hybrid_index=lambda *a, **k: None,
+            index_document=lambda *a, **k: None,
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="What should we do?", mode="council"),
+    )
+
+    assert result["type"] == "council"
+    assert result["stage3"]["response"] == "Final answer"
+    assert result["turn_cost"] == pytest.approx(0.0)

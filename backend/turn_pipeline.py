@@ -379,42 +379,50 @@ async def run_turn(
             # regardless of how many awaits happen in between.
             delta_cost = 0.0
             if stage3_result.get("model") != "error" and not zdr_enabled and not _zdr_flipped_on(main, conversation_id):
-                logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
+                # Codex round 15 (P2): best-effort. stage3_complete/the
+                # completion event's answer is already committed above; a
+                # memory-indexing failure here must never turn a successful
+                # turn into an error event.
+                try:
+                    logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
 
-                # Extract topics from question + final answer. Codex round 6:
-                # this call burns UTILITY_MODEL tokens on every council turn.
-                from .council import extract_topics_with_usage
-                combined_text = request.content + " " + stage3_result.get("response", "")
-                topics, topics_usage = await extract_topics_with_usage(
-                    combined_text,
-                    max_topics=3,
-                    zdr_enabled=zdr_enabled,
-                )
-                if topics_usage:
-                    delta_cost += main.calculate_cost(topics_usage, config.UTILITY_MODEL)
-                logger.info("[PHASE1] Topics extracted: %s", topics)
+                    # Extract topics from question + final answer. Codex round 6:
+                    # this call burns UTILITY_MODEL tokens on every council turn.
+                    from .council import extract_topics_with_usage
+                    combined_text = request.content + " " + stage3_result.get("response", "")
+                    topics, topics_usage = await extract_topics_with_usage(
+                        combined_text,
+                        max_topics=3,
+                        zdr_enabled=zdr_enabled,
+                    )
+                    if topics_usage:
+                        delta_cost += main.calculate_cost(topics_usage, config.UTILITY_MODEL)
+                    logger.info("[PHASE1] Topics extracted: %s", topics)
 
-                logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
+                    logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
 
-                # Index session with enhanced metadata. May return usage from
-                # a P5-T5 summary-compression call if this conversation's
-                # turn count just crossed the compression threshold.
-                summary_usage = await main.rag_system.index_session(
-                    conversation_id,
-                    request.content,
-                    stage1_results,
-                    stage2_results,
-                    stage3_result,
-                    topics,
-                    quality_metrics,
-                )
-                if summary_usage:
-                    delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
-                logger.info("[PHASE1] Session indexed successfully")
+                    # Index session with enhanced metadata. May return usage from
+                    # a P5-T5 summary-compression call if this conversation's
+                    # turn count just crossed the compression threshold.
+                    summary_usage = await main.rag_system.index_session(
+                        conversation_id,
+                        request.content,
+                        stage1_results,
+                        stage2_results,
+                        stage3_result,
+                        topics,
+                        quality_metrics,
+                    )
+                    if summary_usage:
+                        delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
+                    logger.info("[PHASE1] Session indexed successfully")
 
-                # Refresh hybrid index after indexing
-                main.rag_system.refresh_hybrid_index()
-                logger.info("[PHASE1] Hybrid index refreshed")
+                    # Refresh hybrid index after indexing
+                    main.rag_system.refresh_hybrid_index()
+                    logger.info("[PHASE1] Hybrid index refreshed")
+                except Exception:
+                    logger.exception("[PHASE1] memory indexing failed; answer already delivered")
+                    delta_cost = 0.0
 
             # Codex round 10 (P2): topics/compression usage discovered during
             # indexing is billed as a SECOND, incremental call for this same
@@ -565,9 +573,10 @@ async def run_turn(
             # Codex round 10 (P2): record the BASE cost immediately, right
             # after the message that earned it is persisted -- synchronous,
             # cancellation-safe. If a client disconnect cancels this
-            # generator during the indexing awaits below, this base amount
-            # is already saved; only a small topics/compression delta could
-            # be lost (bounded, and noted below where the delta is applied).
+            # generator during the best-effort indexing below, this base
+            # amount is already saved; only a small topics/compression delta
+            # could be lost (bounded, and noted below where the delta is
+            # applied).
             main.storage.update_conversation_cost(conversation_id, turn_cost)
             budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
             # Codex round 12 (P2): same as the council branch -- remember
@@ -575,6 +584,19 @@ async def run_turn(
             # would otherwise silently drop a threshold crossing that
             # already happened on this same base call.
             pending_warning = budget_state["warning_level"]
+
+            # Codex round 15 (P2): deliver the answer NOW, before memory
+            # indexing. Topic extraction + index_chat_turn (below) can burn
+            # up to ~25s of utility-LLM time; previously chat_response
+            # waited on all of it, so the UI showed a finished answer as
+            # still "streaming" (loading.chat only clears on chat_response),
+            # the sync endpoint stalled the same amount, and an indexing
+            # exception turned an already-successful answer into an error
+            # event. The answer is already persisted (add_chat_message
+            # above) -- only memory bookkeeping remains, which is optional
+            # and best-effort (see the try/except below).
+            yield {"type": "chat_response", "data": response_dict}
+            logger.info("[CHAT] Chat response sent to client")
 
             # Chat turns previously left no memory (P5-T5 feature 2). Skip
             # for effective-turn ZDR (audit §12, Decision #5), mirroring the
@@ -588,28 +610,37 @@ async def run_turn(
             # branch's stage3_result.get("model") != "error" guard above.
             delta_cost = 0.0
             if not zdr_enabled and not response_dict.get("error") and not _zdr_flipped_on(main, conversation_id):
-                from .council import extract_topics_with_usage
-                combined_text = request.content + " " + response_dict.get("content", "")
-                chat_topics, chat_topics_usage = await extract_topics_with_usage(
-                    combined_text,
-                    max_topics=3,
-                    zdr_enabled=zdr_enabled,
-                )
-                if chat_topics_usage:
-                    delta_cost += main.calculate_cost(chat_topics_usage, config.UTILITY_MODEL)
-                # Turn numbering (Codex round 3) now lives inside
-                # index_chat_turn itself, computed under its write lock, so
-                # concurrent chat turns for this conversation can't collide
-                # and compaction can't cause a number to be reused.
-                summary_usage = await main.rag_system.index_chat_turn(
-                    conversation_id,
-                    request.content,
-                    response_dict.get("content", ""),
-                    chat_topics,
-                )
-                if summary_usage:
-                    delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
-                main.rag_system.refresh_hybrid_index()
+                # Codex round 15 (P2): best-effort. The answer above is
+                # already delivered to the user; a memory-indexing failure
+                # (topics extraction, index_chat_turn, compression) must
+                # never turn a successful turn into an error event.
+                try:
+                    from .council import extract_topics_with_usage
+                    combined_text = request.content + " " + response_dict.get("content", "")
+                    chat_topics, chat_topics_usage = await extract_topics_with_usage(
+                        combined_text,
+                        max_topics=3,
+                        zdr_enabled=zdr_enabled,
+                    )
+                    if chat_topics_usage:
+                        delta_cost += main.calculate_cost(chat_topics_usage, config.UTILITY_MODEL)
+                    # Turn numbering (Codex round 3) now lives inside
+                    # index_chat_turn itself, computed under its write lock,
+                    # so concurrent chat turns for this conversation can't
+                    # collide and compaction can't cause a number to be
+                    # reused.
+                    summary_usage = await main.rag_system.index_chat_turn(
+                        conversation_id,
+                        request.content,
+                        response_dict.get("content", ""),
+                        chat_topics,
+                    )
+                    if summary_usage:
+                        delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
+                    main.rag_system.refresh_hybrid_index()
+                except Exception:
+                    logger.exception("[CHAT] memory indexing failed; answer already delivered")
+                    delta_cost = 0.0
 
             # Codex round 10 (P2): same incremental delta-billing as the
             # council branch -- on top of the base cost already recorded
@@ -623,9 +654,6 @@ async def run_turn(
                 # council branch.
                 if pending_warning is not None and budget_state["warning_level"] is None:
                     budget_state = {**budget_state, "warning_level": pending_warning}
-
-            yield {"type": "chat_response", "data": response_dict}
-            logger.info("[CHAT] Chat response sent to client")
 
         # Codex round 10 (P2): budget_state here is whichever call was LAST
         # for this turn -- the base call above if there was no delta, or the
