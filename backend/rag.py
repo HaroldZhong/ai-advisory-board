@@ -339,6 +339,58 @@ class CouncilRAG:
                 return self.enabled
             return False
 
+    async def purge_truncated_memories(self, conversation_id: str, edit_index: int) -> int:
+        """Codex round 13: Edit & Regenerate truncates a conversation's
+        messages to messages[:edit_index], but memory entries for the
+        discarded turns previously survived indefinitely -- an edited-away
+        answer stayed retrievable from OTHER conversations forever.
+
+        Drops every session/chat/summary entry whose "message_anchor"
+        exceeds edit_index (its source message(s) no longer exist after the
+        truncation). A summary spanning any truncated turn is dropped too
+        (message_anchor is the MAX of what it covers) -- lossy but safe:
+        keeping a summary that partially describes deleted messages would
+        leak edited-away content same as keeping the raw turn would.
+
+        Document entries (turn == -1) are untouched -- they're
+        attachment-lifecycle-managed (index_document), not tied to message
+        history, and this purge only targets conversational turns.
+
+        An entry with NO "message_anchor" at all (defensive: every entry
+        written by this codebase carries one as of the v1.2.0 one-time
+        reset) is treated as suspect and dropped too -- fail closed rather
+        than trust an anchor-less entry's provenance.
+        """
+        async with self._get_write_lock(conversation_id):
+            if conversation_id not in self.store:
+                return 0
+
+            turns = self.store[conversation_id]["turns"]
+            kept = []
+            dropped = 0
+            for entry in turns:
+                if entry.get("turn") == -1:
+                    kept.append(entry)  # documents: untouched
+                    continue
+                anchor = entry.get("message_anchor")
+                if anchor is None or anchor > edit_index:
+                    dropped += 1
+                    continue
+                kept.append(entry)
+
+            if dropped:
+                self.store[conversation_id]["turns"] = kept
+                self._save_store()
+                if self.enabled:
+                    logger.info(
+                        "[RAG] Purged %d truncated-turn memor%s for conversation %s (edit_index=%d)",
+                        dropped,
+                        "y" if dropped == 1 else "ies",
+                        conversation_id,
+                        edit_index,
+                    )
+            return dropped
+
     def update_conversation_folder(self, conversation_id: str, new_folder_id: str):
         """
         Update the folder routing in the reasoning PageIndex for a conversation.
@@ -412,11 +464,23 @@ class CouncilRAG:
             turns = self.store[conversation_id]["turns"]
             turn_index = max((entry.get("turn", -1) for entry in turns), default=-1) + 1
 
+            # Codex round 13: "message_anchor" ties this memory entry to the
+            # conversation's message count AT INDEXING TIME (this turn's
+            # user+assistant messages are already persisted by the time this
+            # runs -- see turn_pipeline.py). Reused from the ZDR barrier's own
+            # get_conversation read just above: the freshest possible count,
+            # taken synchronously under this same write lock, so it can't go
+            # stale between the check and the write. purge_truncated_memories
+            # uses this to drop entries whose source messages an edit/
+            # regenerate truncated away.
+            message_anchor = len(conversation.get("messages", []))
+
             # Only index the user's question and the final synthesized answer to save context tokens for reasoning retrieve
             turn_memory = {
                 "turn": turn_index,
                 "topics": topics,
-                "memory": f"Q: {user_question}\nA: {final_text}"
+                "memory": f"Q: {user_question}\nA: {final_text}",
+                "message_anchor": message_anchor,
             }
             turns.append(turn_memory)
             usage = await self._maybe_compress_oldest_half(conversation_id)
@@ -476,11 +540,14 @@ class CouncilRAG:
 
             turns = self.store[conversation_id]["turns"]
             turn_index = max((entry.get("turn", -1) for entry in turns), default=-1) + 1
+            # Codex round 13: see index_session's identical comment.
+            message_anchor = len(conversation.get("messages", []))
 
             turn_memory = {
                 "turn": turn_index,
                 "topics": topics,
                 "memory": f"Q: {question}\nA: {answer}",
+                "message_anchor": message_anchor,
             }
             turns.append(turn_memory)
             usage = await self._maybe_compress_oldest_half(conversation_id)
@@ -582,6 +649,12 @@ class CouncilRAG:
             "topics": union_topics,
             "summary": response["content"].strip(),
             "turns_compressed": half,
+            # Codex round 13: the max of the compressed entries' anchors --
+            # purge_truncated_memories drops this summary if ANY turn it
+            # covers had its source messages truncated away (lossy but
+            # safe: keeping a summary that partially describes deleted
+            # messages would leak edited-away content).
+            "message_anchor": max((entry.get("message_anchor", 0) for entry in oldest), default=0),
         }
         # Codex round 9: rebuild in place, like the retrieval topic filter
         # does -- non-compressible entries (documents, prior summaries) stay
@@ -670,6 +743,9 @@ class CouncilRAG:
             "topics": union_topics,
             "summary": response["content"].strip(),
             "turns_compressed": sum(s.get("turns_compressed", 0) for s in summaries),
+            # Codex round 13: merging summaries is still a max -- the merged
+            # entry is only as safe to keep as its riskiest ancestor.
+            "message_anchor": max((s.get("message_anchor", 0) for s in summaries), default=0),
         }
         summary_positions_set = set(summary_positions)
         rebuilt = []

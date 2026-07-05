@@ -2075,3 +2075,148 @@ async def test_summary_merge_bills_usage_even_when_response_content_is_blank(tmp
     after = rag.store["conv-1"]["turns"]
     assert after == turns  # untouched
     assert merge_usage == {"prompt_tokens": 11, "completion_tokens": 3}
+
+
+# --- Codex round 13 on PR #80: purge memories of truncated turns on edit ---
+
+
+@pytest.mark.asyncio
+async def test_purge_truncated_memories_drops_the_edited_away_turn(tmp_path, monkeypatch):
+    """Codex P2: Edit & Regenerate truncates a conversation's messages, but
+    the memory store previously kept entries for the discarded turns
+    forever -- an edited-away answer stayed retrievable from OTHER
+    conversations indefinitely. Index two chat turns (2 messages each, so
+    message_anchor is 2 then 4), edit back to keep only the first turn's
+    messages (edit_index=2), and assert: the second turn's memory is gone,
+    the first survives, and retrieval from another conversation no longer
+    surfaces the edited-away answer. Fails pre-fix (no purge exists at all
+    -- both turns would still be there)."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.create_conversation("conv-b")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    # Turn 1: user + assistant message persisted (message_anchor = 2).
+    storage.add_user_message("conv-a", "First question")
+    storage.add_chat_message("conv-a", "First answer")
+    await rag.index_chat_turn("conv-a", "First question", "First answer", ["first"])
+
+    # Turn 2: another user + assistant message persisted (message_anchor = 4).
+    storage.add_user_message("conv-a", "Second question")
+    storage.add_chat_message("conv-a", "Second answer")
+    await rag.index_chat_turn("conv-a", "Second question", "SECOND_ANSWER_EDITED_AWAY", ["second"])
+
+    turns_before = rag.store["conv-a"]["turns"]
+    assert len(turns_before) == 2
+    assert any(t["message_anchor"] == 2 for t in turns_before)
+    assert any(t["message_anchor"] == 4 for t in turns_before)
+
+    # Edit & Regenerate: keep only the first turn's 2 messages.
+    storage.truncate_messages("conv-a", 2)
+    dropped = await rag.purge_truncated_memories("conv-a", 2)
+
+    turns_after = rag.store["conv-a"]["turns"]
+    assert dropped == 1
+    assert len(turns_after) == 1
+    assert turns_after[0]["message_anchor"] == 2
+    assert "First answer" in turns_after[0]["memory"]
+    assert not any("SECOND_ANSWER_EDITED_AWAY" in t.get("memory", "") for t in turns_after)
+
+    # Retrieval from another conversation must not surface the edited-away answer.
+    async def fake_query_model(*args, **kwargs):
+        return {"content": "irrelevant"}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="what was the second answer"
+    )
+    assert "SECOND_ANSWER_EDITED_AWAY" not in memory_section
+    assert "First answer" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_purge_truncated_memories_drops_summary_spanning_the_cut_keeps_summary_before_it(tmp_path, monkeypatch):
+    """Codex P2: a summary entry's message_anchor is the MAX of the turns it
+    covers. A summary spanning ANY truncated turn must be dropped entirely
+    (lossy but safe -- partially describing deleted messages would leak
+    edited-away content); a summary fully before the cut survives."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    summary_before_cut = {
+        "kind": "summary",
+        "turn": 0,
+        "topics": ["early"],
+        "summary": "Summary entirely before the edit cut.",
+        "turns_compressed": 3,
+        "message_anchor": 6,  # all covered turns' messages survive a cut at edit_index=10
+    }
+    summary_spanning_cut = {
+        "kind": "summary",
+        "turn": 5,
+        "topics": ["later"],
+        "summary": "Summary spanning the edit cut.",
+        "turns_compressed": 3,
+        "message_anchor": 14,  # exceeds edit_index=10 -- some covered turn was truncated away
+    }
+    rag.store["conv-1"] = {"folder_id": "root", "turns": [summary_before_cut, summary_spanning_cut]}
+
+    dropped = await rag.purge_truncated_memories("conv-1", edit_index=10)
+
+    after = rag.store["conv-1"]["turns"]
+    assert dropped == 1
+    assert after == [summary_before_cut]
+
+
+@pytest.mark.asyncio
+async def test_purge_truncated_memories_leaves_documents_untouched(tmp_path, monkeypatch):
+    """Codex P2: document entries (turn == -1) are attachment-lifecycle-
+    managed, not tied to message history -- the edit purge must never drop
+    them regardless of any message_anchor logic."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    document_entry = {
+        "turn": -1,
+        "topics": ["document:report.pdf"],
+        "memory": "[Uploaded Document: report.pdf]\nverbatim body",
+    }
+    truncated_turn = {"turn": 0, "topics": ["x"], "memory": "Q: x\nA: y", "message_anchor": 99}
+    rag.store["conv-1"] = {"folder_id": "root", "turns": [document_entry, truncated_turn]}
+
+    dropped = await rag.purge_truncated_memories("conv-1", edit_index=0)
+
+    after = rag.store["conv-1"]["turns"]
+    assert dropped == 1
+    assert after == [document_entry]
+
+
+@pytest.mark.asyncio
+async def test_purge_truncated_memories_drops_entries_missing_an_anchor(tmp_path, monkeypatch):
+    """Codex P2: an entry with no message_anchor at all shouldn't exist
+    post-v1.2.0-reset (every entry this codebase writes carries one), but
+    defensively, an anchor-less entry is treated as suspect and dropped
+    fail-closed rather than trusted."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    anchorless_entry = {"turn": 0, "topics": ["x"], "memory": "Q: x\nA: y"}  # no message_anchor
+    rag.store["conv-1"] = {"folder_id": "root", "turns": [anchorless_entry]}
+
+    dropped = await rag.purge_truncated_memories("conv-1", edit_index=1000)  # cut far in the future
+
+    after = rag.store["conv-1"]["turns"]
+    assert dropped == 1
+    assert after == []

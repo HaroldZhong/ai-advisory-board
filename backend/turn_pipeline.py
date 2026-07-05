@@ -118,6 +118,10 @@ async def run_turn(
                 keep_ids=set(request.attachment_ids),
             )
             main.storage.truncate_messages(conversation_id, request.edit_index)
+            # Codex round 13: memory entries for the truncated turns must go
+            # too, or an edited-away answer stays retrievable from OTHER
+            # conversations forever. Both modes go through this same branch.
+            await main.rag_system.purge_truncated_memories(conversation_id, request.edit_index)
             # Re-fetch conversation after truncation
             current_conversation = main.storage.get_conversation(conversation_id)
             yield {"type": "edit_truncated", "data": {"edit_index": request.edit_index, "attachments": attachment_cleanup}}

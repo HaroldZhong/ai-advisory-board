@@ -304,6 +304,9 @@ async def test_edit_regenerate_resent_attachment_survives_end_to_end(monkeypatch
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
+    async def fake_purge_truncated_memories(*args, **kwargs):
+        return 0
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
     monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
@@ -314,6 +317,7 @@ async def test_edit_regenerate_resent_attachment_survives_end_to_end(monkeypatch
             retrieve_async=fake_retrieve_async,
             index_chat_turn=fake_index_chat_turn,
             refresh_hybrid_index=lambda *a, **k: None,
+            purge_truncated_memories=fake_purge_truncated_memories,
             store={},
         ),
     )
