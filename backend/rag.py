@@ -549,8 +549,13 @@ class CouncilRAG:
             return None
 
         if not response or not (response.get("content") or "").strip():
+            # Codex round 12 (P2): bill whatever tokens the call actually
+            # spent even though the store isn't modified -- a blank-content
+            # response can still carry real usage, and discarding it here
+            # silently ate that cost. Same convention as the exception path
+            # above (which never spent tokens, so None is correct there).
             logger.warning("[RAG] Summary compression returned no content for conv=%s; skipping compression", conversation_id)
-            return None
+            return response.get("usage") or {} if response else None
 
         # Codex round 5 belt: delete_conversation_memories now honors this
         # same write lock, so it can no longer interleave with this await --
@@ -640,8 +645,11 @@ class CouncilRAG:
             return None
 
         if not response or not (response.get("content") or "").strip():
+            # Codex round 12 (P2): same fix as the plain-turn compression
+            # path -- bill the usage a blank-content response still carries,
+            # even though the merge doesn't apply.
             logger.warning("[RAG] Summary merge returned no content for conv=%s; skipping merge", conversation_id)
-            return None
+            return response.get("usage") or {} if response else None
 
         if conversation_id not in self.store:
             logger.warning(

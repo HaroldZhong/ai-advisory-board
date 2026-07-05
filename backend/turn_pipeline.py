@@ -330,6 +330,15 @@ async def run_turn(
             # be lost (bounded, and noted below where the delta is applied).
             main.storage.update_conversation_cost(conversation_id, turn_cost)
             budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+            # Codex round 12 (P2): the base call's warning_level (if any
+            # threshold was JUST crossed) must survive the delta call below.
+            # _get_new_warning_level only returns non-None the FIRST time a
+            # threshold is crossed (it compares against the already-persisted
+            # last_warning_level) -- so the delta call's own warning_level is
+            # None even though the base call's crossing still needs to be
+            # emitted. Remember it here; the delta call's totals/usage still
+            # win (they're the final numbers), only warning_level is merged.
+            pending_warning = budget_state["warning_level"]
 
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
@@ -391,6 +400,13 @@ async def run_turn(
                 turn_cost += delta_cost
                 main.storage.update_conversation_cost(conversation_id, delta_cost)
                 budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
+                # Codex round 12 (P2): keep the base call's crossing alive --
+                # totals/usage/budget_spent_pct come from this LAST call
+                # (correct, they're cumulative), but warning_level would
+                # otherwise be silently dropped if the base call was the one
+                # that actually crossed a threshold.
+                if pending_warning is not None and budget_state["warning_level"] is None:
+                    budget_state = {**budget_state, "warning_level": pending_warning}
 
         else:
             # Chat mode
@@ -528,6 +544,11 @@ async def run_turn(
             # be lost (bounded, and noted below where the delta is applied).
             main.storage.update_conversation_cost(conversation_id, turn_cost)
             budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+            # Codex round 12 (P2): same as the council branch -- remember
+            # the base call's warning_level, since the delta call below
+            # would otherwise silently drop a threshold crossing that
+            # already happened on this same base call.
+            pending_warning = budget_state["warning_level"]
 
             # Chat turns previously left no memory (P5-T5 feature 2). Skip
             # for effective-turn ZDR (audit §12, Decision #5), mirroring the
@@ -572,6 +593,10 @@ async def run_turn(
                 turn_cost += delta_cost
                 main.storage.update_conversation_cost(conversation_id, delta_cost)
                 budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
+                # Codex round 12 (P2): same warning-preservation as the
+                # council branch.
+                if pending_warning is not None and budget_state["warning_level"] is None:
+                    budget_state = {**budget_state, "warning_level": pending_warning}
 
             yield {"type": "chat_response", "data": response_dict}
             logger.info("[CHAT] Chat response sent to client")

@@ -1996,3 +1996,82 @@ async def test_repeated_compaction_cycles_keep_entry_count_bounded(tmp_path, mon
     documents = 0  # this conversation never indexes a document
     bound = SUMMARY_COMPRESSION_THRESHOLD + MAX_SUMMARY_ENTRIES + documents
     assert max_seen <= bound, f"entry count grew to {max_seen}, exceeding the bound {bound}"
+
+
+# --- Codex round 12 on PR #80: bill compression attempts even on blank content ---
+
+
+@pytest.mark.asyncio
+async def test_compression_bills_usage_even_when_response_content_is_blank(tmp_path, monkeypatch):
+    """Codex P2: a compression attempt whose LLM response has real USAGE but
+    blank content used to skip compression AND discard the usage entirely
+    (returning None), silently eating the spent tokens. Fixed: bill
+    whatever usage the call actually consumed regardless of whether the
+    store was modified -- the store stays unchanged, but the returned usage
+    must still reflect the blank-content response's real token spend."""
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+    turns_before = [dict(t) for t in rag.store["conv-1"]["turns"]]
+
+    async def fake_query_model_blank_content(*args, **kwargs):
+        return {"content": "", "usage": {"prompt_tokens": 42, "completion_tokens": 7}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model_blank_content)
+
+    usage = await rag.index_chat_turn("conv-1", "new question", "new answer", ["newtopic"])
+
+    turns_after = rag.store["conv-1"]["turns"]
+    # Store unchanged by the compression attempt itself (the new turn from
+    # this same index_chat_turn call is the only addition -- no summary).
+    assert turns_after[:-1] == turns_before
+    assert not any(t.get("kind") == "summary" for t in turns_after)
+    # The blank-content response's real usage must still be billed.
+    assert usage == {"prompt_tokens": 42, "completion_tokens": 7}
+
+
+@pytest.mark.asyncio
+async def test_summary_merge_bills_usage_even_when_response_content_is_blank(tmp_path, monkeypatch):
+    """Codex P2: same fix, merge path. A merge attempt whose response has
+    usage but blank content must still bill that usage; all summaries stay
+    intact."""
+    from backend.rag import MAX_SUMMARY_ENTRIES
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    turns = [
+        {
+            "kind": "summary",
+            "turn": i * 10,
+            "topics": [f"topic{i}"],
+            "summary": f"Summary number {i}.",
+            "turns_compressed": 2,
+        }
+        for i in range(MAX_SUMMARY_ENTRIES + 1)
+    ]
+    rag.store["conv-1"] = {"folder_id": "root", "turns": list(turns)}
+
+    async def fake_query_model_blank_content(*args, **kwargs):
+        return {"content": "   ", "usage": {"prompt_tokens": 11, "completion_tokens": 3}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model_blank_content)
+
+    merge_usage = await rag._maybe_merge_summaries("conv-1")
+
+    after = rag.store["conv-1"]["turns"]
+    assert after == turns  # untouched
+    assert merge_usage == {"prompt_tokens": 11, "completion_tokens": 3}
