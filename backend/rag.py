@@ -239,7 +239,13 @@ class CouncilRAG:
 
     def _get_write_lock(self, conversation_id: str) -> asyncio.Lock:
         """Get-or-create the per-conversation write lock (setdefault, not a
-        defaultdict, so this stays a plain dict elsewhere)."""
+        defaultdict, so this stays a plain dict elsewhere).
+
+        Codex round 7: the invariant is now total -- EVERY mutator of
+        self.store[conversation_id] holds this lock for its entire body:
+        index_session, index_chat_turn, index_document, and
+        delete_conversation_memories. No per-conversation store write
+        anywhere in this class happens outside this lock."""
         return self._conversation_write_locks.setdefault(conversation_id, asyncio.Lock())
 
     def _backup_corrupt_index(self) -> str:
@@ -538,37 +544,45 @@ class CouncilRAG:
         self.store[conversation_id]["turns"] = [summary_entry] + rest
         return response.get("usage") or {}
 
-    def index_document(self, conversation_id: str, filename: str, text: str, max_chars: int = 8000):
+    async def index_document(self, conversation_id: str, filename: str, text: str, max_chars: int = 8000):
         """
         Index extracted document text into the PageIndex store.
         Truncates to max_chars to keep the reasoning store manageable.
+
+        Codex round 7: this is the last per-conversation store mutator that
+        didn't hold the write lock -- a document appended here during an
+        in-flight compression's snapshot-await-writeback window (inside
+        index_session/index_chat_turn) would get silently dropped by that
+        compression's stale write-back. Locked the same way as the other
+        three mutators (index_session, index_chat_turn,
+        delete_conversation_memories) to close it.
         """
         if not self.enabled or not text.strip():
             return
 
-        # ZDR write barrier: never index a conversation whose CURRENT metadata
-        # says ZDR. Synchronous check-then-write (no await window) closes the
-        # runtime-flip race for good; flips after the write are handled by the
-        # purge in update_conversation. Per-message ZDR (request flag, not
-        # visible in metadata) is enforced by the pipeline-level guards.
-        conversation = get_conversation(conversation_id)
-        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
-            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
-            return
+        async with self._get_write_lock(conversation_id):
+            # ZDR write barrier: never index a conversation whose CURRENT
+            # metadata says ZDR. Checked UNDER the per-conversation write
+            # lock (mirrors index_session/index_chat_turn, Codex round 4) so
+            # a purge triggered while waiting for the lock cannot be undone.
+            conversation = get_conversation(conversation_id)
+            if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
+                logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
+                return
 
-        if conversation_id not in self.store:
-            self.store[conversation_id] = {"folder_id": "root", "turns": []}
+            if conversation_id not in self.store:
+                self.store[conversation_id] = {"folder_id": "root", "turns": []}
 
-        truncated = text[:max_chars]
-        doc_memory = {
-            "turn": -1,  # Sentinel: document, not a turn
-            "topics": [f"document:{filename}"],
-            "memory": f"[Uploaded Document: {filename}]\n{truncated}"
-        }
-        self.store[conversation_id]["turns"].append(doc_memory)
-        self._save_store()
-        if self.enabled:
-            logger.info("[RAG] Indexed document '%s' (%d chars) for conv=%s", filename, len(truncated), conversation_id)
+            truncated = text[:max_chars]
+            doc_memory = {
+                "turn": -1,  # Sentinel: document, not a turn
+                "topics": [f"document:{filename}"],
+                "memory": f"[Uploaded Document: {filename}]\n{truncated}"
+            }
+            self.store[conversation_id]["turns"].append(doc_memory)
+            self._save_store()
+            if self.enabled:
+                logger.info("[RAG] Indexed document '%s' (%d chars) for conv=%s", filename, len(truncated), conversation_id)
 
     def retrieve(
         self,

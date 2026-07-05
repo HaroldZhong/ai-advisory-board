@@ -102,7 +102,7 @@ async def run_turn(
                 for att_id in request.attachment_ids:
                     att_text = main.get_attachment_text(att_id)
                     if att_text:
-                        main.rag_system.index_document(conversation_id, att_id, att_text)
+                        await main.rag_system.index_document(conversation_id, att_id, att_text)
 
         # Combine user content with attachment context and custom instructions
         # for the LLM. User sees only their message, LLM sees the composed content.

@@ -412,7 +412,7 @@ async def test_council_turn_with_metadata_zdr_skips_memory_indexing(monkeypatch,
 
     rag_system = SimpleNamespace(
         index_session=AsyncMock(return_value=None),
-        index_document=Mock(),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -436,7 +436,7 @@ async def test_council_turn_with_per_message_zdr_skips_memory_indexing(monkeypat
 
     rag_system = SimpleNamespace(
         index_session=AsyncMock(return_value=None),
-        index_document=Mock(),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -460,7 +460,7 @@ async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
 
     rag_system = SimpleNamespace(
         index_session=AsyncMock(return_value=None),
-        index_document=Mock(),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -556,7 +556,7 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
 
     rag_system = SimpleNamespace(
         index_session=AsyncMock(return_value=None),
-        index_document=Mock(),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -796,7 +796,7 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     # the turn_pipeline guard must prevent this from ever landing in the store.
     rag_system = SimpleNamespace(
         index_session=Mock(wraps=real_rag.index_session),
-        index_document=Mock(),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)

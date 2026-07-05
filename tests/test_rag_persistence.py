@@ -46,7 +46,8 @@ def test_rag_resets_store_with_valid_json_but_wrong_top_level_type(tmp_path, cap
     assert any("invalid top-level type" in record.message for record in caplog.records)
 
 
-def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatch):
     # index_document now has a ZDR write barrier (Codex round 6) that looks up
     # the conversation's current metadata before writing; a fabricated id with
     # no conversation file would fail closed and skip the write entirely
@@ -65,7 +66,7 @@ def test_rag_disables_persistence_after_atomic_save_failure(tmp_path, monkeypatc
 
     monkeypatch.setattr("backend.rag.write_text_atomic", fail_write)
 
-    rag.index_document("conv-1", "doc.txt", "hello")
+    await rag.index_document("conv-1", "doc.txt", "hello")
 
     assert rag.enabled is False
 
@@ -94,7 +95,7 @@ async def test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr
         topics=["topic"],
         quality_metrics={},
     )
-    rag.index_document("conv-zdr", "doc.txt", "sensitive text")
+    await rag.index_document("conv-zdr", "doc.txt", "sensitive text")
 
     assert rag.store == {}
 
@@ -1026,6 +1027,9 @@ async def test_council_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
     async def fake_index_session(*args, **kwargs):
         return None  # no compression this turn -- isolates the topics delta
 
+    async def fake_index_document(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
     monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
@@ -1038,7 +1042,7 @@ async def test_council_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
         SimpleNamespace(
             index_session=fake_index_session,
             refresh_hybrid_index=lambda *a, **k: None,
-            index_document=lambda *a, **k: None,
+            index_document=fake_index_document,
         ),
     )
 
@@ -1348,3 +1352,72 @@ async def test_index_session_and_index_chat_turn_share_one_monotonic_turn_sequen
     assert len(turn_numbers) == len(set(turn_numbers)), "no duplicate turn numbers between chat and council entries"
     assert turn_numbers == sorted(turn_numbers), "turn numbers strictly increase in insertion order"
     assert turn_numbers == [0, 1, 2]
+
+
+# --- Codex round 7 on PR #80: index_document was the last unlocked store writer ---
+
+
+@pytest.mark.asyncio
+async def test_document_indexed_during_compression_survives_the_write_back(tmp_path, monkeypatch):
+    """Codex P2: index_document appended to self.store[cid]["turns"] WITHOUT
+    the per-conversation write lock -- so a document indexed while a
+    concurrent index_chat_turn/index_session call was mid-compression
+    (snapshotted turns, awaiting query_model) would get silently dropped by
+    that compression's stale [summary_entry] + rest write-back, exactly like
+    the round-3 concurrent-chat-turn bug this mirrors.
+
+    Drives two real concurrent tasks for the same conversation: index_chat_turn
+    triggers compression and blocks mid-await on an asyncio.Event;
+    index_document is provably still pending on the same write lock before
+    the event is released. Both must complete and the document memory must
+    survive -- fails pre-fix because there was no lock to block on, so the
+    document would land during the stale-snapshot window and then be
+    overwritten by the write-back."""
+    import asyncio
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+
+    release_compression = asyncio.Event()
+
+    async def blocking_query_model(*args, **kwargs):
+        # index_chat_turn is holding the write lock here, mid-compression.
+        await release_compression.wait()
+        return {"content": "Dense summary.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", blocking_query_model)
+
+    index_task = asyncio.create_task(
+        rag.index_chat_turn("conv-1", "triggers compaction", "answer", ["c"])
+    )
+    await asyncio.sleep(0)  # let it append + hit the threshold + block on query_model, holding the lock
+
+    document_task = asyncio.create_task(
+        rag.index_document("conv-1", "report.pdf", "important document contents")
+    )
+    await asyncio.sleep(0)
+
+    # The document indexing must be provably blocked on the same lock -- it
+    # cannot have appended yet, proving there is no window for the
+    # compression's write-back to silently drop it.
+    assert not document_task.done()
+
+    release_compression.set()
+    await index_task
+    await document_task
+
+    turns = rag.store["conv-1"]["turns"]
+    assert any(
+        "important document contents" in t.get("memory", "") for t in turns
+    ), "the document indexed during compression must survive the write-back"

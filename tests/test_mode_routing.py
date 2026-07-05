@@ -51,13 +51,16 @@ def _setup_council_fakes(monkeypatch, main):
     async def fake_index_session(*args, **kwargs):
         return None
 
+    async def fake_index_document(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(
         main,
         "rag_system",
         SimpleNamespace(
             index_session=fake_index_session,
             refresh_hybrid_index=lambda *a, **k: None,
-            index_document=lambda *a, **k: None,
+            index_document=fake_index_document,
         ),
     )
 
