@@ -637,6 +637,26 @@ class CouncilRAG:
                 logger.info("[RAG] Indexed chat turn %d for conv=%s into PageIndex", turn_index, conversation_id)
             return usage
 
+    @staticmethod
+    def _conversation_zdr_or_unreadable(conversation_id: str) -> bool:
+        """Codex round 20: fresh ZDR/unreadable check shared by the two
+        compression-tier prompt builders (_maybe_compress_oldest_half,
+        _maybe_merge_summaries). Both send stored conversation content to
+        UTILITY_MODEL after at least one prior await in their call chain --
+        a ZDR flip landing in that window isn't covered by the write
+        barrier the caller (index_session/index_chat_turn) already checked
+        before the append. Fail closed (True) on an unreadable/raising
+        read, same convention as _zdr_flipped_on. Not used by the write
+        barriers themselves -- those checks are the FIRST read in their
+        call chain (no prior await to race), and are kept as their own
+        inline copies (Codex round 4/17 comments explain why).
+        """
+        try:
+            conversation = get_conversation(conversation_id)
+        except Exception:
+            return True
+        return not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or bool(conversation["metadata"].get("zdr_enabled"))
+
     async def _maybe_compress_oldest_half(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """P5-T5 feature 3: bounded per-conversation memory growth.
 
@@ -680,6 +700,26 @@ class CouncilRAG:
             return None
         oldest_indices = compressible_indices[:half]
         oldest_positions = set(oldest_indices)
+
+        # Codex round 20 (P1): symmetric to _maybe_merge_summaries' round-17
+        # fix -- this is the FIRST utility-model call in the compression
+        # chain, but it still runs after the caller's write-barrier check
+        # (index_session/index_chat_turn) and after this method's own
+        # threshold/oldest-half computation above, both no-await work. The
+        # write barrier's read is stale the moment ANY await happens after
+        # it; re-check fresh, immediately before building this prompt, and
+        # fail closed on an unreadable/raising read.
+        # Codex round 20 (P1): symmetric to _maybe_merge_summaries' round-17
+        # fix -- this is the FIRST utility-model call in the compression
+        # chain, but it still runs after the caller's write-barrier check
+        # (index_session/index_chat_turn) and after this method's own
+        # threshold/oldest-half computation above, both no-await work. The
+        # write barrier's read is stale the moment ANY await happens after
+        # it; re-check fresh, immediately before building this prompt, and
+        # fail closed on an unreadable/raising read.
+        if self._conversation_zdr_or_unreadable(conversation_id):
+            logger.info("[RAG] Skipping summary compression for %s (ZDR or unreadable)", conversation_id)
+            return None
 
         oldest = [turns[i] for i in oldest_indices]
         compact_text = "\n\n".join(
@@ -792,12 +832,9 @@ class CouncilRAG:
         # call chain -- re-read metadata fresh, immediately before building
         # THIS method's own utility-model prompt, and fail closed (skip) on
         # an unreadable/raising read, same convention as _zdr_flipped_on.
-        try:
-            conversation = get_conversation(conversation_id)
-            zdr_now = not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or bool(conversation["metadata"].get("zdr_enabled"))
-        except Exception:
-            zdr_now = True
-        if zdr_now:
+        # Codex round 20: extracted into _conversation_zdr_or_unreadable,
+        # shared with _maybe_compress_oldest_half's identical fresh check.
+        if self._conversation_zdr_or_unreadable(conversation_id):
             logger.info("[RAG] Skipping summary merge for %s (ZDR or unreadable)", conversation_id)
             return None
 

@@ -2773,6 +2773,57 @@ async def test_maybe_merge_summaries_rechecks_zdr_before_calling_query_model(tmp
 
 
 @pytest.mark.asyncio
+async def test_maybe_compress_oldest_half_rechecks_zdr_before_calling_query_model(tmp_path, monkeypatch):
+    """Codex round 20 P1: symmetric to the round-17 fix for
+    _maybe_merge_summaries above -- _maybe_compress_oldest_half is the
+    FIRST utility-model call in the compression chain, called from inside
+    index_session/index_chat_turn AFTER their write barrier already ran (a
+    no-await read, so nothing can race it) and after the append + this
+    method's own threshold/oldest-half computation (also no-await). A ZDR
+    flip landing in that window -- after the barrier, before THIS prompt is
+    built -- wasn't covered by any check before this fix. Call
+    _maybe_compress_oldest_half directly (same as the existing
+    _maybe_merge_summaries test above bypasses ITS caller) with enough
+    turns already seeded to trigger compression, flip ZDR on, and assert
+    query_model is NEVER called and the turns list is unchanged. Fails
+    pre-fix: the old code went straight to building compact_text/prompt
+    with no fresh ZDR check here."""
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    turns = []
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD + 1):
+        turns.append({"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}", "message_anchor": 0})
+    rag.store["conv-1"] = {"folder_id": "root", "turns": list(turns)}
+
+    # Flip ZDR on AFTER the turns were written (simulating a mid-turn flip
+    # that happened during the caller's write-barrier-to-compression
+    # window), mirroring the existing _maybe_merge_summaries test's setup.
+    storage.update_conversation_metadata("conv-1", {"zdr_enabled": True})
+
+    calls = []
+
+    async def spy_query_model(*args, **kwargs):
+        calls.append(args)
+        return {"content": "Dense summary of earlier turns.", "usage": {"prompt_tokens": 5, "completion_tokens": 5}}
+
+    monkeypatch.setattr(rag_module, "query_model", spy_query_model)
+
+    usage = await rag._maybe_compress_oldest_half("conv-1")
+
+    assert usage is None
+    assert calls == []  # query_model never called
+    after = rag.store["conv-1"]["turns"]
+    assert after == turns  # untouched
+    assert not any(t.get("kind") == "summary" for t in after)
+
+
+@pytest.mark.asyncio
 async def test_council_indexing_partial_delta_survives_a_later_indexing_failure(monkeypatch, tmp_path):
     """Codex P2: the best-effort except used to reset delta_cost to 0.0,
     discarding topics_usage that was ALREADY SPENT before index_session
