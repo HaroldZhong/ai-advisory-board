@@ -847,7 +847,7 @@ async def test_enabling_zdr_at_runtime_purges_existing_memories(monkeypatch, tmp
     )
 
     fake_rag = SimpleNamespace(
-        delete_conversation_memories=Mock(),
+        delete_conversation_memories=AsyncMock(),
         update_conversation_folder=Mock(),
     )
     monkeypatch.setattr(main, "rag_system", fake_rag)

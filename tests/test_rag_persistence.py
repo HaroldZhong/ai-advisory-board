@@ -580,6 +580,44 @@ def test_purge_never_touches_conversations_or_attachments_dirs(tmp_path, monkeyp
     assert attachment_file.read_text(encoding="utf-8") == "attachment body"
 
 
+def test_purge_skips_marker_and_retries_when_save_fails(tmp_path, monkeypatch, caplog):
+    """Codex round 5 P2: the marker must only be written once the reset
+    actually landed on disk. If _save_store fails (disk full, permissions),
+    writing the marker anyway would permanently mark this store "already
+    reset" while the stale, un-purged store survives -- defeating the
+    guarantee. On failure: no marker, an ERROR log, and the next startup
+    must retry the reset."""
+    pageindex_dir = tmp_path / "pageindex"
+    pageindex_dir.mkdir()
+    index_file = pageindex_dir / "pageindex_memory.json"
+    index_file.write_text(
+        json.dumps({"conv-1": {"folder_id": "root", "turns": [{"turn": 0, "memory": "old memory"}]}}),
+        encoding="utf-8",
+    )
+
+    def fail_write(path, content, **kwargs):
+        raise PermissionError("disk full")
+
+    monkeypatch.setattr(rag_module, "write_text_atomic", fail_write)
+
+    with caplog.at_level("ERROR"):
+        rag = CouncilRAG(persist_path=str(pageindex_dir))
+
+    marker_path = pageindex_dir / "pageindex_memory.version"
+    assert not marker_path.exists()
+    assert rag.enabled is False  # _save_store's failure path disables persistence
+    assert any("one-time memory reset" in r.message.lower() and "retry" in r.message.lower() for r in caplog.records)
+
+    # Next startup (write_text_atomic working again) must retry the reset:
+    # the marker is still absent, so the same store is dropped again.
+    monkeypatch.undo()
+    with caplog.at_level("INFO"):
+        rag2 = CouncilRAG(persist_path=str(pageindex_dir))
+
+    assert rag2.store == {}
+    assert marker_path.read_text(encoding="utf-8").strip() == "2"
+
+
 # --- P5-T5 feature 2: chat-turn indexing ---
 
 
@@ -1006,14 +1044,85 @@ async def test_zdr_flip_while_pending_on_write_lock_blocks_the_write(tmp_path, m
     # re-checked ZDR or written anything yet.
     assert not pending_task.done()
 
-    # Simulate the user enabling ZDR mid-flight: real metadata flip + the
-    # same purge update_conversation performs.
+    # Simulate the user enabling ZDR mid-flight: the barrier only reads
+    # conversation metadata, so the metadata flip alone is what it must
+    # react to -- the purge itself (delete_conversation_memories) now also
+    # takes this same lock (Codex round 5) and is covered separately in
+    # test_purge_waits_for_in_flight_compression_then_deletes_cleanly below.
     storage.update_conversation_metadata("conv-1", {"zdr_enabled": True})
-    rag.delete_conversation_memories("conv-1")
 
     lock.release()
     await pending_task
 
     # The pending call must have written nothing: the barrier, re-checked
-    # under the lock, saw the now-current ZDR metadata and refused.
+    # under the lock, saw the now-current ZDR metadata and refused. Only the
+    # pre-seeded turn 0 remains -- the pending write's content never landed.
+    turns = rag.store["conv-1"]["turns"]
+    assert len(turns) == 1
+    assert not any("pending question" in t.get("memory", "") for t in turns)
+
+
+# --- Codex round 5 on PR #80: purges must honor the write lock too ---
+
+
+@pytest.mark.asyncio
+async def test_purge_waits_for_in_flight_compression_then_deletes_cleanly(tmp_path, monkeypatch):
+    """Codex P2: delete_conversation_memories mutated self.store WITHOUT the
+    per-conversation write lock, so a runtime ZDR purge (or conversation
+    deletion) could interleave with an in-flight compression's
+    snapshot-await-writeback window inside index_session/index_chat_turn --
+    at best silently undone by the write-back, at worst a KeyError if the
+    purge deleted the conversation entirely while compression's write-back
+    tried to write self.store[conversation_id]["turns"] = ....
+
+    Fixed by making delete_conversation_memories async and acquiring the same
+    write lock. This drives a real concurrent purge while a real compression
+    call is blocked mid-await: the purge must simply wait for the lock, not
+    KeyError, and the in-flight turn must still complete (write-back
+    succeeds against a store that still has the conversation, because the
+    purge is queued behind the lock) before the purge finally runs and
+    leaves the conversation removed."""
+    import asyncio
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        rag.store.setdefault("conv-1", {"folder_id": "root", "turns": []})
+        rag.store["conv-1"]["turns"].append(
+            {"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"}
+        )
+
+    release_compression = asyncio.Event()
+
+    async def blocking_query_model(*args, **kwargs):
+        # index_chat_turn is holding the write lock here, mid-compression.
+        await release_compression.wait()
+        return {"content": "Dense summary.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", blocking_query_model)
+
+    index_task = asyncio.create_task(
+        rag.index_chat_turn("conv-1", "triggers compaction", "answer", ["c"])
+    )
+    await asyncio.sleep(0)  # let it append + hit the threshold + block on query_model, holding the lock
+
+    purge_task = asyncio.create_task(rag.delete_conversation_memories("conv-1"))
+    await asyncio.sleep(0)
+
+    # The purge must be provably blocked on the same lock -- it cannot have
+    # deleted the conversation yet (that's what would have KeyError'd the
+    # in-flight compression's write-back pre-fix).
+    assert not purge_task.done()
+    assert "conv-1" in rag.store
+
+    release_compression.set()
+    await index_task  # no KeyError: write-back completes against an intact store
+    await purge_task  # then the purge runs and removes it
+
     assert "conv-1" not in rag.store

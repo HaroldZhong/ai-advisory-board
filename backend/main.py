@@ -850,7 +850,7 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
             # runtime would otherwise leave its already-indexed memories live
             # and retrievable from other conversations until restart. Purge
             # immediately using the same path conversation deletion uses.
-            rag_system.delete_conversation_memories(conversation_id)
+            await rag_system.delete_conversation_memories(conversation_id)
     if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
         metadata = conv.get("metadata", {})
         storage.update_conversation_metadata(
@@ -878,7 +878,7 @@ async def delete_conversation(conversation_id: str):
          raise HTTPException(status_code=404, detail="Conversation not found")
     attachment_cleanup = delete_attachments_for_conversation(conversation_id, conversation)
     # Purge PageIndex memories for this conversation
-    rag_system.delete_conversation_memories(conversation_id)
+    await rag_system.delete_conversation_memories(conversation_id)
     return {"success": True, "attachments": attachment_cleanup}
 
 

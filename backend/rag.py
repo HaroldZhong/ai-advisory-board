@@ -146,7 +146,19 @@ class CouncilRAG:
         conversations_dropped = len(self.store)
         if store_file_existed and conversations_dropped:
             self.store = {}
-            self._save_store()
+            # Codex round 5: the marker must only be written once the reset
+            # actually landed on disk. _save_store can fail (disk full,
+            # permissions, etc.) and swallow that into self.enabled = False;
+            # writing the marker anyway would mark this store "already reset"
+            # forever while the stale, un-purged store survives on disk --
+            # defeating the whole guarantee. On failure: skip the marker
+            # entirely and retry the reset on next startup.
+            if not self._save_store():
+                logger.error(
+                    "[RAG] One-time memory reset for v1.2.0 failed to persist; "
+                    "will retry on next startup (marker not written)"
+                )
+                return
             logger.info(
                 "[RAG] Performing one-time memory reset for v1.2.0 ZDR guarantee, %d conversation(s) dropped",
                 conversations_dropped,
@@ -225,19 +237,25 @@ class CouncilRAG:
         os.replace(self.index_file, backup_path)
         return backup_path
 
-    def _save_store(self):
+    def _save_store(self) -> bool:
+        """Persist self.store to disk. Returns True on a confirmed write,
+        False when persistence is disabled or the write failed (callers that
+        need to know whether the store actually landed on disk -- e.g. the
+        one-time reset marker -- must check this instead of assuming)."""
         if not self.enabled:
-            return
+            return False
         serialized = json.dumps(self.store, indent=2)
         self._warn_if_store_too_large(serialized)
         try:
             write_text_atomic(Path(self.index_file), serialized)
+            return True
         except (OSError, RuntimeError) as e:
             logger.exception(
                 "[RAG] Failed to persist PageIndex store; disabling persistence for this process: %s",
                 e,
             )
             self.enabled = False
+            return False
 
     def _warn_if_store_too_large(self, serialized: str) -> None:
         """Store hygiene (P5-T4): warn once the serialized store crosses
@@ -264,18 +282,27 @@ class CouncilRAG:
         """Legacy compatibility method. No longer needed for reasoning RAG."""
         pass
 
-    def delete_conversation_memories(self, conversation_id: str) -> bool:
+    async def delete_conversation_memories(self, conversation_id: str) -> bool:
         """
         Remove a conversation's memories from the global PageIndex store.
+
+        Codex round 5: this mutates self.store, so it must honor the same
+        per-conversation write lock as index_session/index_chat_turn --
+        without it, a purge (runtime ZDR flip, conversation deletion) could
+        interleave with an in-flight compression's snapshot-await-writeback
+        window and KeyError, or race the compression's write-back and get
+        silently undone. Serialized, the purge simply waits for any
+        in-flight write to finish, then deletes -- correct either way.
         """
-        if conversation_id in self.store:
-            del self.store[conversation_id]
-            self._save_store()
-            if self.enabled:
-                logger.info("[RAG] Purged PageIndex memories for conversation %s", conversation_id)
-            return self.enabled
-        return False
-        
+        async with self._get_write_lock(conversation_id):
+            if conversation_id in self.store:
+                del self.store[conversation_id]
+                self._save_store()
+                if self.enabled:
+                    logger.info("[RAG] Purged PageIndex memories for conversation %s", conversation_id)
+                return self.enabled
+            return False
+
     def update_conversation_folder(self, conversation_id: str, new_folder_id: str):
         """
         Update the folder routing in the reasoning PageIndex for a conversation.
@@ -452,6 +479,19 @@ class CouncilRAG:
         if not response or not (response.get("content") or "").strip():
             logger.warning("[RAG] Summary compression returned no content for conv=%s; skipping compression", conversation_id)
             return None
+
+        # Codex round 5 belt: delete_conversation_memories now honors this
+        # same write lock, so it can no longer interleave with this await --
+        # but check anyway, cheaply, to future-proof against any mutator that
+        # ever forgets to take the lock. If the conversation vanished from
+        # the store while this await was in flight, there is nothing left to
+        # write back into; usage was already spent regardless.
+        if conversation_id not in self.store:
+            logger.warning(
+                "[RAG] Conversation %s removed from PageIndex store during summary compression; discarding the compressed result",
+                conversation_id,
+            )
+            return response.get("usage") or {}
 
         union_topics = []
         for entry in oldest:

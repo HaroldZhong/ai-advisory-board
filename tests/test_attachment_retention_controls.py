@@ -1,7 +1,7 @@
 import importlib
 import os
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -108,7 +108,7 @@ async def test_delete_conversation_purges_unshared_attachment_artifacts(monkeypa
     main = import_module_with_api_key(monkeypatch, "backend.main")
     configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
     monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(delete_conversation_memories=Mock()))
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(delete_conversation_memories=AsyncMock()))
 
     conversation_id = "conv-delete-attachments"
     storage.create_conversation(conversation_id)
@@ -146,7 +146,7 @@ async def test_delete_conversation_retains_shared_attachment_until_last_referenc
     main = import_module_with_api_key(monkeypatch, "backend.main")
     configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
     monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(delete_conversation_memories=Mock()))
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(delete_conversation_memories=AsyncMock()))
 
     attachment = attachment_storage.create_attachment(
         b"shared across conversations",
