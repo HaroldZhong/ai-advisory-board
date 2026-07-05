@@ -3097,6 +3097,149 @@ async def test_zdr_flipped_on_guard_fails_closed_when_get_conversation_raises(mo
     assert conversation["messages"][-1]["content"] == "Budget-aware response"
 
 
+# --- Codex round 27 on PR #80: verify the source turn before topic extraction ---
+
+
+@pytest.mark.asyncio
+async def test_chat_topics_never_called_when_turn_truncated_before_extraction(monkeypatch, tmp_path):
+    """Codex round 27 P2: the truncation twin of the round-14/20 ZDR
+    content-quarantine fixes. After the early chat_response yield, an
+    immediate edit/regenerate can truncate the just-saved turn --
+    index_chat_turn's own anchor guard (source_turn_intact) blocks the
+    STORE WRITE, but by the time that guard runs, topic extraction has
+    already sent the deleted Q/A to the utility model. Fixed:
+    _source_turn_missing runs the SAME check BEFORE extract_topics_with_usage.
+
+    Simulates the truncation landing exactly in the gap between
+    add_chat_message persisting this turn and _source_turn_missing's own
+    read: wraps storage.add_chat_message so that, right after it persists
+    the real message, it truncates the conversation back to the prior
+    messages via real storage -- as if a concurrent edit/regenerate
+    completed in that exact window. Asserts the topics recorder is NEVER
+    called and nothing is indexed. Fails pre-fix: the old code called
+    extract_topics_with_usage unconditionally before index_chat_turn's own
+    (too-late) guard caught the truncation."""
+    conversation_id = "conv-truncated-before-topics"
+    topics_calls = []
+
+    async def recording_extract_topics_with_usage(*args, **kwargs):
+        topics_calls.append(args)
+        return ["topic"], {}
+
+    async def index_chat_turn_should_never_run(*args, **kwargs):
+        raise AssertionError("index_chat_turn must not run when the source turn was truncated pre-extraction")
+
+    main = _chat_turn_setup(
+        monkeypatch, tmp_path, conversation_id,
+        index_chat_turn=index_chat_turn_should_never_run,
+        extract_topics_with_usage=recording_extract_topics_with_usage,
+    )
+
+    real_add_chat_message = main.storage.add_chat_message
+
+    def truncating_add_chat_message(*args, **kwargs):
+        result = real_add_chat_message(*args, **kwargs)
+        # Simulate a concurrent edit/regenerate landing right here: drop
+        # this turn's just-persisted user+assistant messages, keeping only
+        # the 2 prior messages _chat_turn_setup seeded.
+        main.storage.truncate_messages(conversation_id, 2)
+        return result
+
+    monkeypatch.setattr(main.storage, "add_chat_message", truncating_add_chat_message)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["type"] == "chat"  # still a normal, successful turn
+    assert topics_calls == []
+
+    conversation = main.storage.get_conversation(conversation_id)
+    assert len(conversation["messages"]) == 2  # truncation stuck; nothing re-appended by indexing
+
+
+@pytest.mark.asyncio
+async def test_council_topics_never_called_when_turn_truncated_before_extraction(monkeypatch, tmp_path):
+    """Codex round 27 P2: council twin of the chat test above."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-council-truncated-before-topics"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id)
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {}
+
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        return {"model": "model-a", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    topics_calls = []
+
+    async def recording_extract_topics_with_usage(*args, **kwargs):
+        topics_calls.append(args)
+        return ["topic"], {}
+
+    def index_session_should_never_run(*args, **kwargs):
+        raise AssertionError("index_session must not run when the source turn was truncated pre-extraction")
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", recording_extract_topics_with_usage)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            index_session=index_session_should_never_run,
+            refresh_hybrid_index=lambda *a, **k: None,
+        ),
+    )
+
+    real_add_assistant_message = main.storage.add_assistant_message
+
+    def truncating_add_assistant_message(*args, **kwargs):
+        result = real_add_assistant_message(*args, **kwargs)
+        # Simulate a concurrent edit/regenerate landing right here: drop
+        # this turn's just-persisted user+assistant messages, keeping only
+        # the 2 prior messages seeded above.
+        main.storage.truncate_messages(conversation_id, 2)
+        return result
+
+    monkeypatch.setattr(main.storage, "add_assistant_message", truncating_add_assistant_message)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="What should we do?", mode="council"),
+    )
+
+    assert result["type"] == "council"  # still a normal, successful turn
+    assert topics_calls == []
+
+    conversation = main.storage.get_conversation(conversation_id)
+    assert len(conversation["messages"]) == 2  # truncation stuck
+
+
 # --- Codex round 17 on PR #80: verify the source turn before indexing it ---
 
 

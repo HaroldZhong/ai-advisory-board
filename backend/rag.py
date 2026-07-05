@@ -88,6 +88,37 @@ def get_attachment(attachment_id: str):
     return _get_attachment(attachment_id)
 
 
+def source_turn_intact(conversation: Dict[str, Any], expected_anchor: Optional[int], answer_text: str, question: str) -> bool:
+    """Codex round 27: the source-turn identity check index_session/
+    index_chat_turn already run under their write lock (rounds 17/18/26),
+    extracted into one pure function so turn_pipeline can run the SAME
+    check BEFORE topic extraction (round 27's own fix -- see there for why).
+
+    True when: expected_anchor is None (caller never supplied one -- no
+    check possible, treated as intact); OR the conversation's current
+    message count is still >= expected_anchor AND the message at
+    expected_anchor - 1 is assistant-role with text matching answer_text
+    (checks message.get("content") for a chat message, or
+    message.get("stage3", {}).get("response") for a council message --
+    whichever is present) AND question matches some user-role message
+    anywhere within messages[:expected_anchor] (existence, not positional
+    -- round 26 fixed a false negative under concurrent-turn interleaving).
+    """
+    if expected_anchor is None:
+        return True
+    messages = conversation.get("messages", [])
+    if len(messages) < expected_anchor or expected_anchor <= 0:
+        return False
+    anchor_message = messages[expected_anchor - 1]
+    actual_answer = anchor_message.get("content") if "content" in anchor_message else anchor_message.get("stage3", {}).get("response")
+    if anchor_message.get("role") != "assistant" or actual_answer != answer_text:
+        return False
+    return any(
+        m.get("role") == "user" and m.get("content") == question
+        for m in reversed(messages[:expected_anchor])
+    )
+
+
 class CouncilRAG:
     """
     Reasoning-based RAG ("PageIndex") system.
@@ -471,59 +502,22 @@ class CouncilRAG:
             # purge_truncated_memories runs against the history as it existed
             # THEN -- there's no entry to purge yet -- so a stale answer
             # indexed against an already-truncated history survives future
-            # purges with a low, wrong anchor. expected_anchor is the message
-            # count the caller observed immediately after persisting THIS
-            # turn; if the current count is now lower, the turn was
-            # truncated away underneath us -- skip indexing it entirely
-            # (same fail-closed instinct as the ZDR barrier just above).
+            # purges with a low, wrong anchor. Codex round 18/26 (P2):
+            # same-length replacement also needs the answer AND the
+            # question checked (not just the message count), and the
+            # question check must be existence-based, not positional, to
+            # survive concurrent-turn interleaving. Codex round 27:
+            # extracted into source_turn_intact so turn_pipeline can run
+            # the identical check BEFORE topic extraction too (that call
+            # site is the authoritative one -- this one runs under the
+            # write lock).
             current_messages = conversation.get("messages", [])
-            if expected_anchor is not None and len(current_messages) < expected_anchor:
+            if expected_anchor is not None and not source_turn_intact(conversation, expected_anchor, final_text, user_question):
                 logger.info(
-                    "[RAG] Skipping index for %s: source turn truncated (expected_anchor=%d, current=%d)",
-                    conversation_id, expected_anchor, len(current_messages),
+                    "[RAG] Skipping index for %s: source turn truncated or no longer matches (expected_anchor=%s)",
+                    conversation_id, expected_anchor,
                 )
                 return None
-            # Same-length replacement race: an edit that removes N messages
-            # and appends N new ones leaves the count unchanged but the
-            # content at the anchor position no longer matches this turn's
-            # answer. Cheap to check since the text is already in hand.
-            # Codex round 18 (P2): checking only the assistant text missed a
-            # narrower leg of the same race -- a replacement turn whose
-            # answer happens to match (a generic apology, a short answer)
-            # but whose USER PROMPT was replaced still passed, indexing the
-            # stale question under a valid-looking anchor.
-            #
-            # Codex round 26 (P2): round 18's user-prompt check assumed the
-            # paired user message always sits at expected_anchor - 2 (the
-            # [.., user, assistant] layout run_turn persists for ONE turn in
-            # isolation) -- but storage only locks each individual append,
-            # not a whole turn, so two concurrent requests against the same
-            # conversation can interleave as Q1, Q2, A2, A1. For A1,
-            # expected_anchor still correctly points at A1's own slot, but
-            # expected_anchor - 2 now points at A2's question, not Q1 --
-            # a false NEGATIVE that silently dropped a legitimate memory.
-            # Fixed: keep the assistant position+content check unchanged,
-            # but replace the positional user check with existence -- the
-            # question matches ANY user-role message within
-            # messages[:expected_anchor] (scanned backward since the match
-            # is usually recent; break on first hit). Assistant
-            # position+content plus question-exists-before-anchor is
-            # sufficient identity without the interleaving false negative.
-            if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
-                anchor_message = current_messages[expected_anchor - 1]
-                question_found = any(
-                    m.get("role") == "user" and m.get("content") == user_question
-                    for m in reversed(current_messages[:expected_anchor])
-                )
-                if (
-                    anchor_message.get("stage3", {}).get("response") != final_text
-                    or not question_found
-                ):
-                    logger.info(
-                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's Q/A",
-                        conversation_id, expected_anchor,
-                    )
-                    return None
 
             # Ensure conversation exists in store
             if conversation_id not in self.store:
@@ -610,34 +604,16 @@ class CouncilRAG:
             # Codex round 17 (P1): see index_session's identical comment --
             # with the answer delivered before indexing (round 15), an
             # edit/regenerate can truncate this conversation between
-            # persistence and this call. Skip if the source turn is gone.
+            # persistence and this call. Codex round 27: same
+            # source_turn_intact check as index_session (extracted so
+            # turn_pipeline can run it too, BEFORE topic extraction).
             current_messages = conversation.get("messages", [])
-            if expected_anchor is not None and len(current_messages) < expected_anchor:
+            if expected_anchor is not None and not source_turn_intact(conversation, expected_anchor, answer, question):
                 logger.info(
-                    "[RAG] Skipping index for %s: source turn truncated (expected_anchor=%d, current=%d)",
-                    conversation_id, expected_anchor, len(current_messages),
+                    "[RAG] Skipping index for %s: source turn truncated or no longer matches (expected_anchor=%s)",
+                    conversation_id, expected_anchor,
                 )
                 return None
-            # Same-length replacement race: see index_session's identical
-            # comment. Codex round 18 (P2)/round 26 (P2): see index_session's
-            # identical comment -- assistant position+content unchanged,
-            # user check is existence-anywhere-before-anchor (not
-            # positional), immune to concurrent-turn interleaving.
-            if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
-                anchor_message = current_messages[expected_anchor - 1]
-                question_found = any(
-                    m.get("role") == "user" and m.get("content") == question
-                    for m in reversed(current_messages[:expected_anchor])
-                )
-                if (
-                    anchor_message.get("content") != answer
-                    or not question_found
-                ):
-                    logger.info(
-                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's Q/A",
-                        conversation_id, expected_anchor,
-                    )
-                    return None
 
             if conversation_id not in self.store:
                 self.store[conversation_id] = {"folder_id": "root", "turns": []}

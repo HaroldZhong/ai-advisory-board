@@ -78,6 +78,28 @@ def _zdr_flipped_on(main, conversation_id: str) -> bool:
     return bool(conversation["metadata"].get("zdr_enabled"))
 
 
+def _source_turn_missing(main, conversation_id: str, expected_anchor: int, answer_text: str, question: str) -> bool:
+    """Codex round 27 (P2): the truncation twin of _zdr_flipped_on above --
+    after the early chat_response/stage3_complete yield, an immediate edit/
+    regenerate can truncate the just-saved turn before this call runs.
+    index_session/index_chat_turn's own anchor guard (rag.source_turn_intact,
+    round 17/18/26) blocks the STORE WRITE, but by then topic extraction has
+    already sent the deleted Q/A to the utility model -- the indexer's guard
+    runs too late to keep deleted content out of that call. Same layering as
+    the ZDR guard: this pre-check keeps deleted content out of the utility
+    call; the indexer re-verifies under its lock as the authoritative guard
+    against races in the awaits between THIS check and that write. Fail
+    closed on a raising/unreadable read, same posture as _zdr_flipped_on.
+    """
+    try:
+        conversation = main.storage.get_conversation(conversation_id)
+    except Exception:
+        logger.info("[RAG] get_conversation failed in _source_turn_missing; failing closed for %s", conversation_id)
+        return True
+    from .rag import source_turn_intact
+    return not source_turn_intact(conversation, expected_anchor, answer_text, question)
+
+
 async def run_turn(
     conversation_id: str,
     request: Any,
@@ -420,7 +442,18 @@ async def run_turn(
             # before it mutates the store, closing that race at the root
             # regardless of how many awaits happen in between.
             delta_cost = 0.0
-            if stage3_result.get("model") != "error" and not zdr_enabled and not _zdr_flipped_on(main, conversation_id):
+            if (
+                stage3_result.get("model") != "error"
+                and not zdr_enabled
+                and not _zdr_flipped_on(main, conversation_id)
+                # Codex round 27 (P2): the truncation twin of the ZDR check
+                # just above -- see _source_turn_missing's docstring. Keeps
+                # a deleted turn's content out of the topics utility call
+                # below, not just out of the eventual store write (which
+                # index_session's own guard already blocks, too late for
+                # this call).
+                and not _source_turn_missing(main, conversation_id, expected_anchor, stage3_result.get("response", ""), request.content)
+            ):
                 # Codex round 15 (P2): best-effort. stage3_complete/the
                 # completion event's answer is already committed above; a
                 # memory-indexing failure here must never turn a successful
@@ -693,7 +726,15 @@ async def run_turn(
             # not become cross-conversation memory -- mirrors the council
             # branch's stage3_result.get("model") != "error" guard above.
             delta_cost = 0.0
-            if not zdr_enabled and not response_dict.get("error") and not _zdr_flipped_on(main, conversation_id):
+            if (
+                not zdr_enabled
+                and not response_dict.get("error")
+                and not _zdr_flipped_on(main, conversation_id)
+                # Codex round 27 (P2): the truncation twin of the ZDR check
+                # just above -- see _source_turn_missing's docstring and
+                # the council branch's identical comment.
+                and not _source_turn_missing(main, conversation_id, expected_anchor, response_dict.get("content", ""), request.content)
+            ):
                 # Codex round 15 (P2): best-effort. The answer above is
                 # already delivered to the user; a memory-indexing failure
                 # (topics extraction, index_chat_turn, compression) must

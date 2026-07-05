@@ -32,7 +32,12 @@ async def test_sync_council_indexes_the_conversation_after_the_assistant_message
         "id": "conv-sync-crash",
         "messages": [
             {"role": "user", "content": "What should we do?"},
-            {"role": "assistant", "stage3": {"response": "Do the thing."}},
+            # Codex round 27: must match fake_stage3's actual response
+            # below ("Final answer") -- _source_turn_missing's pre-check
+            # now compares this fixture against the REAL stage3 result, not
+            # just a Mock-bypassed write, so a stale fixture text would
+            # (correctly) look like a replaced turn and get skipped.
+            {"role": "assistant", "stage3": {"response": "Final answer"}},
         ],
         "metadata": {},
     }
@@ -40,11 +45,13 @@ async def test_sync_council_indexes_the_conversation_after_the_assistant_message
     monkeypatch.setattr(
         main.storage,
         "get_conversation",
-        # Four reads: endpoint pre-flight, the expected_anchor read right
+        # Five reads: endpoint pre-flight, the expected_anchor read right
         # after add_assistant_message (Codex round 17), the fresh-metadata
         # ZDR check guarding the indexing block (_zdr_flipped_on, Codex
-        # round 14), and the completion-event total-cost read.
-        Mock(side_effect=[initial_conversation, indexed_conversation, indexed_conversation, indexed_conversation]),
+        # round 14), the source-turn-intact pre-check guarding the same
+        # block (_source_turn_missing, Codex round 27), and the
+        # completion-event total-cost read.
+        Mock(side_effect=[initial_conversation, indexed_conversation, indexed_conversation, indexed_conversation, indexed_conversation]),
     )
     monkeypatch.setattr(main.storage, "add_user_message", Mock())
     monkeypatch.setattr(main.storage, "update_conversation_title", Mock())
