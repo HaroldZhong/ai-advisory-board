@@ -1103,8 +1103,14 @@ Guidance on context labels:
     
     if response is None:
         logger.error(f"[CHAIRMAN] ERROR: query_model returned None")
+        # Codex round 8: this fabricated apology must never be indexed as
+        # memory, same as the except-handler fallback in turn_pipeline's chat
+        # branch (round 2) -- the "error" flag is turn_pipeline's existing
+        # `not response_dict.get("error")` guard's signal, so no pipeline
+        # change is needed, just flagging this fallback the same way.
         return {
-            "content": "I apologize, but I am unable to respond at this moment."
+            "content": "I apologize, but I am unable to respond at this moment.",
+            "error": True,
         }
         
     content = response.get("content", "")

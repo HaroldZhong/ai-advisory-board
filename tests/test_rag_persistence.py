@@ -838,6 +838,64 @@ async def test_chat_turn_where_chairman_raises_is_not_indexed(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
+async def test_chat_turn_where_query_model_returns_none_is_not_indexed(monkeypatch, tmp_path):
+    """Codex round 8: the OTHER leg of the round-2 fix. When query_model
+    returns None (API failure/timeout) INSIDE chat_with_chairman itself
+    (not via chat_with_chairman raising), council.chat_with_chairman builds
+    its own fabricated apology dict -- previously WITHOUT the "error" flag,
+    so turn_pipeline's `not response_dict.get("error")` guard passed and the
+    apology got indexed as memory. Patches at the real seam (council's
+    query_model import, not chat_with_chairman itself) so the REAL
+    chat_with_chairman fallback branch runs and is what's under test."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-chairman-query-model-none"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id)
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def query_model_returns_none(*args, **kwargs):
+        return None
+
+    index_calls = []
+
+    async def spy_index_chat_turn(*args, **kwargs):
+        index_calls.append(args)
+        return None
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.query_model", query_model_returns_none)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=spy_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    # Apology content still reaches the user (unchanged behavior)...
+    assert result["type"] == "chat"
+    assert "I apologize" in result["content"]
+    # ...but the fallback must never become cross-conversation memory.
+    assert index_calls == []
+
+
+@pytest.mark.asyncio
 async def test_summary_compression_usage_bills_totals_but_not_persisted_running_cost(monkeypatch, tmp_path):
     """Codex P2: summary-compression usage is discovered AFTER turn_cost is
     computed and the message is persisted (persistence-first: indexing must
