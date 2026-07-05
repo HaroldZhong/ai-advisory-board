@@ -351,6 +351,14 @@ async def run_turn(
                 council_metadata,  # For analytics tracking
                 running_cost=turn_cost,
             )
+            # Codex round 17 (P1): the message count INCLUDING the
+            # user+assistant messages just persisted above, read fresh right
+            # now -- before the topics-extraction/index_session awaits below
+            # that an edit/regenerate could race against. Passed through to
+            # index_session as expected_anchor so it can detect (and skip)
+            # indexing a turn whose source messages got truncated away in
+            # that window, instead of stamping a wrong/stale anchor.
+            expected_anchor = len(main.storage.get_conversation(conversation_id)["messages"])
 
             # Codex round 10 (P2): record the BASE cost immediately, right
             # after the message that earned it is persisted -- synchronous,
@@ -416,6 +424,7 @@ async def run_turn(
                         stage3_result,
                         topics,
                         quality_metrics,
+                        expected_anchor=expected_anchor,
                     )
                     if summary_usage:
                         delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
@@ -425,8 +434,13 @@ async def run_turn(
                     main.rag_system.refresh_hybrid_index()
                     logger.info("[PHASE1] Hybrid index refreshed")
                 except Exception:
+                    # Codex round 17 (P2): do NOT zero delta_cost here --
+                    # topics_usage above may have already landed (a real,
+                    # already-spent utility-model call) before index_session
+                    # raised. Zeroing it discarded real spend from the
+                    # billed total. Keep whatever accrued before the
+                    # failure; only what never ran contributes nothing.
                     logger.exception("[PHASE1] memory indexing failed; answer already delivered")
-                    delta_cost = 0.0
 
             # Codex round 10 (P2): topics/compression usage discovered during
             # indexing is billed as a SECOND, incremental call for this same
@@ -573,6 +587,12 @@ async def run_turn(
                 running_cost=turn_cost,
                 reasoning=response_dict.get("reasoning"),
             )
+            # Codex round 17 (P1): see the council branch's identical
+            # comment -- the message count right after THIS turn's own
+            # persistence, before any later await can race an edit/
+            # regenerate against it. Passed to index_chat_turn as
+            # expected_anchor.
+            expected_anchor = len(main.storage.get_conversation(conversation_id)["messages"])
 
             # Codex round 10 (P2): record the BASE cost immediately, right
             # after the message that earned it is persisted -- synchronous,
@@ -638,13 +658,19 @@ async def run_turn(
                         request.content,
                         response_dict.get("content", ""),
                         chat_topics,
+                        expected_anchor=expected_anchor,
                     )
                     if summary_usage:
                         delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                     main.rag_system.refresh_hybrid_index()
                 except Exception:
+                    # Codex round 17 (P2): do NOT zero delta_cost here --
+                    # chat_topics_usage above may have already landed (a
+                    # real, already-spent utility-model call) before
+                    # index_chat_turn raised. Keep whatever accrued before
+                    # the failure; see the council branch's identical
+                    # comment.
                     logger.exception("[CHAT] memory indexing failed; answer already delivered")
-                    delta_cost = 0.0
 
             # Codex round 10 (P2): same incremental delta-billing as the
             # council branch -- on top of the base cost already recorded

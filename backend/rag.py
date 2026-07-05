@@ -410,6 +410,7 @@ class CouncilRAG:
         stage3_result: Dict[str, Any],
         topics: List[str],
         quality_metrics: Dict[str, Dict[str, float]],
+        expected_anchor: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Index one council session as chronological memory blocks.
@@ -454,6 +455,37 @@ class CouncilRAG:
                 logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
                 return None
 
+            # Codex round 17 (P1): with the answer delivered before indexing
+            # (round 15), an edit/regenerate can truncate this conversation's
+            # messages in the window between persistence and this call.
+            # purge_truncated_memories runs against the history as it existed
+            # THEN -- there's no entry to purge yet -- so a stale answer
+            # indexed against an already-truncated history survives future
+            # purges with a low, wrong anchor. expected_anchor is the message
+            # count the caller observed immediately after persisting THIS
+            # turn; if the current count is now lower, the turn was
+            # truncated away underneath us -- skip indexing it entirely
+            # (same fail-closed instinct as the ZDR barrier just above).
+            current_messages = conversation.get("messages", [])
+            if expected_anchor is not None and len(current_messages) < expected_anchor:
+                logger.info(
+                    "[RAG] Skipping index for %s: source turn truncated (expected_anchor=%d, current=%d)",
+                    conversation_id, expected_anchor, len(current_messages),
+                )
+                return None
+            # Same-length replacement race: an edit that removes N messages
+            # and appends N new ones leaves the count unchanged but the
+            # content at the anchor position no longer matches this turn's
+            # answer. Cheap to check since the text is already in hand.
+            if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
+                anchor_message = current_messages[expected_anchor - 1]
+                if anchor_message.get("stage3", {}).get("response") != final_text:
+                    logger.info(
+                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's answer",
+                        conversation_id, expected_anchor,
+                    )
+                    return None
+
             # Ensure conversation exists in store
             if conversation_id not in self.store:
                 self.store[conversation_id] = {
@@ -465,15 +497,15 @@ class CouncilRAG:
             turn_index = max((entry.get("turn", -1) for entry in turns), default=-1) + 1
 
             # Codex round 13: "message_anchor" ties this memory entry to the
-            # conversation's message count AT INDEXING TIME (this turn's
-            # user+assistant messages are already persisted by the time this
-            # runs -- see turn_pipeline.py). Reused from the ZDR barrier's own
-            # get_conversation read just above: the freshest possible count,
-            # taken synchronously under this same write lock, so it can't go
-            # stale between the check and the write. purge_truncated_memories
-            # uses this to drop entries whose source messages an edit/
-            # regenerate truncated away.
-            message_anchor = len(conversation.get("messages", []))
+            # conversation's message count AT INDEXING TIME. Codex round 17:
+            # use the caller-supplied expected_anchor when given -- it was
+            # read right after THIS turn's own persistence, before any of the
+            # awaits above (topics extraction) that could race with a
+            # concurrent edit/regenerate. Falling back to a fresh len() here
+            # would re-read the CURRENT (already-truncation-checked-above)
+            # count, which is equivalent when nothing raced, but
+            # expected_anchor is the more precise, race-free source of truth.
+            message_anchor = expected_anchor if expected_anchor is not None else len(current_messages)
 
             # Only index the user's question and the final synthesized answer to save context tokens for reasoning retrieve
             turn_memory = {
@@ -495,6 +527,7 @@ class CouncilRAG:
         question: str,
         answer: str,
         topics: List[str],
+        expected_anchor: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Index one chat turn into cross-conversation memory. Chat turns
@@ -535,13 +568,37 @@ class CouncilRAG:
                 logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
                 return None
 
+            # Codex round 17 (P1): see index_session's identical comment --
+            # with the answer delivered before indexing (round 15), an
+            # edit/regenerate can truncate this conversation between
+            # persistence and this call. Skip if the source turn is gone.
+            current_messages = conversation.get("messages", [])
+            if expected_anchor is not None and len(current_messages) < expected_anchor:
+                logger.info(
+                    "[RAG] Skipping index for %s: source turn truncated (expected_anchor=%d, current=%d)",
+                    conversation_id, expected_anchor, len(current_messages),
+                )
+                return None
+            # Same-length replacement race: see index_session's identical
+            # comment.
+            if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
+                anchor_message = current_messages[expected_anchor - 1]
+                if anchor_message.get("content") != answer:
+                    logger.info(
+                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's answer",
+                        conversation_id, expected_anchor,
+                    )
+                    return None
+
             if conversation_id not in self.store:
                 self.store[conversation_id] = {"folder_id": "root", "turns": []}
 
             turns = self.store[conversation_id]["turns"]
             turn_index = max((entry.get("turn", -1) for entry in turns), default=-1) + 1
-            # Codex round 13: see index_session's identical comment.
-            message_anchor = len(conversation.get("messages", []))
+            # Codex round 17: use the caller-supplied expected_anchor (read
+            # right after this turn's own persistence, race-free) instead of
+            # re-reading len() here -- see index_session's identical comment.
+            message_anchor = expected_anchor if expected_anchor is not None else len(current_messages)
 
             turn_memory = {
                 "turn": turn_index,
@@ -702,6 +759,22 @@ class CouncilRAG:
         turns = self.store[conversation_id]["turns"]
         summary_positions = [i for i, entry in enumerate(turns) if entry.get("kind") == "summary"]
         if len(summary_positions) <= MAX_SUMMARY_ENTRIES:
+            return None
+
+        # Codex round 17 (P1): this method is reached via
+        # _maybe_compress_oldest_half, which is itself called AFTER that
+        # method's own compression call already awaited once. A ZDR flip
+        # landing in that window isn't covered by any earlier check in this
+        # call chain -- re-read metadata fresh, immediately before building
+        # THIS method's own utility-model prompt, and fail closed (skip) on
+        # an unreadable/raising read, same convention as _zdr_flipped_on.
+        try:
+            conversation = get_conversation(conversation_id)
+            zdr_now = not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or bool(conversation["metadata"].get("zdr_enabled"))
+        except Exception:
+            zdr_now = True
+        if zdr_now:
+            logger.info("[RAG] Skipping summary merge for %s (ZDR or unreadable)", conversation_id)
             return None
 
         summaries = [turns[i] for i in summary_positions]

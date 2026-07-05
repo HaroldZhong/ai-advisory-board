@@ -2576,3 +2576,250 @@ async def test_zdr_flipped_on_guard_fails_closed_when_get_conversation_raises(mo
     monkeypatch.setattr(main.storage, "get_conversation", real_get_conversation)
     conversation = main.storage.get_conversation(conversation_id)
     assert conversation["messages"][-1]["content"] == "Budget-aware response"
+
+
+# --- Codex round 17 on PR #80: verify the source turn before indexing it ---
+
+
+@pytest.mark.asyncio
+async def test_index_chat_turn_skips_when_expected_anchor_exceeds_current_message_count(tmp_path, monkeypatch):
+    """Codex P1: with the answer delivered before indexing (round 15), an
+    edit/regenerate can truncate a conversation's messages in the window
+    between persistence and index_chat_turn. Previously index_chat_turn
+    stamped its anchor from len(current messages) -- the ALREADY-TRUNCATED
+    history -- so the stale answer got indexed with a low anchor and
+    survived future purges. Calling index_chat_turn directly with
+    expected_anchor greater than the current message count (simulating that
+    race) must skip indexing entirely and leave the store untouched. Fails
+    pre-fix: the old code ignored expected_anchor and indexed anyway."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.add_user_message("conv-a", "Question")
+    storage.add_chat_message("conv-a", "Answer")  # current message count is 2
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    usage = await rag.index_chat_turn(
+        "conv-a", "Question", "Answer", ["topic"], expected_anchor=5,
+    )
+
+    assert usage is None
+    assert rag.store == {}  # never even created the conversation's entry
+
+
+@pytest.mark.asyncio
+async def test_index_session_skips_when_expected_anchor_exceeds_current_message_count(tmp_path, monkeypatch):
+    """Codex P1: council twin of the chat test above -- stage3_complete is
+    yielded before index_session runs (already true pre-round-15), so the
+    same truncation race applies. expected_anchor greater than the current
+    message count must skip indexing."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.add_user_message("conv-a", "What should we do?")
+    storage.add_assistant_message(
+        "conv-a", [], [], {"model": "model-a", "response": "Do the thing."},
+    )  # current message count is 2
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    usage = await rag.index_session(
+        "conv-a",
+        "What should we do?",
+        [],
+        [],
+        {"model": "model-a", "response": "Do the thing."},
+        ["topic"],
+        {},
+        expected_anchor=5,
+    )
+
+    assert usage is None
+    assert rag.store == {}
+
+
+@pytest.mark.asyncio
+async def test_index_chat_turn_skips_on_same_length_replacement_race(tmp_path, monkeypatch):
+    """Codex P1: a same-length replacement (edit that removes N messages and
+    appends N new ones) leaves the message count unchanged but the content
+    at the anchor position no longer matches this turn's answer. Simulate by
+    passing expected_anchor pointing at a message whose content differs from
+    the answer being indexed."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.add_user_message("conv-a", "Question")
+    storage.add_chat_message("conv-a", "A DIFFERENT ANSWER NOW AT THIS POSITION")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    usage = await rag.index_chat_turn(
+        "conv-a", "Question", "Stale answer being indexed", ["topic"], expected_anchor=2,
+    )
+
+    assert usage is None
+    assert rag.store == {}
+
+
+@pytest.mark.asyncio
+async def test_maybe_merge_summaries_rechecks_zdr_before_calling_query_model(tmp_path, monkeypatch):
+    """Codex P1: _maybe_merge_summaries issues its own utility-model call
+    after _maybe_compress_oldest_half's compression await, without
+    re-reading metadata -- a ZDR flip landing in that window used to leak
+    this conversation's summaries into the merge prompt. Seed enough
+    summaries to trigger a merge, flip ZDR on, and assert query_model is
+    NEVER called (recorded via a call-counting fake) -- the merge must skip
+    before building its prompt. Fails pre-fix: the old code went straight to
+    building merge_text/prompt with no fresh ZDR check."""
+    from backend.rag import MAX_SUMMARY_ENTRIES
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    turns = [
+        {
+            "kind": "summary",
+            "turn": i * 10,
+            "topics": [f"topic{i}"],
+            "summary": f"Summary number {i}.",
+            "turns_compressed": 2,
+        }
+        for i in range(MAX_SUMMARY_ENTRIES + 1)
+    ]
+    rag.store["conv-1"] = {"folder_id": "root", "turns": list(turns)}
+
+    # Flip ZDR on AFTER the summaries were written (simulating a mid-turn
+    # flip that happened during the compression call preceding this merge).
+    storage.update_conversation_metadata("conv-1", {"zdr_enabled": True})
+
+    calls = []
+
+    async def spy_query_model(*args, **kwargs):
+        calls.append(args)
+        return {"content": "merged", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", spy_query_model)
+
+    merge_usage = await rag._maybe_merge_summaries("conv-1")
+
+    assert merge_usage is None
+    assert calls == []  # query_model never called
+    after = rag.store["conv-1"]["turns"]
+    assert after == turns  # untouched
+
+
+@pytest.mark.asyncio
+async def test_council_indexing_partial_delta_survives_a_later_indexing_failure(monkeypatch, tmp_path):
+    """Codex P2: the best-effort except used to reset delta_cost to 0.0,
+    discarding topics_usage that was ALREADY SPENT before index_session
+    raised. That usage is real, already-billed spend -- zeroing it dropped
+    it from the turn's total_cost. Make extract_topics_with_usage return
+    real usage, then make index_session raise; assert complete's turn_cost
+    still includes the topics delta on top of the base (all-empty-usage)
+    cost. Fails on current code (pre-fix), which zeroes the delta to 0."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-council-partial-delta"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(conversation_id)
+
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {}
+
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "model-a", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "model-a"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        return {"model": "model-a", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    topics_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    async def extract_topics_then_raise(*args, **kwargs):
+        return ["topic"], topics_usage
+
+    async def raising_index_session(*args, **kwargs):
+        raise RuntimeError("simulated indexing failure after topics already spent")
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", extract_topics_then_raise)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            index_session=raising_index_session,
+            refresh_hybrid_index=lambda *a, **k: None,
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="What should we do?", mode="council"),
+    )
+
+    assert result["type"] == "council"
+    # UTILITY_MODEL (google/gemini-2.5-flash) pricing: input=$0.3/M,
+    # output=$2.5/M. Base cost is 0 (all-empty stage usages); the topics
+    # delta must still be present.
+    topics_cost = (1_000_000 / 1_000_000) * 0.3 + (1_000_000 / 1_000_000) * 2.5
+    assert result["turn_cost"] == pytest.approx(topics_cost)
+
+
+@pytest.mark.asyncio
+async def test_chat_indexing_partial_delta_survives_a_later_indexing_failure(monkeypatch, tmp_path):
+    """Codex P2: chat-branch twin of the council test above. topics usage is
+    already spent before index_chat_turn raises; the except must not zero
+    the accrued delta_cost. Fails on current code (pre-fix), which zeroes
+    it, leaving turn_cost at the base cost alone."""
+    conversation_id = "conv-chat-partial-delta"
+    topics_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    async def extract_topics_then_raise(*args, **kwargs):
+        return ["topic"], topics_usage
+
+    async def raising_index_chat_turn(*args, **kwargs):
+        raise RuntimeError("simulated indexing failure after topics already spent")
+
+    main = _chat_turn_setup(
+        monkeypatch, tmp_path, conversation_id,
+        index_chat_turn=raising_index_chat_turn,
+        extract_topics_with_usage=extract_topics_then_raise,
+    )
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": {}}  # base cost 0
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["type"] == "chat"
+    # UTILITY_MODEL pricing, same as the council twin above.
+    topics_cost = (1_000_000 / 1_000_000) * 0.3 + (1_000_000 / 1_000_000) * 2.5
+    assert result["turn_cost"] == pytest.approx(topics_cost)
