@@ -360,7 +360,7 @@ async def test_reasoning_rag_passes_zdr_to_openrouter(monkeypatch, tmp_path):
         "current": {"folder_id": "root", "turns": []},
         "other": {
             "folder_id": "root",
-            "turns": [{"turn": 0, "memory": "Useful prior memory"}],
+            "turns": [{"turn": 0, "memory": "Useful prior memory", "message_anchor": 1000}],
         },
     }
 
@@ -370,8 +370,9 @@ async def test_reasoning_rag_passes_zdr_to_openrouter(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
     # Codex round 10 read barrier: fake a valid non-ZDR source conversation
-    # for "other" (this test isn't about the barrier itself).
-    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}})
+    # for "other" (this test isn't about the barrier itself). Codex round 26:
+    # give it enough messages to satisfy the entry's message_anchor above.
+    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}, "messages": [{}] * 1000})
 
     context, usage = await rag.retrieve_async("current question", "current", zdr_enabled=True)
 
@@ -803,7 +804,10 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     # to prove retrieval still works for legitimate cross-conversation memory.
     real_rag.store["conv-other"] = {
         "folder_id": "root",
-        "turns": [{"turn": 0, "memory": "ordinary memory should still retrieve"}],
+        # message_anchor: 0 -- conv-other is a freshly created (0-message)
+        # real conversation; round 26's anchor check needs this to satisfy
+        # its CURRENT message count.
+        "turns": [{"turn": 0, "memory": "ordinary memory should still retrieve", "message_anchor": 0}],
     }
     real_rag._save_store()
     monkeypatch.setattr(main, "rag_system", real_rag)

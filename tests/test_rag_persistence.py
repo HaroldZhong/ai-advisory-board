@@ -128,9 +128,21 @@ async def _retrieve_and_capture_memory_section(rag, monkeypatch, max_tokens, que
     # source conversation's CURRENT metadata via get_conversation before
     # including its memories. These pure topic-filter/budget-cap tests seed
     # rag.store directly without real conversation files, so fake a valid
-    # non-ZDR conversation for any id -- the barrier itself is exercised
-    # separately by test_retrieve_read_barrier_excludes_zdr_source_conversation.
-    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}})
+    # non-ZDR conversation for any id, with enough messages that any
+    # message_anchor these fixtures use (round 26's read-side staleness
+    # filter) is satisfied -- the barrier itself is exercised separately by
+    # test_retrieve_read_barrier_excludes_zdr_source_conversation. Callers
+    # of this helper aren't testing anchor semantics, so their fixture
+    # entries either carry a generous message_anchor or, if they omit it
+    # entirely, round 26 now fails them closed (missing anchor -> skip) --
+    # every session/chat turn fixture below sets one explicitly for that
+    # reason.
+    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}, "messages": [{}] * 1000})
+    # Codex round 26: document entries (turn == -1) now also need their
+    # attachment to exist. Fake it present for any id -- attachment-
+    # existence semantics are exercised separately by the round-26 document
+    # tests below.
+    monkeypatch.setattr(rag_module, "get_attachment", lambda attachment_id: object())
 
     await rag.retrieve_async(query, "current", max_tokens=max_tokens)
 
@@ -149,9 +161,9 @@ async def test_retrieve_honors_max_tokens_budget_on_block_boundaries(tmp_path, m
         "other": {
             "folder_id": "root",
             "turns": [
-                {"turn": 0, "memory": "oldest " + "a" * 100},
-                {"turn": 1, "memory": "middle " + "b" * 100},
-                {"turn": 2, "memory": "newest " + "c" * 100},
+                {"turn": 0, "memory": "oldest " + "a" * 100, "message_anchor": 1000},
+                {"turn": 1, "memory": "middle " + "b" * 100, "message_anchor": 1000},
+                {"turn": 2, "memory": "newest " + "c" * 100, "message_anchor": 1000},
             ],
         },
     }
@@ -183,7 +195,7 @@ async def test_retrieve_keeps_header_when_single_block_exceeds_cap(tmp_path, mon
         "current": {"folder_id": "root", "turns": []},
         "other": {
             "folder_id": "root",
-            "turns": [{"turn": 0, "memory": big_memory}],
+            "turns": [{"turn": 0, "memory": big_memory, "message_anchor": 1000}],
         },
     }
 
@@ -207,7 +219,7 @@ async def test_retrieve_drops_tail_entirely_when_budget_leaves_no_room(tmp_path,
         "current": {"folder_id": "root", "turns": []},
         "other": {
             "folder_id": "root",
-            "turns": [{"turn": 0, "memory": big_memory}],
+            "turns": [{"turn": 0, "memory": big_memory, "message_anchor": 1000}],
         },
     }
 
@@ -232,7 +244,7 @@ async def test_retrieve_defaults_to_legacy_60k_cap_when_max_tokens_none(tmp_path
         "current": {"folder_id": "root", "turns": []},
         "other": {
             "folder_id": "root",
-            "turns": [{"turn": 0, "memory": big_memory}],
+            "turns": [{"turn": 0, "memory": big_memory, "message_anchor": 1000}],
         },
     }
 
@@ -274,8 +286,8 @@ async def test_retrieve_filters_to_overlapping_turns_only(tmp_path, monkeypatch)
         "other": {
             "folder_id": "root",
             "turns": [
-                {"turn": 0, "topics": ["cooking", "recipes"], "memory": "cooking memory"},
-                {"turn": 1, "topics": ["budget", "finance"], "memory": "budget memory"},
+                {"turn": 0, "topics": ["cooking", "recipes"], "memory": "cooking memory", "message_anchor": 1000},
+                {"turn": 1, "topics": ["budget", "finance"], "memory": "budget memory", "message_anchor": 1000},
             ],
         },
     }
@@ -301,8 +313,8 @@ async def test_retrieve_falls_back_to_all_turns_when_nothing_overlaps(tmp_path, 
         "other": {
             "folder_id": "root",
             "turns": [
-                {"turn": 0, "topics": ["cooking", "recipes"], "memory": "cooking memory"},
-                {"turn": 1, "topics": ["budget", "finance"], "memory": "budget memory"},
+                {"turn": 0, "topics": ["cooking", "recipes"], "memory": "cooking memory", "message_anchor": 1000},
+                {"turn": 1, "topics": ["budget", "finance"], "memory": "budget memory", "message_anchor": 1000},
             ],
         },
     }
@@ -328,9 +340,9 @@ async def test_retrieve_filter_composes_with_block_boundary_budget_cap(tmp_path,
         "other": {
             "folder_id": "root",
             "turns": [
-                {"turn": 0, "topics": ["budget"], "memory": "oldest " + "a" * 100},
-                {"turn": 1, "topics": ["budget"], "memory": "middle " + "b" * 100},
-                {"turn": 2, "topics": ["cooking"], "memory": "newest " + "c" * 100},
+                {"turn": 0, "topics": ["budget"], "memory": "oldest " + "a" * 100, "message_anchor": 1000},
+                {"turn": 1, "topics": ["budget"], "memory": "middle " + "b" * 100, "message_anchor": 1000},
+                {"turn": 2, "topics": ["cooking"], "memory": "newest " + "c" * 100, "message_anchor": 1000},
             ],
         },
     }
@@ -365,7 +377,7 @@ async def test_retrieve_always_includes_document_memories_regardless_of_topic_fi
         "other": {
             "folder_id": "root",
             "turns": [
-                {"turn": 0, "topics": ["budget"], "memory": "budget memory"},
+                {"turn": 0, "topics": ["budget"], "memory": "budget memory", "message_anchor": 1000},
                 {
                     "turn": -1,
                     "topics": ["document:quarterly_report.pdf"],
@@ -434,7 +446,7 @@ async def test_retrieve_preserves_original_order_so_cap_keeps_newer_matching_tur
                     "topics": ["document:old_notes.txt"],
                     "memory": "[Uploaded Document: old_notes.txt]\n" + "d" * 100,
                 },
-                {"turn": 0, "topics": ["budget"], "memory": "newer budget turn " + "t" * 100},
+                {"turn": 0, "topics": ["budget"], "memory": "newer budget turn " + "t" * 100, "message_anchor": 1000},
             ],
         },
     }
@@ -461,8 +473,8 @@ async def test_retrieve_keeps_topicless_turns_eligible_alongside_a_matching_turn
         "other": {
             "folder_id": "root",
             "turns": [
-                {"turn": 0, "topics": [], "memory": "topicless memory"},
-                {"turn": 1, "topics": ["budget"], "memory": "budget memory"},
+                {"turn": 0, "topics": [], "memory": "topicless memory", "message_anchor": 1000},
+                {"turn": 1, "topics": ["budget"], "memory": "budget memory", "message_anchor": 1000},
             ],
         },
     }
@@ -777,6 +789,7 @@ async def test_summary_tier_renders_as_a_retrieval_block_with_header(tmp_path, m
                     "topics": ["budget"],
                     "summary": "Summary of 6 earlier turns about budget.",
                     "turns_compressed": 6,
+                    "message_anchor": 1000,
                 },
             ],
         },
@@ -1642,11 +1655,15 @@ async def test_retrieve_read_barrier_excludes_zdr_source_conversation(tmp_path, 
     rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
     rag.store["conv-a"] = {
         "folder_id": "root",
-        "turns": [{"turn": 0, "topics": [], "memory": "SECRET_A_CONTENT should not leak"}],
+        "turns": [{"turn": 0, "topics": [], "memory": "SECRET_A_CONTENT should not leak", "message_anchor": 0}],
     }
     rag.store["conv-c"] = {
         "folder_id": "root",
-        "turns": [{"turn": 0, "topics": [], "memory": "ordinary conv-c memory should still retrieve"}],
+        # message_anchor: 0 -- conv-c is a freshly created (0-message) real
+        # conversation; round 26's anchor check compares against its
+        # CURRENT message count, so this must satisfy that, not be about
+        # the ZDR barrier this test targets.
+        "turns": [{"turn": 0, "topics": [], "memory": "ordinary conv-c memory should still retrieve", "message_anchor": 0}],
     }
 
     # Simulate the pending-purge window: metadata already flipped to ZDR
@@ -2179,11 +2196,14 @@ async def test_retrieve_read_barrier_skips_source_conversation_whose_get_convers
     rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
     rag.store["conv-bad"] = {
         "folder_id": "root",
-        "turns": [{"turn": 0, "topics": [], "memory": "memory behind a raising read"}],
+        "turns": [{"turn": 0, "topics": [], "memory": "memory behind a raising read", "message_anchor": 0}],
     }
     rag.store["conv-good"] = {
         "folder_id": "root",
-        "turns": [{"turn": 0, "topics": [], "memory": "ordinary conv-good memory should still retrieve"}],
+        # message_anchor: 0 -- conv-good is a freshly created (0-message)
+        # real conversation; round 26's anchor check needs this to satisfy
+        # its CURRENT message count, unrelated to what this test targets.
+        "turns": [{"turn": 0, "topics": [], "memory": "ordinary conv-good memory should still retrieve", "message_anchor": 0}],
     }
 
     captured_kwargs = {}
@@ -2203,6 +2223,134 @@ async def test_retrieve_read_barrier_skips_source_conversation_whose_get_convers
 
     assert "ordinary conv-good memory should still retrieve" in memory_section
     assert "memory behind a raising read" not in memory_section
+
+
+# --- Codex round 26 on PR #80: hide stale memories while a purge is queued ---
+
+
+@pytest.mark.asyncio
+async def test_retrieve_excludes_entries_whose_source_messages_were_truncated(tmp_path, monkeypatch):
+    """Codex round 26 P2: purge_truncated_memories can be QUEUED behind
+    another writer's write lock (e.g. an in-flight compression) for as long
+    as that writer's LLM call takes. retrieve_with_stats_async takes no
+    lock and, until now, never re-checked an entry's message_anchor against
+    the source conversation's CURRENT message count -- so another
+    conversation could still retrieve an edited-away turn for that entire
+    wait window, even though the purge (once it finally runs) would drop
+    it. Simulates the queued-purge window directly: truncate the source
+    conversation's messages via storage (bypassing purge_truncated_memories
+    entirely, as if it were still waiting on the lock), then retrieve for
+    another conversation and assert the over-anchor entry is excluded.
+    Fails pre-fix: retrieval has no anchor check at all, so the stale entry
+    leaks through."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.create_conversation("conv-current")
+    storage.add_user_message("conv-a", "First question")
+    storage.add_chat_message("conv-a", "First answer")
+    storage.add_user_message("conv-a", "Second question")
+    storage.add_chat_message("conv-a", "SECOND_ANSWER_EDITED_AWAY")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    rag.store["conv-a"] = {
+        "folder_id": "root",
+        "turns": [
+            {"turn": 0, "topics": [], "memory": "Q: First question\nA: First answer", "message_anchor": 2},
+            {"turn": 1, "topics": [], "memory": "Q: Second question\nA: SECOND_ANSWER_EDITED_AWAY", "message_anchor": 4},
+        ],
+    }
+
+    # Simulate the queued-purge window: messages already truncated (as
+    # storage.truncate_messages would do synchronously, right before the
+    # purge call) but purge_truncated_memories hasn't run yet (as if still
+    # waiting on another writer's write lock).
+    storage.truncate_messages("conv-a", 2)
+    assert len(rag.store["conv-a"]["turns"]) == 2  # the store itself is untouched -- only the read filter can catch this
+
+    captured_kwargs = {}
+
+    async def fake_query_model(*args, **kwargs):
+        captured_kwargs["messages"] = args[1]
+        return {"content": "irrelevant"}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    await rag.retrieve_async("what was the second answer", "conv-current", max_tokens=None)
+
+    prompt = captured_kwargs["messages"][0]["content"]
+    memory_section = prompt.split("USER MEMORY LOGS:\n", 1)[1]
+
+    assert "SECOND_ANSWER_EDITED_AWAY" not in memory_section
+    assert "First answer" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_retrieve_excludes_document_entry_whose_attachment_was_deleted(tmp_path, monkeypatch):
+    """Codex round 26 P2: purge_document_memories can likewise be QUEUED
+    behind another writer's write lock for the source conversation.
+    DELETE /api/attachments/{id} removes the attachment record and then
+    calls that purge -- but retrieval never took this lock and, until now,
+    never checked whether a document entry's attachment_id still exists,
+    so another conversation could still send the deleted attachment's
+    extracted text to the PageIndex LLM for that whole wait window.
+    Simulates the window directly: delete the attachment record (bypassing
+    purge_document_memories), then retrieve for another conversation and
+    assert the document entry is excluded. Fails pre-fix: document entries
+    are always eligible with no existence check, so the stale entry leaks
+    through."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.create_conversation("conv-current")
+
+    attachment_storage = import_module_with_api_key(monkeypatch, "backend.attachment_storage")
+    monkeypatch.setattr(attachment_storage, "ATTACHMENTS_DIR", str(tmp_path / "attachments"))
+    monkeypatch.setattr(attachment_storage, "ATTACHMENTS_META_DIR", str(tmp_path / "attachments" / "meta"))
+    monkeypatch.setattr(attachment_storage, "ATTACHMENTS_RAW_DIR", str(tmp_path / "attachments" / "raw"))
+    monkeypatch.setattr(attachment_storage, "ATTACHMENTS_TEXT_DIR", str(tmp_path / "attachments" / "text"))
+    monkeypatch.setattr(attachment_storage, "CACHE_INDEX_PATH", str(tmp_path / "attachments" / "cache_index.json"))
+    monkeypatch.setattr(rag_module, "get_attachment", attachment_storage.get_attachment)
+
+    attachment = attachment_storage.create_attachment(b"deleted file contents", "deleted.txt", "text/plain")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    rag.store["conv-a"] = {
+        "folder_id": "root",
+        "turns": [
+            {
+                "turn": -1,
+                "attachment_id": attachment.attachment_id,
+                "topics": ["document:deleted.txt"],
+                "memory": "[Uploaded Document: deleted.txt]\nDELETED_DOCUMENT_BODY_TEXT",
+            },
+        ],
+    }
+
+    # Simulate the queued-purge window: the attachment record already
+    # deleted (as DELETE /api/attachments/{id} would do synchronously) but
+    # purge_document_memories hasn't run yet.
+    attachment_storage.delete_attachment(attachment.attachment_id, force=True)
+    assert attachment_storage.get_attachment(attachment.attachment_id) is None
+    assert len(rag.store["conv-a"]["turns"]) == 1  # the store itself is untouched -- only the read filter can catch this
+
+    captured_kwargs = {}
+
+    async def fake_query_model(*args, **kwargs):
+        captured_kwargs["messages"] = args[1]
+        return {"content": "irrelevant"}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    result = await rag.retrieve_async("what was in the deleted document", "conv-current", max_tokens=None)
+
+    # No OTHER source has any memory, so with the document entry correctly
+    # excluded, retrieval has nothing left to build a prompt from at all --
+    # it short-circuits before ever calling query_model.
+    assert result[0] == ""
+    assert "messages" not in captured_kwargs
 
 
 @pytest.mark.asyncio
@@ -3091,6 +3239,44 @@ async def test_index_session_skips_when_only_the_user_prompt_was_replaced(tmp_pa
 
     assert usage is None
     assert rag.store == {}
+
+
+@pytest.mark.asyncio
+async def test_index_chat_turn_indexes_under_interleaved_concurrent_persistence(tmp_path, monkeypatch):
+    """Codex round 26 P2: round 18's user-prompt check assumed the paired
+    user message always sits at expected_anchor - 2, true only for ONE
+    turn's isolated [.., user, assistant] layout. But storage only locks
+    each individual message append (ConversationLock.get_lock), not a whole
+    turn, so two concurrent requests against the SAME conversation can
+    interleave: Q1, Q2, A2, A1 (both users' messages land before either
+    assistant reply). For A1, expected_anchor still correctly points at A1
+    (anchor - 1), but anchor - 2 now points at Q2, not Q1 -- round 18's
+    positional check would compare Q1's text against Q2's message and
+    false-NEGATIVE, silently dropping a legitimate memory for a completely
+    successful turn. Fixed: the user check is now existence-anywhere-
+    before-anchor (scanned backward), not positional. Fails pre-fix: A1's
+    index_chat_turn call returns None (skipped) even though nothing was
+    actually replaced."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+
+    # Interleaved layout: Q1, Q2, A2, A1 (indices 0-3).
+    storage.add_user_message("conv-a", "Q1")
+    storage.add_user_message("conv-a", "Q2")
+    storage.add_chat_message("conv-a", "A2")
+    storage.add_chat_message("conv-a", "A1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    # A1's own expected_anchor is 4 (its own slot, index 3, is anchor - 1).
+    usage = await rag.index_chat_turn("conv-a", "Q1", "A1", ["topic"], expected_anchor=4)
+
+    assert usage is None  # no compression triggered, but NOT skipped
+    turns = rag.store["conv-a"]["turns"]
+    assert len(turns) == 1
+    assert turns[0]["memory"] == "Q: Q1\nA: A1"
 
 
 @pytest.mark.asyncio

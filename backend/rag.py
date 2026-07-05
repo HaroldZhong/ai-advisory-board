@@ -78,6 +78,16 @@ def get_conversation(conversation_id: str):
     return _get_conversation(conversation_id)
 
 
+def get_attachment(attachment_id: str):
+    """Codex round 26: same lazy-imported seam as get_conversation above,
+    for the read-side document-memory existence check in
+    retrieve_with_stats_async -- avoids a rag<->attachment_storage import
+    cycle and gives tests the same monkeypatch seam.
+    """
+    from .attachment_storage import get_attachment as _get_attachment
+    return _get_attachment(attachment_id)
+
+
 class CouncilRAG:
     """
     Reasoning-based RAG ("PageIndex") system.
@@ -481,19 +491,33 @@ class CouncilRAG:
             # narrower leg of the same race -- a replacement turn whose
             # answer happens to match (a generic apology, a short answer)
             # but whose USER PROMPT was replaced still passed, indexing the
-            # stale question under a valid-looking anchor. run_turn always
-            # persists exactly one add_user_message immediately followed by
-            # one add_assistant_message for a turn (no other message lands
-            # in between), so the paired user message for the entry at
-            # expected_anchor sits one slot earlier, at expected_anchor - 2.
+            # stale question under a valid-looking anchor.
+            #
+            # Codex round 26 (P2): round 18's user-prompt check assumed the
+            # paired user message always sits at expected_anchor - 2 (the
+            # [.., user, assistant] layout run_turn persists for ONE turn in
+            # isolation) -- but storage only locks each individual append,
+            # not a whole turn, so two concurrent requests against the same
+            # conversation can interleave as Q1, Q2, A2, A1. For A1,
+            # expected_anchor still correctly points at A1's own slot, but
+            # expected_anchor - 2 now points at A2's question, not Q1 --
+            # a false NEGATIVE that silently dropped a legitimate memory.
+            # Fixed: keep the assistant position+content check unchanged,
+            # but replace the positional user check with existence -- the
+            # question matches ANY user-role message within
+            # messages[:expected_anchor] (scanned backward since the match
+            # is usually recent; break on first hit). Assistant
+            # position+content plus question-exists-before-anchor is
+            # sufficient identity without the interleaving false negative.
             if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
                 anchor_message = current_messages[expected_anchor - 1]
-                paired_user_message = (
-                    current_messages[expected_anchor - 2] if expected_anchor >= 2 else None
+                question_found = any(
+                    m.get("role") == "user" and m.get("content") == user_question
+                    for m in reversed(current_messages[:expected_anchor])
                 )
                 if (
                     anchor_message.get("stage3", {}).get("response") != final_text
-                    or (paired_user_message is not None and paired_user_message.get("content") != user_question)
+                    or not question_found
                 ):
                     logger.info(
                         "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's Q/A",
@@ -595,18 +619,19 @@ class CouncilRAG:
                 )
                 return None
             # Same-length replacement race: see index_session's identical
-            # comment. Codex round 18 (P2): also verify the paired user
-            # message at expected_anchor - 2 (see index_session's identical
-            # comment on the [.., user, assistant] layout run_turn always
-            # persists) -- not just the assistant answer.
+            # comment. Codex round 18 (P2)/round 26 (P2): see index_session's
+            # identical comment -- assistant position+content unchanged,
+            # user check is existence-anywhere-before-anchor (not
+            # positional), immune to concurrent-turn interleaving.
             if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
                 anchor_message = current_messages[expected_anchor - 1]
-                paired_user_message = (
-                    current_messages[expected_anchor - 2] if expected_anchor >= 2 else None
+                question_found = any(
+                    m.get("role") == "user" and m.get("content") == question
+                    for m in reversed(current_messages[:expected_anchor])
                 )
                 if (
                     anchor_message.get("content") != answer
-                    or (paired_user_message is not None and paired_user_message.get("content") != question)
+                    or not question_found
                 ):
                     logger.info(
                         "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's Q/A",
@@ -1075,7 +1100,48 @@ class CouncilRAG:
                 continue
             if not isinstance(source_conversation, dict) or not isinstance(source_conversation.get("metadata"), dict) or source_conversation["metadata"].get("zdr_enabled"):
                 continue
-            filtered_convs[cid] = data
+
+            # Codex round 26 (P2): entry-level fail-closed filters, same
+            # principle as the ZDR check just above -- a purge
+            # (purge_truncated_memories, purge_document_memories) can be
+            # QUEUED behind another writer's write lock (e.g. an in-flight
+            # compression) for as long as that writer's LLM call takes.
+            # This retrieval path takes no lock and, until now, didn't
+            # re-check anchors/attachment existence, so it could keep
+            # serving an edited-away turn or a deleted attachment's
+            # document memory for that entire wait window. Mirror the
+            # queued purges here so the lock-wait window can't leak through
+            # a read that runs before the purge gets its turn.
+            source_message_count = len(source_conversation.get("messages", []))
+            kept_turns = []
+            for entry in data["turns"]:
+                if entry.get("turn") == -1:
+                    # Document entry: purge_document_memories drops these
+                    # once their attachment is actually deleted (round 23/24
+                    # narrowed which ids that means). Check existence here
+                    # too -- fail closed (skip) if the attachment is gone or
+                    # the lookup itself raises. One lookup per document
+                    # entry is fine for a desktop app's memory store size.
+                    try:
+                        attachment = get_attachment(entry.get("attachment_id"))
+                    except Exception:
+                        continue
+                    if not attachment:
+                        continue
+                else:
+                    # Session/chat/summary entry: purge_truncated_memories
+                    # drops entries whose message_anchor exceeds the
+                    # CURRENT message count (their source messages are
+                    # gone). Missing anchor is fail-closed too, consistent
+                    # with that purge's own "no anchor at all is suspect"
+                    # treatment.
+                    anchor = entry.get("message_anchor")
+                    if anchor is None or anchor > source_message_count:
+                        continue
+                kept_turns.append(entry)
+            if not kept_turns:
+                continue
+            filtered_convs[cid] = {**data, "turns": kept_turns}
         other_convs = filtered_convs
 
         if not other_convs:
