@@ -114,7 +114,7 @@ MODEL_TIERS = {
         "description": "Highest quality, higher cost",
         "max_input_price": 20.0,
         "preferred_models": [
-            "anthropic/claude-opus-4.7",
+            "anthropic/claude-opus-4.8",
             "openai/gpt-5.5",
             "google/gemini-3.1-pro-preview",
         ],

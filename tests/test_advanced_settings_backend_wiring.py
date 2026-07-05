@@ -88,6 +88,27 @@ def test_run_plan_applies_advanced_overrides(monkeypatch):
     assert run_plan.policy_reason == "advanced_override"
 
 
+def test_run_plan_premium_tier_prefers_latest_opus(monkeypatch):
+    budget_router = import_module_with_api_key(monkeypatch, "backend.budget_router")
+
+    monkeypatch.setattr(budget_router, "get_budget_spent_percentage", lambda *_: None)
+    monkeypatch.setattr(
+        budget_router,
+        "get_session_policy",
+        lambda *_: {"budget_usd": None},
+    )
+
+    run_plan = budget_router.create_run_plan(
+        query="summarize this",
+        conversation_id="conv-premium-plan",
+        chairman_model=None,
+        model_tier="premium",
+    )
+
+    assert run_plan.model_tier == "premium"
+    assert run_plan.chairman_model == "anthropic/claude-opus-4.8"
+
+
 @pytest.mark.asyncio
 async def test_send_message_rejects_invalid_advanced_settings(monkeypatch, tmp_path):
     main = import_module_with_api_key(monkeypatch, "backend.main")
