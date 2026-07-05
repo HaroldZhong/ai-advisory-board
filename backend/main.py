@@ -1132,6 +1132,11 @@ async def delete_attachment_endpoint(attachment_id: str, force: bool = False):
     result = delete_attachment(attachment_id, force=force)
     if not result["found"]:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    if result.get("deleted"):
+        # The endpoint has no conversation context, so sweep every stored
+        # conversation for this attachment's document memory (Codex round 14:
+        # a deleted attachment's extracted text must not stay retrievable).
+        await rag_system.purge_document_memories([attachment_id])
     return result
 
 

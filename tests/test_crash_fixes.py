@@ -40,10 +40,10 @@ async def test_sync_council_indexes_the_conversation_after_the_assistant_message
     monkeypatch.setattr(
         main.storage,
         "get_conversation",
-        # Two reads: endpoint pre-flight, then the completion-event
-        # total-cost read. (A third read used to sit between them to compute
-        # get_turn_index -- gone along with that parameter.)
-        Mock(side_effect=[initial_conversation, indexed_conversation]),
+        # Three reads: endpoint pre-flight, the fresh-metadata ZDR check
+        # guarding the indexing block (_zdr_flipped_on, Codex round 14), and
+        # the completion-event total-cost read.
+        Mock(side_effect=[initial_conversation, indexed_conversation, indexed_conversation]),
     )
     monkeypatch.setattr(main.storage, "add_user_message", Mock())
     monkeypatch.setattr(main.storage, "update_conversation_title", Mock())

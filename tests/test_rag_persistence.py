@@ -2220,3 +2220,111 @@ async def test_purge_truncated_memories_drops_entries_missing_an_anchor(tmp_path
     after = rag.store["conv-1"]["turns"]
     assert dropped == 1
     assert after == []
+
+
+@pytest.mark.asyncio
+async def test_purge_document_memories_scoped_and_store_wide(monkeypatch, tmp_path):
+    """Codex round 14 (P1): document memories must die with their attachments.
+    Conversation-scoped purge (edit truncation knows the conversation) removes
+    only that conversation's matching docs; the store-wide sweep (the DELETE
+    endpoint has no conversation context) removes them everywhere."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-a")
+    storage.create_conversation("conv-b")
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    await rag.index_document("conv-a", "att-1", "doc one text")
+    await rag.index_document("conv-a", "att-2", "doc two text")
+    await rag.index_document("conv-b", "att-1", "doc one text again")
+    await rag.index_chat_turn("conv-a", "Q", "A", ["topic"])
+
+    removed = await rag.purge_document_memories(["att-1"], conversation_id="conv-a")
+    assert removed == 1
+    conv_a_ids = [e.get("attachment_id") for e in rag.store["conv-a"]["turns"] if e.get("turn") == -1]
+    assert conv_a_ids == ["att-2"], "only conv-a's att-1 doc goes; att-2 survives"
+    assert any(e.get("attachment_id") == "att-1" for e in rag.store["conv-b"]["turns"]), "conv-b untouched by the scoped purge"
+    assert any(e.get("turn") != -1 for e in rag.store["conv-a"]["turns"]), "chat memory untouched"
+
+    removed = await rag.purge_document_memories(["att-1", "att-2"])
+    assert removed == 2, "store-wide sweep removes the rest"
+    assert not any(e.get("turn") == -1 for e in rag.store["conv-a"]["turns"])
+    assert not any(e.get("turn") == -1 for e in rag.store.get("conv-b", {}).get("turns", []))
+
+
+@pytest.mark.asyncio
+async def test_edit_truncation_purges_deleted_attachments_document_memories(monkeypatch, tmp_path):
+    """Pipeline wiring: the edit branch passes exactly the truncation
+    cleanup's deleted attachment ids (keep_ids-resent ones excluded by the
+    cleanup itself) to the conversation-scoped document purge."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    conversation_id = "conv-edit-doc-purge"
+    main.storage.create_conversation(conversation_id)
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Regenerated", "usage": {}}
+
+    async def fake_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    purge_document_memories = AsyncMock(return_value=1)
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "delete_truncated_message_attachments",
+        lambda cid, keep, keep_ids=None: {"attachment_ids": ["att-gone"], "deleted": 1, "retained": 0, "missing": 0, "files_deleted": 1, "results": []},
+    )
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=AsyncMock(return_value=None),
+            refresh_hybrid_index=lambda *a, **k: None,
+            purge_truncated_memories=AsyncMock(return_value=0),
+            purge_document_memories=purge_document_memories,
+            store={},
+        ),
+    )
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Edited question", mode="chat", edit_index=2),
+    )
+
+    purge_document_memories.assert_awaited_once_with(["att-gone"], conversation_id=conversation_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_attachment_endpoint_sweeps_document_memories(monkeypatch, tmp_path):
+    """The DELETE /api/attachments/{id} endpoint sweeps the whole store for
+    the deleted attachment's document memory — but only when the deletion
+    actually removed artifacts (a still-referenced attachment keeps its memory)."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    from unittest.mock import AsyncMock
+
+    purge_document_memories = AsyncMock(return_value=1)
+    monkeypatch.setattr(main, "rag_system", SimpleNamespace(purge_document_memories=purge_document_memories))
+
+    monkeypatch.setattr(main, "delete_attachment", lambda attachment_id, force=False: {"found": True, "deleted": True})
+    await main.delete_attachment_endpoint("att-x")
+    purge_document_memories.assert_awaited_once_with(["att-x"])
+
+    purge_document_memories.reset_mock()
+    monkeypatch.setattr(main, "delete_attachment", lambda attachment_id, force=False: {"found": True, "deleted": False})
+    await main.delete_attachment_endpoint("att-y")
+    purge_document_memories.assert_not_awaited()

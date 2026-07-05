@@ -792,6 +792,10 @@ class CouncilRAG:
             truncated = text[:max_chars]
             doc_memory = {
                 "turn": -1,  # Sentinel: document, not a turn
+                # run_turn passes the attachment id as `filename`; stored
+                # explicitly so attachment deletion (truncation cleanup or
+                # the DELETE endpoint) can purge this memory precisely.
+                "attachment_id": filename,
                 "topics": [f"document:{filename}"],
                 "memory": f"[Uploaded Document: {filename}]\n{truncated}"
             }
@@ -799,6 +803,38 @@ class CouncilRAG:
             self._save_store()
             if self.enabled:
                 logger.info("[RAG] Indexed document '%s' (%d chars) for conv=%s", filename, len(truncated), conversation_id)
+
+    async def purge_document_memories(self, attachment_ids, conversation_id=None):
+        """Drop document memories whose source attachments were deleted.
+
+        conversation_id given: purge that conversation only (edit/regenerate
+        truncation cleanup knows the conversation). None: sweep every stored
+        conversation (the DELETE /api/attachments endpoint has no conversation
+        context). Each conversation is mutated under its own write lock, same
+        as every other store mutator.
+        """
+        if not self.enabled or not attachment_ids:
+            return 0
+        wanted = set(attachment_ids)
+        target_ids = [conversation_id] if conversation_id is not None else list(self.store.keys())
+        removed = 0
+        for cid in target_ids:
+            async with self._get_write_lock(cid):
+                data = self.store.get(cid)
+                if not data:
+                    continue
+                turns = data.get("turns", [])
+                kept = [
+                    entry for entry in turns
+                    if not (entry.get("turn") == -1 and entry.get("attachment_id") in wanted)
+                ]
+                if len(kept) != len(turns):
+                    removed += len(turns) - len(kept)
+                    data["turns"] = kept
+                    self._save_store()
+        if removed:
+            logger.info("[RAG] Purged %d document memor%s for deleted attachments", removed, "y" if removed == 1 else "ies")
+        return removed
 
     def retrieve(
         self,

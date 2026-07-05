@@ -60,6 +60,20 @@ def _compose_llm_content(base: str, attachment_context: str, custom_instructions
     return content
 
 
+def _zdr_flipped_on(main, conversation_id: str) -> bool:
+    """Fresh-metadata ZDR check for the utility LLM calls (topics) that run
+    after long awaits (chairman/stage calls). A turn that STARTED non-ZDR uses
+    a stale zdr_enabled; if the user enables ZDR mid-turn, the store write is
+    already refused by CouncilRAG's write barrier, but the turn's content must
+    also stay out of the topics utility call itself. Fail closed on
+    unreadable records.
+    """
+    conversation = main.storage.get_conversation(conversation_id)
+    if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict):
+        return True
+    return bool(conversation["metadata"].get("zdr_enabled"))
+
+
 async def run_turn(
     conversation_id: str,
     request: Any,
@@ -122,6 +136,14 @@ async def run_turn(
             # too, or an edited-away answer stays retrievable from OTHER
             # conversations forever. Both modes go through this same branch.
             await main.rag_system.purge_truncated_memories(conversation_id, request.edit_index)
+            # Codex round 14: same for document memories whose attachments the
+            # cleanup above actually deleted (keep_ids-resent attachments are
+            # excluded from attachment_ids, so their memories survive too).
+            deleted_attachment_ids = attachment_cleanup.get("attachment_ids") or []
+            if deleted_attachment_ids:
+                await main.rag_system.purge_document_memories(
+                    deleted_attachment_ids, conversation_id=conversation_id
+                )
             # Re-fetch conversation after truncation
             current_conversation = main.storage.get_conversation(conversation_id)
             yield {"type": "edit_truncated", "data": {"edit_index": request.edit_index, "attachments": attachment_cleanup}}
@@ -356,7 +378,7 @@ async def run_turn(
             # before it mutates the store, closing that race at the root
             # regardless of how many awaits happen in between.
             delta_cost = 0.0
-            if stage3_result.get("model") != "error" and not zdr_enabled:
+            if stage3_result.get("model") != "error" and not zdr_enabled and not _zdr_flipped_on(main, conversation_id):
                 logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
 
                 # Extract topics from question + final answer. Codex round 6:
@@ -565,7 +587,7 @@ async def run_turn(
             # not become cross-conversation memory -- mirrors the council
             # branch's stage3_result.get("model") != "error" guard above.
             delta_cost = 0.0
-            if not zdr_enabled and not response_dict.get("error"):
+            if not zdr_enabled and not response_dict.get("error") and not _zdr_flipped_on(main, conversation_id):
                 from .council import extract_topics_with_usage
                 combined_text = request.content + " " + response_dict.get("content", "")
                 chat_topics, chat_topics_usage = await extract_topics_with_usage(

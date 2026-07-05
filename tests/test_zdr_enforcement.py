@@ -544,8 +544,14 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
         main.SendMessageRequest(content="Sensitive question", mode="council"),
     )
 
-    rag_system.index_session.assert_called_once()  # the pipeline-level early skip doesn't fire (pre-flight was False)
-    assert conversation_id not in real_rag.store  # but the write barrier inside index_session refused to store it
+    # Codex round 14: the pipeline's fresh-metadata guard (_zdr_flipped_on)
+    # now fires for a mid-turn flip, so the whole indexing block -- including
+    # the topics utility call -- is skipped before index_session is even
+    # reached. (Previously index_session was called and its internal write
+    # barrier refused the store write; the barrier still exists as the
+    # authoritative last line of defense.)
+    rag_system.index_session.assert_not_called()
+    assert conversation_id not in real_rag.store
 
 
 @pytest.mark.asyncio
@@ -940,3 +946,59 @@ async def test_startup_cleanup_removes_entries_with_malformed_metadata(monkeypat
 
     assert "conv-null-meta" not in rag.store
     assert "conv-normal" in rag.store
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_zdr_flip_mid_chairman_skips_topic_extraction(monkeypatch, tmp_path):
+    """Codex round 14 (P1): a chat turn that starts non-ZDR must not send its
+    question+answer to the topics utility call after a mid-turn ZDR flip —
+    the store write was already refused by the write barrier, but the turn's
+    CONTENT also has to stay out of the utility LLM call itself."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    conversation_id = "conv-zdr-flip-chat-topics"
+    main.storage.create_conversation(conversation_id)  # starts non-ZDR
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    topics_calls = []
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        # Simulate the user flipping ZDR on via PUT while the chairman call
+        # was still in flight.
+        main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
+        return {"content": "Answer", "usage": {}}
+
+    async def fake_topics(*args, **kwargs):
+        topics_calls.append(args)
+        return (["topic"], {})
+
+    index_chat_turn = AsyncMock(return_value=None)
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["content"] == "Answer"
+    assert topics_calls == [], "topics utility call must be skipped after a mid-turn ZDR flip"
+    index_chat_turn.assert_not_called()
