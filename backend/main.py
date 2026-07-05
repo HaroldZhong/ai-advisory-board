@@ -480,10 +480,26 @@ def delete_truncated_message_attachments(
     if not conversation:
         return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": [], "deleted_attachment_ids": []}
 
+    # Codex round 24 (P2): delete_attachment's refcounting is
+    # CONVERSATION-level (one entry per conversation_id on the attachment
+    # record), not message-level -- an attachment referenced by BOTH a
+    # kept-prefix message and the truncated tail has only ONE ref for this
+    # conversation, so delete_attachment (called with this conversation_id)
+    # strips it and reports deleted=True, deleting the files a still-kept
+    # message needs. This predates the round-23 memory-purge fix (round 23
+    # merely made it visible by also purging that now-orphaned memory) --
+    # filter kept-prefix ids out of the candidate list itself, the same way
+    # keep_ids filters ids about to be resent: an attachment still
+    # referenced by a SURVIVING message must be neither file-deleted nor
+    # memory-purged.
+    kept_messages = conversation.get("messages", [])[:keep_count]
+    kept_attachment_ids = set(collect_attachment_ids_from_messages(kept_messages))
+
     removed_messages = conversation.get("messages", [])[keep_count:]
     attachment_ids = [
         attachment_id for attachment_id in collect_attachment_ids_from_messages(removed_messages)
-        if not keep_ids or attachment_id not in keep_ids
+        if attachment_id not in kept_attachment_ids
+        and (not keep_ids or attachment_id not in keep_ids)
     ]
     results = [
         delete_attachment(attachment_id, conversation_id=conversation_id)
@@ -498,14 +514,14 @@ def delete_truncated_message_attachments(
         "files_deleted": sum(result["files_deleted"] for result in results),
         "results": results,
         # Codex round 23 (P2): attachment_ids is the CANDIDATE list (from
-        # removed messages, minus keep_ids) -- an id also referenced by a
-        # KEPT-prefix message, or by another conversation entirely, is
+        # removed messages, minus kept-prefix and keep_ids ids, round 24) --
+        # an id still referenced by ANOTHER conversation entirely is
         # RETAINED by delete_attachment (it refcounts across all
-        # conversation_ids, not just this one's kept prefix), so its files
-        # survive. Callers that purge document MEMORY for deleted
+        # conversation_ids), so its files survive even though it's a
+        # candidate here. Callers that purge document MEMORY for deleted
         # attachments must use this narrower, actually-deleted list, not
         # attachment_ids -- otherwise a retained attachment's memory gets
-        # purged even though its files (and any OTHER conversation's
+        # purged even though its files (and that other conversation's
         # reference to it) are still there.
         "deleted_attachment_ids": [result["attachment_id"] for result in results if result["deleted"]],
     }
