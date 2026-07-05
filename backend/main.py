@@ -232,38 +232,59 @@ async def create_conversation(request: CreateConversationRequest):
         ))
 
     models_by_id = {m['id']: m for m in config.AVAILABLE_MODELS}
+    # Off-OpenRouter, a provider (local server, relay) can serve models the
+    # curated registry has never heard of — accept any non-empty id it isn't
+    # in the registry for. Registry HITS still go through the existing
+    # type checks below on every provider kind, and empty/whitespace ids are
+    # rejected everywhere via the `m not in models_by_id` / falsy checks.
+    allow_unregistered = not config.provider_is_openrouter()
 
     # Validate council members
     if council_members:
-        invalid = [m for m in council_members if m not in models_by_id]
+        invalid = [
+            m for m in council_members
+            if m not in models_by_id and not (allow_unregistered and m.strip())
+        ]
         if invalid:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid council models: {invalid}"
             )
-        # utility-type models (e.g. the RAG extraction model) exist only for
-        # internal cost accounting and are never user-selectable as chairman
-        # or council, the same way a "search"-type model like perplexity/sonar
-        # is not meant to be picked either (pre-existing gap, out of scope here).
-        utility = [m for m in council_members if models_by_id[m].get("type") == "utility"]
+        # utility-type models (e.g. the RAG extraction model) and search-type
+        # models (e.g. perplexity/sonar) exist only for internal cost
+        # accounting and dedicated web-search calls, and are never
+        # user-selectable as chairman or council.
+        utility = [m for m in council_members if models_by_id.get(m, {}).get("type") == "utility"]
         if utility:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid council models (internal utility model, not selectable): {utility}",
             )
+        search = [m for m in council_members if models_by_id.get(m, {}).get("type") == "search"]
+        if search:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid council models (internal search model, not selectable): {search}",
+            )
         metadata["council_models"] = council_members
 
     # Validate chairman model
     if chairman_model:
-        if chairman_model not in models_by_id:
+        known_chairman = models_by_id.get(chairman_model)
+        if known_chairman is None and not (allow_unregistered and chairman_model.strip()):
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid chairman model: {chairman_model}"
             )
-        if models_by_id[chairman_model].get("type") == "utility":
+        if known_chairman is not None and known_chairman.get("type") == "utility":
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid chairman model (internal utility model, not selectable): {chairman_model}",
+            )
+        if known_chairman is not None and known_chairman.get("type") == "search":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid chairman model (internal search model, not selectable): {chairman_model}",
             )
         metadata["chairman_model"] = chairman_model
 

@@ -9,6 +9,7 @@ import {
   canStartPresetWithZdr,
   getEffectivePresetZdr,
   isPresetAvailableForZdr,
+  isSelectableModelId,
   resolvePresetModels,
   resolveInitialZdrPreference,
 } from '../src/utils/modelPresets.js';
@@ -161,4 +162,24 @@ test('filterModelsForRole applies role and ZDR filters', () => {
     filterModelsForRole(models, 'council', false).map((model) => model.id),
     ['council-zdr', 'council-open'],
   );
+});
+
+// PR2: minimal custom model id entry for openai-compatible providers.
+test('isSelectableModelId accepts a registry id on any provider kind', () => {
+  assert.equal(isSelectableModelId('chair-zdr', models, 'openrouter'), true);
+  assert.equal(isSelectableModelId('chair-zdr', models, 'openai-compatible'), true);
+});
+
+test('isSelectableModelId rejects an unknown id on openrouter', () => {
+  assert.equal(isSelectableModelId('llama3.1', models, 'openrouter'), false);
+});
+
+test('isSelectableModelId accepts a non-empty unknown id on openai-compatible', () => {
+  assert.equal(isSelectableModelId('llama3.1', models, 'openai-compatible'), true);
+});
+
+test('isSelectableModelId rejects empty/whitespace ids regardless of provider kind', () => {
+  assert.equal(isSelectableModelId('', models, 'openai-compatible'), false);
+  assert.equal(isSelectableModelId('   ', models, 'openai-compatible'), false);
+  assert.equal(isSelectableModelId(undefined, models, 'openai-compatible'), false);
 });

@@ -149,12 +149,15 @@ and let the app infer it) to disable OpenRouter-only behavior:
   report its own.
 
 Pointing at a local server (e.g. Ollama or LM Studio) uses the same
-`OPENROUTER_BASE_URL=http://localhost:11434/v1` plus any non-empty API key —
-but be aware the model picker only ever offers the curated models baked into
-`backend/model_registry.json`, and conversation creation rejects any model id
-not in that registry. To use a local model today you have to manually add its
-id to that registry file yourself (advanced, unsupported by the UI). First-class
-local-model support (discovering and picking whatever the local server
-actually serves) is a planned follow-up, not implemented yet. The first-run
-setup screen accepts any non-empty key when `LLM_PROVIDER_KIND=openai-compatible`,
-instead of requiring OpenRouter's `sk-or-` key format.
+`OPENROUTER_BASE_URL=http://localhost:11434/v1` plus any non-empty API key.
+The model picker still only *lists* the curated models baked into
+`backend/model_registry.json`, but on an openai-compatible provider its
+Custom tab (and the Chat tab's model field) also takes a free-text model id —
+type in whatever the local server serves (e.g. `llama3.1`) and it's accepted
+without editing the registry file. Capabilities for a custom id are unknown to
+the app: no reasoning-display extraction, and cost tracking shows $0 for it
+instead of a curated price. There is still no live catalog fetch from the
+local server — you type the id you already know you're running. The
+first-run setup screen accepts any non-empty key when
+`LLM_PROVIDER_KIND=openai-compatible`, instead of requiring OpenRouter's
+`sk-or-` key format.

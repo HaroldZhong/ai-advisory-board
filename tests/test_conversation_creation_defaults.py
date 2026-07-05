@@ -107,6 +107,38 @@ async def test_create_conversation_rejects_utility_model_as_council_member(monke
 
 
 @pytest.mark.asyncio
+async def test_create_conversation_rejects_search_model_as_chairman(monkeypatch, tmp_path):
+    """v1.2.0: search-type models (e.g. perplexity/sonar) exist only for the
+    dedicated Stage 0 web-search step and must not be selectable as chairman."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(main.CreateConversationRequest(
+            chairman_model="perplexity/sonar",
+        ))
+
+    assert exc.value.status_code == 400
+    assert "perplexity/sonar" in exc.value.detail
+    assert "search" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_create_conversation_rejects_search_model_as_council_member(monkeypatch, tmp_path):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        await main.create_conversation(main.CreateConversationRequest(
+            council_members=["openai/gpt-4o-mini", "perplexity/sonar", "x-ai/grok-4.1-fast"],
+        ))
+
+    assert exc.value.status_code == 400
+    assert "perplexity/sonar" in exc.value.detail
+    assert "search" in exc.value.detail.lower()
+
+
+@pytest.mark.asyncio
 async def test_create_conversation_accepts_normal_chairman_and_council_models(monkeypatch, tmp_path):
     """Control: the utility-type gate must not affect ordinary registry
     models still selectable as chairman/council."""

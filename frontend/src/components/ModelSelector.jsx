@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Lock, SlidersHorizontal, Sparkles, Users } from 'lucide-react';
+import { Check, Lock, Plus, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react';
 
 import { api } from '../api';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -31,6 +32,7 @@ import {
   getProvider,
   getShortName,
   groupModelsByProvider,
+  isSelectableModelId,
   modelById,
   resolvePresetModels,
   resolveInitialZdrPreference,
@@ -96,6 +98,7 @@ export default function ModelSelector({
   initialChairman = '',
   defaultBudgetUsd = null,
   zdrAvailable = true,
+  providerKind = 'openrouter',
 }) {
   const { settings } = useSettings();
   const [models, setModels] = useState([]);
@@ -114,6 +117,11 @@ export default function ModelSelector({
   const [zdrEnabled, setZdrEnabled] = useState(false);
   const [customRole, setCustomRole] = useState('council');
   const [activeProvider, setActiveProvider] = useState('all');
+  // Free-text entry for openai-compatible providers only (PR2) — the
+  // registry can't know what a local server/relay serves.
+  const [customChairmanInput, setCustomChairmanInput] = useState('');
+  const [customCouncilInput, setCustomCouncilInput] = useState('');
+  const showCustomModelInput = providerKind === 'openai-compatible';
 
   useEffect(() => {
     if (!isOpen) return;
@@ -125,6 +133,8 @@ export default function ModelSelector({
     setCustomRole('council');
     setActiveProvider('all');
     setZdrEnabled(resolveInitialZdrPreference(settings));
+    setCustomChairmanInput('');
+    setCustomCouncilInput('');
 
     api.getModels()
       .then((data) => {
@@ -141,9 +151,9 @@ export default function ModelSelector({
 
         const presetSelection = resolvePresetModels(defaultPreset, loadedModels, false);
         const savedCouncilStillValid = saved.selectedCouncil.length > 0
-          && saved.selectedCouncil.every((id) => loadedModels.some((model) => model.id === id));
+          && saved.selectedCouncil.every((id) => isSelectableModelId(id, loadedModels, providerKind));
         const savedChairmanStillValid = saved.selectedChairman
-          && loadedModels.some((model) => model.id === saved.selectedChairman);
+          && isSelectableModelId(saved.selectedChairman, loadedModels, providerKind);
 
         setSelectedChairman(
           initialChairman
@@ -176,7 +186,7 @@ export default function ModelSelector({
         console.error(err);
       })
       .finally(() => setLoading(false));
-  }, [isOpen, initialChairman, initialCouncil, settings.defaultZdrEnabled, settings.zdrEnabled]);
+  }, [isOpen, initialChairman, initialCouncil, providerKind, settings.defaultZdrEnabled, settings.zdrEnabled]);
 
   const byId = useMemo(() => modelById(models), [models]);
   const selectedPreset = useMemo(
@@ -195,8 +205,13 @@ export default function ModelSelector({
     () => resolvePresetModels(selectedPreset, models, effectivePresetZdr),
     [effectivePresetZdr, models, selectedPreset],
   );
-  const customChairman = byId.get(selectedChairman) || null;
-  const customCouncil = selectedCouncil.map((id) => byId.get(id)).filter(Boolean);
+  // Custom model ids (openai-compatible only) aren't in the registry at all,
+  // so byId.get() misses — build a minimal display stub instead of losing
+  // the selection. Pricing/type are unknown for these; cost estimate and
+  // ZDR badge naturally show as 0/absent, which is the honest answer.
+  const toDisplayModel = (id) => byId.get(id) || (id ? { id, name: id, pricing: {} } : null);
+  const customChairman = toDisplayModel(selectedChairman);
+  const customCouncil = selectedCouncil.map(toDisplayModel).filter(Boolean);
   const activeChairman = conversationMode === 'chat'
     ? customChairman
     : (activeTab === 'presets' ? presetModels.chairman : customChairman);
@@ -254,6 +269,13 @@ export default function ModelSelector({
       if (prev.length >= MAX_COUNCIL_SIZE) return prev;
       return [...prev, modelId];
     });
+  };
+
+  const handleAddCustomCouncilId = () => {
+    const id = customCouncilInput.trim();
+    if (!id || selectedCouncil.includes(id) || selectedCouncil.length >= MAX_COUNCIL_SIZE) return;
+    setSelectedCouncil((prev) => [...prev, id]);
+    setCustomCouncilInput('');
   };
 
   const handleConfirm = () => {
@@ -439,6 +461,59 @@ export default function ModelSelector({
     );
   };
 
+  // Free-text custom model entry, openai-compatible providers only (PR2):
+  // no live catalog, no capability editing — just an id the provider might
+  // serve. `forRole` picks chairman (single, replaces) vs council (list, add/remove).
+  const renderCustomModelInput = (forRole) => (
+    <div className="space-y-2 rounded border p-3">
+      <div className="flex gap-2">
+        <Input
+          placeholder={forRole === 'chairman' ? 'Custom model id (e.g. llama3.1)' : 'Custom model id to add'}
+          value={forRole === 'chairman' ? customChairmanInput : customCouncilInput}
+          onChange={(event) => (forRole === 'chairman'
+            ? setCustomChairmanInput(event.target.value)
+            : setCustomCouncilInput(event.target.value))}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            if (forRole === 'chairman') setSelectedChairman(customChairmanInput.trim());
+            else handleAddCustomCouncilId();
+          }}
+        />
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => (forRole === 'chairman'
+            ? setSelectedChairman(customChairmanInput.trim())
+            : handleAddCustomCouncilId())}
+          disabled={forRole === 'chairman' ? !customChairmanInput.trim() : !customCouncilInput.trim()}
+        >
+          {forRole === 'chairman' ? 'Use' : <Plus className="h-4 w-4" />}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Custom models: capabilities unknown — reasoning display and pricing unavailable.
+      </p>
+      {forRole === 'council' && selectedCouncil.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1">
+          {selectedCouncil.map((id) => (
+            <span key={id} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs">
+              <span className="max-w-[16rem] truncate">{byId.get(id)?.name || id}</span>
+              <button
+                type="button"
+                aria-label={`Remove ${id}`}
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => setSelectedCouncil((prev) => prev.filter((existing) => existing !== id))}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <TooltipProvider>
       <Dialog open={isOpen} onOpenChange={onClose}>
@@ -539,6 +614,8 @@ export default function ModelSelector({
                     <div className="text-sm font-medium text-muted-foreground">Model</div>
                   </div>
 
+                  {showCustomModelInput && renderCustomModelInput('chairman')}
+
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {providers.map((provider) => {
                       const count = provider === 'all'
@@ -613,6 +690,8 @@ export default function ModelSelector({
                       {selectedCouncil.length}/{MAX_COUNCIL_SIZE} council selected
                     </StatPill>
                   </div>
+
+                  {showCustomModelInput && renderCustomModelInput(customRole)}
 
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {providers.map((provider) => {
