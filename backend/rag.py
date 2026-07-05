@@ -477,11 +477,26 @@ class CouncilRAG:
             # and appends N new ones leaves the count unchanged but the
             # content at the anchor position no longer matches this turn's
             # answer. Cheap to check since the text is already in hand.
+            # Codex round 18 (P2): checking only the assistant text missed a
+            # narrower leg of the same race -- a replacement turn whose
+            # answer happens to match (a generic apology, a short answer)
+            # but whose USER PROMPT was replaced still passed, indexing the
+            # stale question under a valid-looking anchor. run_turn always
+            # persists exactly one add_user_message immediately followed by
+            # one add_assistant_message for a turn (no other message lands
+            # in between), so the paired user message for the entry at
+            # expected_anchor sits one slot earlier, at expected_anchor - 2.
             if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
                 anchor_message = current_messages[expected_anchor - 1]
-                if anchor_message.get("stage3", {}).get("response") != final_text:
+                paired_user_message = (
+                    current_messages[expected_anchor - 2] if expected_anchor >= 2 else None
+                )
+                if (
+                    anchor_message.get("stage3", {}).get("response") != final_text
+                    or (paired_user_message is not None and paired_user_message.get("content") != user_question)
+                ):
                     logger.info(
-                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's answer",
+                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's Q/A",
                         conversation_id, expected_anchor,
                     )
                     return None
@@ -580,12 +595,21 @@ class CouncilRAG:
                 )
                 return None
             # Same-length replacement race: see index_session's identical
-            # comment.
+            # comment. Codex round 18 (P2): also verify the paired user
+            # message at expected_anchor - 2 (see index_session's identical
+            # comment on the [.., user, assistant] layout run_turn always
+            # persists) -- not just the assistant answer.
             if expected_anchor is not None and 0 < expected_anchor <= len(current_messages):
                 anchor_message = current_messages[expected_anchor - 1]
-                if anchor_message.get("content") != answer:
+                paired_user_message = (
+                    current_messages[expected_anchor - 2] if expected_anchor >= 2 else None
+                )
+                if (
+                    anchor_message.get("content") != answer
+                    or (paired_user_message is not None and paired_user_message.get("content") != question)
+                ):
                     logger.info(
-                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's answer",
+                        "[RAG] Skipping index for %s: message at anchor %d no longer matches this turn's Q/A",
                         conversation_id, expected_anchor,
                     )
                     return None

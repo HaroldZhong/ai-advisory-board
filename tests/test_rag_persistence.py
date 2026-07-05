@@ -2666,6 +2666,63 @@ async def test_index_chat_turn_skips_on_same_length_replacement_race(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_index_chat_turn_skips_when_only_the_user_prompt_was_replaced(tmp_path, monkeypatch):
+    """Codex round 18 P2: a narrower leg of the same-length replacement race
+    -- round 17's check only compared the ASSISTANT text, so a replacement
+    turn whose answer happens to match (e.g. a generic apology, a short
+    answer) but whose USER PROMPT was replaced still passed, indexing the
+    stale question under a valid-looking anchor. The persisted message at
+    expected_anchor still has the SAME answer as the one being indexed, but
+    the paired user message at expected_anchor-2 now holds a DIFFERENT
+    question. Must skip. Fails pre-fix: only the answer was checked, so this
+    passes and gets indexed."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.add_user_message("conv-a", "A DIFFERENT QUESTION NOW AT THIS POSITION")
+    storage.add_chat_message("conv-a", "Same answer")  # matches the answer being indexed
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    usage = await rag.index_chat_turn(
+        "conv-a", "Stale question being indexed", "Same answer", ["topic"], expected_anchor=2,
+    )
+
+    assert usage is None
+    assert rag.store == {}
+
+
+@pytest.mark.asyncio
+async def test_index_session_skips_when_only_the_user_prompt_was_replaced(tmp_path, monkeypatch):
+    """Codex round 18 P2: council twin of the chat test above."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-a")
+    storage.add_user_message("conv-a", "A DIFFERENT QUESTION NOW AT THIS POSITION")
+    storage.add_assistant_message(
+        "conv-a", [], [], {"model": "model-a", "response": "Same answer"},
+    )  # matches the answer being indexed
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    usage = await rag.index_session(
+        "conv-a",
+        "Stale question being indexed",
+        [],
+        [],
+        {"model": "model-a", "response": "Same answer"},
+        ["topic"],
+        {},
+        expected_anchor=2,
+    )
+
+    assert usage is None
+    assert rag.store == {}
+
+
+@pytest.mark.asyncio
 async def test_maybe_merge_summaries_rechecks_zdr_before_calling_query_model(tmp_path, monkeypatch):
     """Codex P1: _maybe_merge_summaries issues its own utility-model call
     after _maybe_compress_oldest_half's compression await, without
