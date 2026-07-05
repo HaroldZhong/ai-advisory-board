@@ -26,3 +26,11 @@ test('the beforeunload handler uses the standard browser-native guard idiom', ()
   assert.match(source, /event\.preventDefault\(\)/);
   assert.match(source, /event\.returnValue = ''/);
 });
+
+test('stream errors reload the persisted conversation instead of keeping a phantom assistant', () => {
+  const source = readHookSource();
+  assert.match(source, /eventType === 'error'/);
+  assert.match(source, /api\.getConversation\(targetConversationId\)/);
+  assert.match(source, /prev\?\.id === targetConversationId \? persisted : prev/);
+  assert.match(source, /\.finally\(\(\) => \{\s*setIsLoading\(false\);/);
+});

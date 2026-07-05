@@ -387,17 +387,20 @@ Provide a clear, well-reasoned final answer that represents the council's collec
             thinking_effort,
         )
     response = await query_model(target_chairman, messages, **query_kwargs)
+    if response is None:
+        logger.warning("[STAGE3] Chairman call returned None; retrying once")
+        response = await query_model(target_chairman, messages, **query_kwargs)
 
     if response is None:
         logger.error(f"[STAGE3] ERROR: query_model returned None")
-        # Fallback if chairman fails
         return {
-            "model": target_chairman,
-            "response": "Error: Unable to generate final synthesis.",
+            "model": "error",
+            "response": "Unable to generate final synthesis. Please try again.",
             "usage": {},
             "confidence": "UNKNOWN",
             "avg_consensus": 0.0,
             "quality_metrics": quality_metrics,
+            "error": True,
         }
 
     logger.info(f"[STAGE3] Synthesis complete, confidence={confidence_label}")

@@ -180,7 +180,25 @@ export function useStreamingConversation({
             title: 'Response failed',
             description: formatStreamErrorMessage(event.message),
           });
-          setIsLoading(false);
+          api.getConversation(targetConversationId)
+            .then((persisted) => {
+              setCurrentConversation((prev) => (
+                prev?.id === targetConversationId ? persisted : prev
+              ));
+              loadConversations();
+            })
+            .catch(() => {
+              setCurrentConversation((prev) => (
+                rollbackFailedSendConversation(prev, {
+                  conversationId: targetConversationId,
+                  editIndex,
+                  previousMessages,
+                })
+              ));
+            })
+            .finally(() => {
+              setIsLoading(false);
+            });
         }
       }, explicitMode || 'auto', attachmentIds, {
         enabled: settings.webSearchEnabled,

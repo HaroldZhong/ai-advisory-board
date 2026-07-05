@@ -1,6 +1,9 @@
 """run_full_council must return a 5-tuple even when every model fails (audit §4.2)."""
 import importlib
+import json
+from types import SimpleNamespace
 
+from fastapi import HTTPException
 import pytest
 from backend import council
 from backend.tools.types import EvidencePack, UsageLimits
@@ -66,3 +69,84 @@ async def test_send_message_all_fail_skips_indexing_and_returns_error(monkeypatc
     assert result["type"] == "council"
     assert result["stage3"]["model"] == "error"
     assert indexed == [], "failed turns must not be RAG-indexed"
+
+
+@pytest.mark.asyncio
+async def test_stage3_synthesis_failure_is_retryable_and_not_indexed(monkeypatch, tmp_path):
+    """A Stage 3 chairman failure after successful stages 1/2 must not be
+    persisted or indexed as a normal assistant answer."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    main = importlib.import_module("backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+
+    conversation = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conversation["id"]
+
+    async def fake_steward(*args, **kwargs):
+        return (
+            EvidencePack(run_id="r", query="q", tools_used=[], key_facts=[], limits=UsageLimits()),
+            {"prompt_tokens": 1000, "completion_tokens": 1000},
+        )
+
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {
+            "model": "openai/gpt-4o-mini",
+            "response": "Answer A",
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+        }
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{
+                "model": "openai/gpt-4o-mini",
+                "ranking": "1. Response A",
+                "parsed_ranking": ["Response A"],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+            }],
+            {"Response A": "openai/gpt-4o-mini"},
+        )
+
+    async def fake_title(*args, **kwargs):
+        return "title"
+
+    attempts = []
+
+    async def fail_stage3_query(*args, **kwargs):
+        attempts.append(args)
+        return None
+
+    async def fake_index_session(*args, **kwargs):
+        indexed.append(args)
+        return None
+
+    indexed = []
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr(council, "query_model", fail_stage3_query)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            index_session=fake_index_session,
+            refresh_hybrid_index=lambda *a, **k: None,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        await main.send_message(conv_id, main.SendMessageRequest(content="hi", mode="council"))
+
+    assert excinfo.value.status_code == 500
+    assert "final synthesis" in excinfo.value.detail
+    assert len(attempts) == 2
+    assert indexed == [], "failed Stage 3 turns must not be RAG-indexed"
+
+    saved = main.storage.get_conversation(conv_id)
+    assert [message["role"] for message in saved["messages"]] == ["user"]
+    assert "Unable to generate final synthesis" not in json.dumps(saved)
+    assert saved["total_cost"] > 0
+    assert saved["session_usage"]["spent_usd"] == pytest.approx(saved["total_cost"])
+    assert saved["session_usage"]["messages"] == 1
