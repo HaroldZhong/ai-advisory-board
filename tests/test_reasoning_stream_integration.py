@@ -45,8 +45,24 @@ async def test_stream_chat_emits_reasoning_and_content_events(monkeypatch, tmp_p
             "usage": {},
         }
 
+    async def fake_extract_topics_chat(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_chat)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     response = await main.send_message_stream(
@@ -107,8 +123,24 @@ async def test_sync_chat_persists_reasoning(monkeypatch, tmp_path):
             "usage": {},
         }
 
+    async def fake_extract_topics_chat(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_chat)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     result = await main.send_message(
@@ -145,8 +177,24 @@ async def test_stream_chat_delta_events_use_default_chairman_model(monkeypatch, 
             "usage": {},
         }
 
+    async def fake_extract_topics_chat(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_chat)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     response = await main.send_message_stream(
@@ -221,10 +269,13 @@ async def test_stream_council_emits_reasoning_events_for_each_stage(monkeypatch,
         }
 
     async def fake_extract_topics(*args, **kwargs):
-        return []
+        return ([], {})
+
+    async def fake_index_session(*args, **kwargs):
+        return None
 
     fake_rag = SimpleNamespace(
-        index_session=lambda *args, **kwargs: None,
+        index_session=fake_index_session,
         refresh_hybrid_index=lambda: None,
     )
 
@@ -232,7 +283,7 @@ async def test_stream_council_emits_reasoning_events_for_each_stage(monkeypatch,
     monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_collect_responses_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2_collect_rankings)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3_synthesize_final)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
     response = await main.send_message_stream(

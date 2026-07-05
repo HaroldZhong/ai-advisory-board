@@ -39,21 +39,32 @@ def _setup_council_fakes(monkeypatch, main):
         return "Title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
     monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
+
+    async def fake_index_session(*args, **kwargs):
+        return None
+
+    async def fake_index_document(*args, **kwargs):
+        return None
+
+    async def fake_purge_truncated_memories(*args, **kwargs):
+        return 0
+
     monkeypatch.setattr(
         main,
         "rag_system",
         SimpleNamespace(
-            index_session=lambda *a, **k: None,
+            index_session=fake_index_session,
             refresh_hybrid_index=lambda *a, **k: None,
-            index_document=lambda *a, **k: None,
+            index_document=fake_index_document,
+            purge_truncated_memories=fake_purge_truncated_memories,
         ),
     )
 
@@ -71,11 +82,31 @@ def _setup_chat_fakes(monkeypatch, main):
     async def fake_retrieve_async(*args, **kwargs):
         return "", {}
 
+    async def fake_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
+    async def fake_purge_truncated_memories(*args, **kwargs):
+        return 0
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     # Chat-first turns start a title task now — never let tests hit the network.
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            purge_truncated_memories=fake_purge_truncated_memories,
+            store={},
+        ),
+    )
 
 
 def _populated_conversation(main, conversation_id):

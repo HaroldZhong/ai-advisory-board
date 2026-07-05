@@ -34,14 +34,6 @@ from .reasoning_stream import ReasoningStreamState
 # Initialize RAG system
 rag_system = CouncilRAG()
 
-def get_turn_index(conversation: Dict[str, Any]) -> int:
-    """Count the number of completed Council turns (messages with stage3)."""
-    count = 0
-    for msg in conversation.get("messages", []):
-        if msg.get("role") == "assistant" and "stage3" in msg:
-            count += 1
-    return count
-
 def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
     """Calculate cost based on usage and model pricing."""
     if not usage or not model_id:
@@ -486,12 +478,28 @@ def delete_truncated_message_attachments(
     """
     conversation = storage.get_conversation(conversation_id)
     if not conversation:
-        return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": []}
+        return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": [], "deleted_attachment_ids": []}
+
+    # Codex round 24 (P2): delete_attachment's refcounting is
+    # CONVERSATION-level (one entry per conversation_id on the attachment
+    # record), not message-level -- an attachment referenced by BOTH a
+    # kept-prefix message and the truncated tail has only ONE ref for this
+    # conversation, so delete_attachment (called with this conversation_id)
+    # strips it and reports deleted=True, deleting the files a still-kept
+    # message needs. This predates the round-23 memory-purge fix (round 23
+    # merely made it visible by also purging that now-orphaned memory) --
+    # filter kept-prefix ids out of the candidate list itself, the same way
+    # keep_ids filters ids about to be resent: an attachment still
+    # referenced by a SURVIVING message must be neither file-deleted nor
+    # memory-purged.
+    kept_messages = conversation.get("messages", [])[:keep_count]
+    kept_attachment_ids = set(collect_attachment_ids_from_messages(kept_messages))
 
     removed_messages = conversation.get("messages", [])[keep_count:]
     attachment_ids = [
         attachment_id for attachment_id in collect_attachment_ids_from_messages(removed_messages)
-        if not keep_ids or attachment_id not in keep_ids
+        if attachment_id not in kept_attachment_ids
+        and (not keep_ids or attachment_id not in keep_ids)
     ]
     results = [
         delete_attachment(attachment_id, conversation_id=conversation_id)
@@ -505,6 +513,17 @@ def delete_truncated_message_attachments(
         "missing": sum(1 for result in results if not result["found"]),
         "files_deleted": sum(result["files_deleted"] for result in results),
         "results": results,
+        # Codex round 23 (P2): attachment_ids is the CANDIDATE list (from
+        # removed messages, minus kept-prefix and keep_ids ids, round 24) --
+        # an id still referenced by ANOTHER conversation entirely is
+        # RETAINED by delete_attachment (it refcounts across all
+        # conversation_ids), so its files survive even though it's a
+        # candidate here. Callers that purge document MEMORY for deleted
+        # attachments must use this narrower, actually-deleted list, not
+        # attachment_ids -- otherwise a retained attachment's memory gets
+        # purged even though its files (and that other conversation's
+        # reference to it) are still there.
+        "deleted_attachment_ids": [result["attachment_id"] for result in results if result["deleted"]],
     }
 
 
@@ -850,7 +869,7 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
             # runtime would otherwise leave its already-indexed memories live
             # and retrievable from other conversations until restart. Purge
             # immediately using the same path conversation deletion uses.
-            rag_system.delete_conversation_memories(conversation_id)
+            await rag_system.delete_conversation_memories(conversation_id)
     if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
         metadata = conv.get("metadata", {})
         storage.update_conversation_metadata(
@@ -878,7 +897,7 @@ async def delete_conversation(conversation_id: str):
          raise HTTPException(status_code=404, detail="Conversation not found")
     attachment_cleanup = delete_attachments_for_conversation(conversation_id, conversation)
     # Purge PageIndex memories for this conversation
-    rag_system.delete_conversation_memories(conversation_id)
+    await rag_system.delete_conversation_memories(conversation_id)
     return {"success": True, "attachments": attachment_cleanup}
 
 
@@ -1140,6 +1159,11 @@ async def delete_attachment_endpoint(attachment_id: str, force: bool = False):
     result = delete_attachment(attachment_id, force=force)
     if not result["found"]:
         raise HTTPException(status_code=404, detail="Attachment not found")
+    if result.get("deleted"):
+        # The endpoint has no conversation context, so sweep every stored
+        # conversation for this attachment's document memory (Codex round 14:
+        # a deleted attachment's extracted text must not stay retrievable).
+        await rag_system.purge_document_memories([attachment_id])
     return result
 
 

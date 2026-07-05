@@ -1,4 +1,5 @@
 import importlib
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -8,6 +9,15 @@ import pytest
 def import_main(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     return importlib.import_module("backend.main")
+
+
+def parse_sse_events(chunks):
+    events = []
+    for chunk in chunks:
+        for line in chunk.splitlines():
+            if line.startswith("data: "):
+                events.append(json.loads(line.removeprefix("data: ")))
+    return events
 
 
 def test_calculate_turn_cost_counts_stage0_steward_and_council_stages(monkeypatch):
@@ -128,9 +138,21 @@ async def test_sync_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
     async def fake_retrieve_async(*args, **kwargs):
         return "", {}
 
-    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+    async def fake_extract_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
+    fake_rag = SimpleNamespace(
+        retrieve_async=fake_retrieve_async,
+        index_chat_turn=fake_index_chat_turn,
+        refresh_hybrid_index=lambda *a, **k: None,
+        store={},
+    )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -187,9 +209,21 @@ async def test_sync_chat_counts_rag_extraction_usage_in_turn_cost(monkeypatch, t
     async def fake_retrieve_async(*args, **kwargs):
         return "captured RAG context", rag_extraction_usage
 
-    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+    async def fake_extract_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
+    fake_rag = SimpleNamespace(
+        retrieve_async=fake_retrieve_async,
+        index_chat_turn=fake_index_chat_turn,
+        refresh_hybrid_index=lambda *a, **k: None,
+        store={},
+    )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -236,9 +270,21 @@ async def test_sync_chat_skips_rag_cost_when_no_extraction_ran(monkeypatch, tmp_
     async def fake_retrieve_async(*args, **kwargs):
         return "", {}
 
-    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+    async def fake_extract_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
+    fake_rag = SimpleNamespace(
+        retrieve_async=fake_retrieve_async,
+        index_chat_turn=fake_index_chat_turn,
+        refresh_hybrid_index=lambda *a, **k: None,
+        store={},
+    )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -277,9 +323,21 @@ async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path)
     async def fake_retrieve_async(*args, **kwargs):
         return "", {}
 
-    fake_rag = SimpleNamespace(retrieve_async=fake_retrieve_async)
+    async def fake_extract_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
+    fake_rag = SimpleNamespace(
+        retrieve_async=fake_retrieve_async,
+        index_chat_turn=fake_index_chat_turn,
+        refresh_hybrid_index=lambda *a, **k: None,
+        store={},
+    )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -301,3 +359,117 @@ async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path)
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(0.75)
     assert usage["spent_usd"] == pytest.approx(0.75)
     assert usage["messages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_survives_a_billed_delta_after_the_base_crossing(monkeypatch, tmp_path):
+    """Codex round 12 P2, superseded by round 23: the BASE
+    record_session_usage call (recorded immediately after the chat message
+    is persisted, round 10) can be the one that actually crosses a budget
+    threshold. _get_new_warning_level only reports a threshold the FIRST
+    time it's crossed (comparing against the already-persisted
+    last_warning_level), so the SECOND, incremental delta call
+    (topics/compression usage discovered during indexing) returns
+    warning_level=None for the SAME turn.
+
+    Round 12 fixed this by remembering the base call's warning_level and
+    merging it back into the tail's emission if the delta call didn't
+    report one of its own. Round 23 changed WHERE the base crossing is
+    emitted: synchronously, in the same block that recorded it -- not
+    merged into the tail after the indexing awaits. Round 25 tightened
+    this further: round 23 put the emission right AFTER chat_response,
+    leaving one yield (chat_response itself) between the record call and
+    the warning reaching the stream -- a client disconnecting right after
+    receiving chat_response would still lose the warning. Round 25 moved
+    the emission BEFORE chat_response, so there are zero yields (and zero
+    awaits) between record_session_usage persisting last_warning_level and
+    the warning event being handed to the stream. This test pins the
+    warning event's POSITION (before chat_response, among the first
+    events) to prove it, not just its count/threshold.
+
+    Fails pre-fix (pre-round-25): the warning event would still arrive
+    AFTER chat_response."""
+    main = import_main(monkeypatch)
+    conversation_id = "conv-warning-survives-delta"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+    main.storage.set_session_policy(
+        conversation_id,
+        {
+            "budget_usd": 1.0,
+            "notify_thresholds": [0.75, 0.85, 1.00],
+            "mode": "auto",
+            "allow_overage": True,
+        },
+    )
+
+    # Base chairman usage alone crosses the 0.75 threshold: openai/gpt-4o-mini
+    # pricing is input=$0.15/M, output=$0.6/M -- 1M/1M tokens costs $0.75.
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    # A small, nonzero delta from compression usage: google/gemini-2.5-flash
+    # (UTILITY_MODEL) pricing is input=$0.3/M, output=$2.5/M.
+    compression_usage = {"prompt_tokens": 10_000, "completion_tokens": 1_000}
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_extract_topics(*args, **kwargs):
+        return ["topic"], {}
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return compression_usage  # nonzero delta
+
+    fake_rag = SimpleNamespace(
+        retrieve_async=fake_retrieve_async,
+        index_chat_turn=fake_index_chat_turn,
+        refresh_hybrid_index=lambda *a, **k: None,
+        store={},
+    )
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(main, "rag_system", fake_rag)
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    chunks = [chunk async for chunk in response.body_iterator]
+    events = parse_sse_events(chunks)
+
+    warning_events = [e for e in events if e["type"] == "budget_warning"]
+    complete_events = [e for e in events if e["type"] == "complete"]
+
+    chairman_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    compression_cost = (10_000 / 1_000_000) * 0.3 + (1_000 / 1_000_000) * 2.5
+    expected_total = chairman_cost + compression_cost
+
+    assert len(warning_events) == 1, "the base call's 0.75 crossing must survive the delta call"
+    assert warning_events[0]["data"]["threshold"] == 0.75
+    assert len(complete_events) == 1
+    # Completion payload carries the POST-delta totals (base + delta), not
+    # just the base amount.
+    assert complete_events[0]["data"]["turn_cost"] == pytest.approx(expected_total)
+    assert complete_events[0]["data"]["total_cost"] == pytest.approx(expected_total)
+
+    # Codex round 25: the warning is emitted right BEFORE chat_response, in
+    # the same synchronous block that recorded the base crossing -- well
+    # before the indexing-derived complete event, not merged in at the end,
+    # and with zero yields between the record call and this event.
+    event_types = [e["type"] for e in events]
+    assert event_types.index("budget_warning") < event_types.index("complete")
+    assert event_types.index("budget_warning") == event_types.index("chat_response") - 1

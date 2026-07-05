@@ -1,7 +1,7 @@
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -40,14 +40,14 @@ def _setup_council_fakes(monkeypatch, main, rag_system):
         return "Test title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
     monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "rag_system", rag_system)
 
 
@@ -360,7 +360,7 @@ async def test_reasoning_rag_passes_zdr_to_openrouter(monkeypatch, tmp_path):
         "current": {"folder_id": "root", "turns": []},
         "other": {
             "folder_id": "root",
-            "turns": [{"turn": 0, "memory": "Useful prior memory"}],
+            "turns": [{"turn": 0, "memory": "Useful prior memory", "message_anchor": 1000}],
         },
     }
 
@@ -369,6 +369,10 @@ async def test_reasoning_rag_passes_zdr_to_openrouter(monkeypatch, tmp_path):
         return {"content": "Relevant prior memory"}
 
     monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+    # Codex round 10 read barrier: fake a valid non-ZDR source conversation
+    # for "other" (this test isn't about the barrier itself). Codex round 26:
+    # give it enough messages to satisfy the entry's message_anchor above.
+    monkeypatch.setattr(rag_module, "get_conversation", lambda cid: {"metadata": {}, "messages": [{}] * 1000})
 
     context, usage = await rag.retrieve_async("current question", "current", zdr_enabled=True)
 
@@ -411,8 +415,8 @@ async def test_council_turn_with_metadata_zdr_skips_memory_indexing(monkeypatch,
     main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
-        index_document=Mock(),
+        index_session=AsyncMock(return_value=None),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -435,8 +439,8 @@ async def test_council_turn_with_per_message_zdr_skips_memory_indexing(monkeypat
     main.storage.create_conversation(conversation_id)  # no metadata ZDR
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
-        index_document=Mock(),
+        index_session=AsyncMock(return_value=None),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -459,8 +463,8 @@ async def test_non_zdr_council_turn_still_indexes_memory(monkeypatch, tmp_path):
     main.storage.create_conversation(conversation_id)
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
-        index_document=Mock(),
+        index_session=AsyncMock(return_value=None),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -520,7 +524,7 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
         return "Test title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     rag_system = SimpleNamespace(
         index_session=Mock(wraps=real_rag.index_session),
@@ -533,7 +537,7 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "rag_system", rag_system)
 
     await main.send_message(
@@ -541,8 +545,14 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
         main.SendMessageRequest(content="Sensitive question", mode="council"),
     )
 
-    rag_system.index_session.assert_called_once()  # the pipeline-level early skip doesn't fire (pre-flight was False)
-    assert conversation_id not in real_rag.store  # but the write barrier inside index_session refused to store it
+    # Codex round 14: the pipeline's fresh-metadata guard (_zdr_flipped_on)
+    # now fires for a mid-turn flip, so the whole indexing block -- including
+    # the topics utility call -- is skipped before index_session is even
+    # reached. (Previously index_session was called and its internal write
+    # barrier refused the store write; the barrier still exists as the
+    # authoritative last line of defense.)
+    rag_system.index_session.assert_not_called()
+    assert conversation_id not in real_rag.store
 
 
 @pytest.mark.asyncio
@@ -555,8 +565,8 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
     main.storage.create_conversation(conversation_id, {"zdr_enabled": True})
 
     rag_system = SimpleNamespace(
-        index_session=Mock(),
-        index_document=Mock(),
+        index_session=AsyncMock(return_value=None),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -659,6 +669,9 @@ async def test_startup_cleanup_removes_metadata_zdr_conversations(monkeypatch, t
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    # Marker already present: this store is post-upgrade steady state, not
+    # the one-time-purge moment (that's covered separately in test_rag_persistence.py).
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -694,6 +707,7 @@ async def test_startup_cleanup_removes_orphaned_entries_with_missing_conversatio
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -723,6 +737,7 @@ async def test_startup_cleanup_removes_orphaned_entries_with_unreadable_conversa
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -753,6 +768,7 @@ async def test_startup_cleanup_removes_orphaned_entries_with_non_dict_conversati
     }
     import json
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
@@ -773,6 +789,13 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
     storage.create_conversation("conv-zdr", {"zdr_enabled": True})
     storage.create_conversation("conv-current")
+    # Codex round 10 read barrier: retrieve_with_stats_async now checks each
+    # source conversation's CURRENT metadata via get_conversation, so
+    # "conv-other" (seeded below with memory but no real conversation file)
+    # needs a real, non-ZDR conversation record too, or the barrier would
+    # (correctly) exclude it as unreadable/orphaned -- same as a real
+    # deployment would.
+    storage.create_conversation("conv-other")
 
     pageindex_dir = tmp_path / "pageindex"
     monkeypatch.setattr("backend.rag.get_conversation", storage.get_conversation)
@@ -781,7 +804,10 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     # to prove retrieval still works for legitimate cross-conversation memory.
     real_rag.store["conv-other"] = {
         "folder_id": "root",
-        "turns": [{"turn": 0, "memory": "ordinary memory should still retrieve"}],
+        # message_anchor: 0 -- conv-other is a freshly created (0-message)
+        # real conversation; round 26's anchor check needs this to satisfy
+        # its CURRENT message count.
+        "turns": [{"turn": 0, "memory": "ordinary memory should still retrieve", "message_anchor": 0}],
     }
     real_rag._save_store()
     monkeypatch.setattr(main, "rag_system", real_rag)
@@ -790,7 +816,7 @@ async def test_zdr_conversation_never_leaks_into_other_conversations_retrieval(m
     # the turn_pipeline guard must prevent this from ever landing in the store.
     rag_system = SimpleNamespace(
         index_session=Mock(wraps=real_rag.index_session),
-        index_document=Mock(),
+        index_document=AsyncMock(),
         refresh_hybrid_index=Mock(),
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
@@ -841,7 +867,7 @@ async def test_enabling_zdr_at_runtime_purges_existing_memories(monkeypatch, tmp
     )
 
     fake_rag = SimpleNamespace(
-        delete_conversation_memories=Mock(),
+        delete_conversation_memories=AsyncMock(),
         update_conversation_folder=Mock(),
     )
     monkeypatch.setattr(main, "rag_system", fake_rag)
@@ -918,8 +944,65 @@ async def test_startup_cleanup_removes_entries_with_malformed_metadata(monkeypat
         "conv-normal": {"folder_id": "root", "turns": [{"turn": 0, "memory": "normal"}]},
     }
     index_file.write_text(json.dumps(seeded_store), encoding="utf-8")
+    (pageindex_dir / "pageindex_memory.version").write_text("2", encoding="utf-8")
 
     rag = rag_module.CouncilRAG(persist_path=str(pageindex_dir))
 
     assert "conv-null-meta" not in rag.store
     assert "conv-normal" in rag.store
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_zdr_flip_mid_chairman_skips_topic_extraction(monkeypatch, tmp_path):
+    """Codex round 14 (P1): a chat turn that starts non-ZDR must not send its
+    question+answer to the topics utility call after a mid-turn ZDR flip —
+    the store write was already refused by the write barrier, but the turn's
+    CONTENT also has to stay out of the utility LLM call itself."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path / "conversations"))
+    conversation_id = "conv-zdr-flip-chat-topics"
+    main.storage.create_conversation(conversation_id)  # starts non-ZDR
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    topics_calls = []
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        # Simulate the user flipping ZDR on via PUT while the chairman call
+        # was still in flight.
+        main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
+        return {"content": "Answer", "usage": {}}
+
+    async def fake_topics(*args, **kwargs):
+        topics_calls.append(args)
+        return (["topic"], {})
+
+    index_chat_turn = AsyncMock(return_value=None)
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert result["content"] == "Answer"
+    assert topics_calls == [], "topics utility call must be skipped after a mid-turn ZDR flip"
+    index_chat_turn.assert_not_called()

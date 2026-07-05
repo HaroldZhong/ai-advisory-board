@@ -454,25 +454,29 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
     return matches
 
 
-async def extract_topics(
+async def extract_topics_with_usage(
     text: str,
     max_topics: int = 3,
     zdr_enabled: bool = False,
-) -> List[str]:
+) -> tuple[List[str], Dict[str, Any]]:
     """
     Extract main topics using a fast LLM.
     Text is truncated for cost and latency.
-    
+
     Args:
         text: Combined user question + response text
         max_topics: Maximum number of topics to extract
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
-        
+
     Returns:
-        List of topic strings (1-3 words each)
+        (topics, usage): topics is a list of topic strings (1-3 words each);
+        usage is this call's token usage (Codex round 6, audit §12 -- this
+        call burns UTILITY_MODEL tokens on every council/chat turn and its
+        cost was previously invisible to turn_cost/session budget). Empty
+        dict when no call ran (empty text) or it failed.
     """
     if not text:
-        return []
+        return [], {}
 
     prompt = f"""Extract {max_topics} main topics or keywords from the text below.
 Return only a comma separated list, no explanations.
@@ -492,16 +496,28 @@ Topics:"""
         )
     except Exception as e:
         logger.exception("[PHASE1] extract_topics failed: %s", e)
-        return []
+        return [], {}
 
     if response is None:
-        return []
+        return [], {}
 
+    usage = response.get("usage") or {}
     topics_raw = (response.get("content") or "").strip()
     topics = [t.strip() for t in topics_raw.split(",") if t.strip()]
 
     topics = topics[:max_topics]
     logger.info("[PHASE1] Topics extracted: %s", topics)
+    return topics, usage
+
+
+async def extract_topics(
+    text: str,
+    max_topics: int = 3,
+    zdr_enabled: bool = False,
+) -> List[str]:
+    """Thin delegate to extract_topics_with_usage for callers that don't
+    need to bill the extraction call (zero behavior change)."""
+    topics, _usage = await extract_topics_with_usage(text, max_topics=max_topics, zdr_enabled=zdr_enabled)
     return topics
 
 
@@ -1087,8 +1103,14 @@ Guidance on context labels:
     
     if response is None:
         logger.error(f"[CHAIRMAN] ERROR: query_model returned None")
+        # Codex round 8: this fabricated apology must never be indexed as
+        # memory, same as the except-handler fallback in turn_pipeline's chat
+        # branch (round 2) -- the "error" flag is turn_pipeline's existing
+        # `not response_dict.get("error")` guard's signal, so no pipeline
+        # change is needed, just flagging this fallback the same way.
         return {
-            "content": "I apologize, but I am unable to respond at this moment."
+            "content": "I apologize, but I am unable to respond at this moment.",
+            "error": True,
         }
         
     content = response.get("content", "")

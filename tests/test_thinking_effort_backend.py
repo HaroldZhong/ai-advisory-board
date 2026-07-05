@@ -295,8 +295,24 @@ async def test_sync_chat_passes_resolved_thinking_effort_to_chairman(monkeypatch
         captured_kwargs.update(kwargs)
         return {"content": "Thinking response", "usage": {}}
 
+    async def fake_extract_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     await main.send_message(
@@ -331,8 +347,24 @@ async def test_stream_chat_passes_request_thinking_effort_to_chairman(monkeypatc
         captured_kwargs.update(kwargs)
         return {"content": "Thinking response", "usage": {}}
 
+    async def fake_extract_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
     response = await main.send_message_stream(

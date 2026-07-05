@@ -60,6 +60,46 @@ def _compose_llm_content(base: str, attachment_context: str, custom_instructions
     return content
 
 
+def _zdr_flipped_on(main, conversation_id: str) -> bool:
+    """Fresh-metadata ZDR check for the utility LLM calls (topics) that run
+    after long awaits (chairman/stage calls). A turn that STARTED non-ZDR uses
+    a stale zdr_enabled; if the user enables ZDR mid-turn, the store write is
+    already refused by CouncilRAG's write barrier, but the turn's content must
+    also stay out of the topics utility call itself. Fail closed on
+    unreadable records.
+    """
+    try:
+        conversation = main.storage.get_conversation(conversation_id)
+    except Exception:
+        logger.info("[ZDR] get_conversation failed in _zdr_flipped_on; failing closed for %s", conversation_id)
+        return True
+    if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict):
+        return True
+    return bool(conversation["metadata"].get("zdr_enabled"))
+
+
+def _source_turn_missing(main, conversation_id: str, expected_anchor: int, answer_text: str, question: str) -> bool:
+    """Codex round 27 (P2): the truncation twin of _zdr_flipped_on above --
+    after the early chat_response/stage3_complete yield, an immediate edit/
+    regenerate can truncate the just-saved turn before this call runs.
+    index_session/index_chat_turn's own anchor guard (rag.source_turn_intact,
+    round 17/18/26) blocks the STORE WRITE, but by then topic extraction has
+    already sent the deleted Q/A to the utility model -- the indexer's guard
+    runs too late to keep deleted content out of that call. Same layering as
+    the ZDR guard: this pre-check keeps deleted content out of the utility
+    call; the indexer re-verifies under its lock as the authoritative guard
+    against races in the awaits between THIS check and that write. Fail
+    closed on a raising/unreadable read, same posture as _zdr_flipped_on.
+    """
+    try:
+        conversation = main.storage.get_conversation(conversation_id)
+    except Exception:
+        logger.info("[RAG] get_conversation failed in _source_turn_missing; failing closed for %s", conversation_id)
+        return True
+    from .rag import source_turn_intact
+    return not source_turn_intact(conversation, expected_anchor, answer_text, question)
+
+
 async def run_turn(
     conversation_id: str,
     request: Any,
@@ -102,7 +142,7 @@ async def run_turn(
                 for att_id in request.attachment_ids:
                     att_text = main.get_attachment_text(att_id)
                     if att_text:
-                        main.rag_system.index_document(conversation_id, att_id, att_text)
+                        await main.rag_system.index_document(conversation_id, att_id, att_text)
 
         # Combine user content with attachment context and custom instructions
         # for the LLM. User sees only their message, LLM sees the composed content.
@@ -118,6 +158,26 @@ async def run_turn(
                 keep_ids=set(request.attachment_ids),
             )
             main.storage.truncate_messages(conversation_id, request.edit_index)
+            # Codex round 13: memory entries for the truncated turns must go
+            # too, or an edited-away answer stays retrievable from OTHER
+            # conversations forever. Both modes go through this same branch.
+            await main.rag_system.purge_truncated_memories(conversation_id, request.edit_index)
+            # Codex round 14/23: same for document memories whose attachments
+            # the cleanup ACTUALLY DELETED. attachment_ids is only the
+            # CANDIDATE list (removed messages, minus keep_ids-resent ids);
+            # an id also referenced by a message in the KEPT prefix -- or by
+            # another conversation entirely -- is RETAINED by
+            # delete_attachment (files survive), not deleted, so purging its
+            # memory anyway would be wrong. deleted_attachment_ids (Codex
+            # round 23) is the narrower, actually-deleted list computed from
+            # each result's own "deleted" flag -- this also correctly
+            # respects refs from OTHER conversations, which a kept-prefix-
+            # only filter would not have.
+            deleted_attachment_ids = attachment_cleanup.get("deleted_attachment_ids") or []
+            if deleted_attachment_ids:
+                await main.rag_system.purge_document_memories(
+                    deleted_attachment_ids, conversation_id=conversation_id
+                )
             # Re-fetch conversation after truncation
             current_conversation = main.storage.get_conversation(conversation_id)
             yield {"type": "edit_truncated", "data": {"edit_index": request.edit_index, "attachments": attachment_cleanup}}
@@ -150,6 +210,14 @@ async def run_turn(
             metadata.get("chairman_model"),
             request,
         )
+
+        # Codex round 23 (P2): the base call's warning_level is emitted
+        # synchronously right where it's recorded, in each branch below --
+        # it must NOT also fire from the tail emission point further down,
+        # or a base-crossing turn with no indexing delta would double-emit.
+        # tail_warning_level stays None unless the DELTA call (if one runs)
+        # reports its own NEW crossing; only that belongs in the tail.
+        tail_warning_level = None
 
         if mode == "council":
             title_task = _start_title_task(main, needs_title, request.content, zdr_enabled)
@@ -321,10 +389,46 @@ async def run_turn(
                 council_metadata,  # For analytics tracking
                 running_cost=turn_cost,
             )
+            # Codex round 17 (P1): the message count INCLUDING the
+            # user+assistant messages just persisted above, read fresh right
+            # now -- before the topics-extraction/index_session awaits below
+            # that an edit/regenerate could race against. Passed through to
+            # index_session as expected_anchor so it can detect (and skip)
+            # indexing a turn whose source messages got truncated away in
+            # that window, instead of stamping a wrong/stale anchor.
+            expected_anchor = len(main.storage.get_conversation(conversation_id)["messages"])
 
-            # Calculate turn_index BEFORE using it
-            updated_conversation = main.storage.get_conversation(conversation_id)
-            turn_index = main.get_turn_index(updated_conversation) - 1
+            # Codex round 10 (P2): record the BASE cost immediately, right
+            # after the message that earned it is persisted -- synchronous,
+            # cancellation-safe. If a client disconnect cancels this
+            # generator during the indexing awaits below, this base amount
+            # is already saved; only a small topics/compression delta could
+            # be lost (bounded, and noted below where the delta is applied).
+            main.storage.update_conversation_cost(conversation_id, turn_cost)
+            budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+            # Codex round 23 (P2): emit the budget_warning event HERE, in
+            # the same synchronous block that just recorded it (zero awaits
+            # between record_session_usage and this yield) -- not in the
+            # tail after the indexing awaits below. record_session_usage
+            # persists last_warning_level as a side effect of the call
+            # above; _get_new_warning_level only reports a crossing the
+            # FIRST time (it compares against the already-persisted value),
+            # so if this generator is cancelled during indexing before the
+            # tail's old emission point, that crossing was already marked
+            # "told you" in storage but the client never got the event --
+            # gone forever, since the NEXT turn's comparison no longer sees
+            # it as new. Invariant: a persisted last_warning_level is always
+            # emitted in the same synchronous block that recorded it.
+            # Codex round 25: confirmed this branch is already gap-free --
+            # stage3_complete (the council answer) was yielded earlier,
+            # before add_assistant_message/this record call, so there is no
+            # equivalent "yield sitting between record and warning" gap
+            # here the way the chat branch had (fixed in round 25).
+            base_warning_level = budget_state["warning_level"]
+            if base_warning_level is not None:
+                base_warning_pct = int(base_warning_level * 100)
+                logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
+                yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
 
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
@@ -337,37 +441,106 @@ async def run_turn(
             # barrier re-checks CURRENT metadata synchronously immediately
             # before it mutates the store, closing that race at the root
             # regardless of how many awaits happen in between.
-            if stage3_result.get("model") != "error" and not zdr_enabled:
-                logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
+            delta_cost = 0.0
+            if (
+                stage3_result.get("model") != "error"
+                and not zdr_enabled
+                and not _zdr_flipped_on(main, conversation_id)
+                # Codex round 27 (P2): the truncation twin of the ZDR check
+                # just above -- see _source_turn_missing's docstring. Keeps
+                # a deleted turn's content out of the topics utility call
+                # below, not just out of the eventual store write (which
+                # index_session's own guard already blocks, too late for
+                # this call).
+                and not _source_turn_missing(main, conversation_id, expected_anchor, stage3_result.get("response", ""), request.content)
+            ):
+                # Codex round 15 (P2): best-effort. stage3_complete/the
+                # completion event's answer is already committed above; a
+                # memory-indexing failure here must never turn a successful
+                # turn into an error event.
+                try:
+                    logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
 
-                # Extract topics from question + final answer
-                from .council import extract_topics
-                combined_text = request.content + " " + stage3_result.get("response", "")
-                topics = await extract_topics(
-                    combined_text,
-                    max_topics=3,
-                    zdr_enabled=zdr_enabled,
+                    # Extract topics from question + final answer. Codex round 6:
+                    # this call burns UTILITY_MODEL tokens on every council turn.
+                    from .council import extract_topics_with_usage
+                    combined_text = request.content + " " + stage3_result.get("response", "")
+                    topics, topics_usage = await extract_topics_with_usage(
+                        combined_text,
+                        max_topics=3,
+                        zdr_enabled=zdr_enabled,
+                    )
+                    if topics_usage:
+                        delta_cost += main.calculate_cost(topics_usage, config.UTILITY_MODEL)
+                    logger.info("[PHASE1] Topics extracted: %s", topics)
+
+                    logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
+
+                    # Index session with enhanced metadata. May return usage from
+                    # a P5-T5 summary-compression call if this conversation's
+                    # turn count just crossed the compression threshold.
+                    summary_usage = await main.rag_system.index_session(
+                        conversation_id,
+                        request.content,
+                        stage1_results,
+                        stage2_results,
+                        stage3_result,
+                        topics,
+                        quality_metrics,
+                        expected_anchor=expected_anchor,
+                    )
+                    if summary_usage:
+                        delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
+                    logger.info("[PHASE1] Session indexed successfully")
+
+                    # Refresh hybrid index after indexing
+                    main.rag_system.refresh_hybrid_index()
+                    logger.info("[PHASE1] Hybrid index refreshed")
+                except Exception:
+                    # Codex round 17 (P2): do NOT zero delta_cost here --
+                    # topics_usage above may have already landed (a real,
+                    # already-spent utility-model call) before index_session
+                    # raised. Zeroing it discarded real spend from the
+                    # billed total. Keep whatever accrued before the
+                    # failure; only what never ran contributes nothing.
+                    logger.exception("[PHASE1] memory indexing failed; answer already delivered")
+
+            # Codex round 10 (P2): topics/compression usage discovered during
+            # indexing is billed as a SECOND, incremental call for this same
+            # turn -- on top of the base cost already recorded above.
+            # Codex round 21/22 (P2): also patch the message's persisted
+            # running_cost to base+delta -- previously the delta reached
+            # total_cost/session_usage but never the message itself, so GET
+            # /api/conversations showed a per-turn cost that disagreed with
+            # total_cost on every turn that billed indexing usage.
+            # count_message=False: this is the same turn as the base call,
+            # not an extra message.
+            if delta_cost:
+                turn_cost += delta_cost
+                main.storage.update_conversation_cost(conversation_id, delta_cost)
+                budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
+                # Codex round 23 (P2): the base call's crossing (if any) was
+                # already emitted synchronously right after it was recorded,
+                # above -- it is no longer "pending" into this tail. Only a
+                # NEW crossing reported by THIS delta call belongs in the
+                # tail's emission; totals/usage/budget_spent_pct still come
+                # from this LAST call regardless (they're cumulative).
+                tail_warning_level = budget_state["warning_level"]
+                # Codex round 22 (P2): identity addressing, not cost
+                # equality -- round 21's "last message + running_cost
+                # equality" guard was ambiguous when two turns overlap and
+                # their costs coincide (e.g. two zero-usage errors), letting
+                # the patch land on ANOTHER turn's message. expected_anchor
+                # (computed right after add_assistant_message above) is
+                # this turn's true identity: expected_anchor - 1 is the
+                # assistant slot in the persisted [.., user, assistant]
+                # layout (round 17/18). Identity = (position, content) --
+                # immune to cost collisions and to a same-cost concurrent
+                # append; update_message_running_cost verifies both before
+                # patching, skipping + logging on any mismatch.
+                main.storage.update_message_running_cost(
+                    conversation_id, expected_anchor - 1, stage3_result.get("response", ""), turn_cost,
                 )
-                logger.info("[PHASE1] Topics extracted: %s", topics)
-
-                logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
-
-                # Index session with enhanced metadata
-                main.rag_system.index_session(
-                    conversation_id,
-                    turn_index,
-                    request.content,
-                    stage1_results,
-                    stage2_results,
-                    stage3_result,
-                    topics,
-                    quality_metrics,
-                )
-                logger.info("[PHASE1] Session indexed successfully")
-
-                # Refresh hybrid index after indexing
-                main.rag_system.refresh_hybrid_index()
-                logger.info("[PHASE1] Hybrid index refreshed")
 
         else:
             # Chat mode
@@ -465,7 +638,8 @@ async def run_turn(
                 logger.error(f"[CHAT] Error from chairman: {e}")
                 response_dict = {
                     "content": f"I apologize, but I encountered an error: {str(e)}",
-                    "usage": {}
+                    "usage": {},
+                    "error": True,
                 }
 
             for event in main.build_reasoning_stream_events(
@@ -495,22 +669,144 @@ async def run_turn(
                 running_cost=turn_cost,
                 reasoning=response_dict.get("reasoning"),
             )
+            # Codex round 17 (P1): see the council branch's identical
+            # comment -- the message count right after THIS turn's own
+            # persistence, before any later await can race an edit/
+            # regenerate against it. Passed to index_chat_turn as
+            # expected_anchor.
+            expected_anchor = len(main.storage.get_conversation(conversation_id)["messages"])
 
+            # Codex round 10 (P2): record the BASE cost immediately, right
+            # after the message that earned it is persisted -- synchronous,
+            # cancellation-safe. If a client disconnect cancels this
+            # generator during the best-effort indexing below, this base
+            # amount is already saved; only a small topics/compression delta
+            # could be lost (bounded, and noted below where the delta is
+            # applied).
+            main.storage.update_conversation_cost(conversation_id, turn_cost)
+            budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+
+            # Codex round 25 (P2): emit the budget_warning event HERE,
+            # BEFORE chat_response -- round 23 put it right after
+            # chat_response, but that still left one yield (chat_response
+            # itself) between record_session_usage persisting
+            # last_warning_level and the warning event reaching the
+            # stream. A client disconnecting right after receiving
+            # chat_response would still lose the warning forever (see the
+            # council branch's identical comment for the full invariant/
+            # rationale). Zero yields, zero awaits, between the record call
+            # and this yield closes that gap completely.
+            base_warning_level = budget_state["warning_level"]
+            if base_warning_level is not None:
+                base_warning_pct = int(base_warning_level * 100)
+                logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
+                yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
+
+            # Codex round 15 (P2): deliver the answer NOW, before memory
+            # indexing. Topic extraction + index_chat_turn (below) can burn
+            # up to ~25s of utility-LLM time; previously chat_response
+            # waited on all of it, so the UI showed a finished answer as
+            # still "streaming" (loading.chat only clears on chat_response),
+            # the sync endpoint stalled the same amount, and an indexing
+            # exception turned an already-successful answer into an error
+            # event. The answer is already persisted (add_chat_message
+            # above) -- only memory bookkeeping remains, which is optional
+            # and best-effort (see the try/except below).
             yield {"type": "chat_response", "data": response_dict}
             logger.info("[CHAT] Chat response sent to client")
 
-        # Update conversation cost
-        main.storage.update_conversation_cost(conversation_id, turn_cost)
+            # Chat turns previously left no memory (P5-T5 feature 2). Skip
+            # for effective-turn ZDR (audit §12, Decision #5), mirroring the
+            # council branch's guard: this is a cheap early skip, not the
+            # authoritative guard -- CouncilRAG.index_chat_turn's own write
+            # barrier re-checks CURRENT metadata synchronously immediately
+            # before it mutates the store. Also skip when the chairman call
+            # itself failed (Codex P2): response_dict["content"] is a
+            # fabricated apology in that case, not a real answer, and must
+            # not become cross-conversation memory -- mirrors the council
+            # branch's stage3_result.get("model") != "error" guard above.
+            delta_cost = 0.0
+            if (
+                not zdr_enabled
+                and not response_dict.get("error")
+                and not _zdr_flipped_on(main, conversation_id)
+                # Codex round 27 (P2): the truncation twin of the ZDR check
+                # just above -- see _source_turn_missing's docstring and
+                # the council branch's identical comment.
+                and not _source_turn_missing(main, conversation_id, expected_anchor, response_dict.get("content", ""), request.content)
+            ):
+                # Codex round 15 (P2): best-effort. The answer above is
+                # already delivered to the user; a memory-indexing failure
+                # (topics extraction, index_chat_turn, compression) must
+                # never turn a successful turn into an error event.
+                try:
+                    from .council import extract_topics_with_usage
+                    combined_text = request.content + " " + response_dict.get("content", "")
+                    chat_topics, chat_topics_usage = await extract_topics_with_usage(
+                        combined_text,
+                        max_topics=3,
+                        zdr_enabled=zdr_enabled,
+                    )
+                    if chat_topics_usage:
+                        delta_cost += main.calculate_cost(chat_topics_usage, config.UTILITY_MODEL)
+                    # Turn numbering (Codex round 3) now lives inside
+                    # index_chat_turn itself, computed under its write lock,
+                    # so concurrent chat turns for this conversation can't
+                    # collide and compaction can't cause a number to be
+                    # reused.
+                    summary_usage = await main.rag_system.index_chat_turn(
+                        conversation_id,
+                        request.content,
+                        response_dict.get("content", ""),
+                        chat_topics,
+                        expected_anchor=expected_anchor,
+                    )
+                    if summary_usage:
+                        delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
+                    main.rag_system.refresh_hybrid_index()
+                except Exception:
+                    # Codex round 17 (P2): do NOT zero delta_cost here --
+                    # chat_topics_usage above may have already landed (a
+                    # real, already-spent utility-model call) before
+                    # index_chat_turn raised. Keep whatever accrued before
+                    # the failure; see the council branch's identical
+                    # comment.
+                    logger.exception("[CHAT] memory indexing failed; answer already delivered")
 
-        # Update session usage after current turn cost before checking warnings.
-        budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
-        warning_level = budget_state["warning_level"]
+            # Codex round 10 (P2): same incremental delta-billing as the
+            # council branch -- on top of the base cost already recorded
+            # above. Codex round 21/22 (P2): same running_cost patch as the
+            # council branch -- see its identical comment.
+            # count_message=False: same turn as the base call above.
+            if delta_cost:
+                turn_cost += delta_cost
+                main.storage.update_conversation_cost(conversation_id, delta_cost)
+                budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
+                # Codex round 23 (P2): same as the council branch -- the
+                # base call's crossing was already emitted above; only a
+                # NEW crossing from THIS delta call belongs in the tail.
+                tail_warning_level = budget_state["warning_level"]
+                # Codex round 22 (P2): identity addressing -- see the
+                # council branch's identical comment. expected_anchor was
+                # computed right after add_chat_message above.
+                main.storage.update_message_running_cost(
+                    conversation_id, expected_anchor - 1, response_dict["content"], turn_cost,
+                )
 
-        # Send budget warning if threshold crossed
-        if warning_level is not None:
-            warning_pct = int(warning_level * 100)
+        # Codex round 10 (P2): budget_state here is whichever call was LAST
+        # for this turn -- the base call above if there was no delta, or the
+        # delta call if indexing found one. Either way it reflects the
+        # correct final totals/usage/budget_spent_pct for this turn's
+        # completion payload. Codex round 23 (P2): warning_level itself is
+        # NOT read from budget_state here -- the base call's crossing was
+        # already emitted synchronously where it was recorded (see above in
+        # each branch); re-emitting it here on the no-delta path would
+        # double-fire the same warning. tail_warning_level carries only a
+        # NEW crossing the delta call (if one ran) reported.
+        if tail_warning_level is not None:
+            warning_pct = int(tail_warning_level * 100)
             logger.info(f"[BUDGET] Emitting warning at {warning_pct}% for conversation {conversation_id}")
-            yield {"type": "budget_warning", "data": {"threshold": warning_level, "percentage": warning_pct}}
+            yield {"type": "budget_warning", "data": {"threshold": tail_warning_level, "percentage": warning_pct}}
 
         # Get updated total cost
         updated_conv = main.storage.get_conversation(conversation_id)
