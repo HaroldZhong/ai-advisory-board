@@ -474,21 +474,47 @@ class CouncilRAG:
         """P5-T5 feature 3: bounded per-conversation memory growth.
 
         Once a conversation's turns list exceeds SUMMARY_COMPRESSION_THRESHOLD,
-        compress the OLDEST half into a single dense summary entry via
-        UTILITY_MODEL. On LLM failure (None), skip compression entirely -- no
-        data loss, just unbounded growth for this conversation until the next
-        successful attempt. Callers are responsible for _save_store()/logging
-        the caller-specific context; this only mutates self.store in memory
-        and returns the summarization call's usage (or None).
+        compress the OLDEST half of the COMPRESSIBLE entries into a single
+        dense summary entry via UTILITY_MODEL. On LLM failure (None), skip
+        compression entirely -- no data loss, just unbounded growth for this
+        conversation until the next successful attempt. Callers are
+        responsible for _save_store()/logging the caller-specific context;
+        this only mutates self.store in memory and returns the summarization
+        call's usage (or None).
+
+        Codex round 9: document entries (index_document, sentinel
+        turn == -1) and existing summary entries (kind == "summary") are
+        NON-COMPRESSIBLE and excluded from the "oldest half" -- a document
+        swept into a summary loses its always-eligible topic-filter bypass
+        (retrieve_with_stats_async checks turn == -1 directly), and
+        re-summarizing an existing summary would drift/compound lossily.
+        Both stay in place at their original positions; only the plain
+        turns among them get compressed and collapsed into one summary
+        entry at the position of the first compressed plain turn.
         """
         turns = self.store[conversation_id]["turns"]
+        # Threshold counts ALL entries (not just compressible ones): simpler
+        # than a second running count, and still bounds growth -- documents/
+        # summaries are typically a small minority, so total length tracks
+        # compressible length closely enough to trigger compaction at
+        # roughly the same cadence.
         if len(turns) <= SUMMARY_COMPRESSION_THRESHOLD:
             return None
 
-        half = (len(turns) + 1) // 2
-        oldest = turns[:half]
-        rest = turns[half:]
+        compressible_indices = [
+            i for i, entry in enumerate(turns)
+            if entry.get("turn") != -1 and entry.get("kind") != "summary"
+        ]
+        half = (len(compressible_indices) + 1) // 2
+        if half < 2:
+            # Nothing meaningful to compress (0 or 1 compressible entries) --
+            # e.g. an all-documents conversation. Skip; growth is bounded by
+            # documents being finite in practice, not by this tier.
+            return None
+        oldest_indices = compressible_indices[:half]
+        oldest_positions = set(oldest_indices)
 
+        oldest = [turns[i] for i in oldest_indices]
         compact_text = "\n\n".join(
             entry.get("summary", entry.get("memory", "")) for entry in oldest
         )
@@ -533,15 +559,28 @@ class CouncilRAG:
             "summary": response["content"].strip(),
             "turns_compressed": half,
         }
-        # Codex round 3: this write-back replaces the whole turns list with a
-        # snapshot taken before the query_model await above. Callers
-        # (index_session/index_chat_turn) hold this conversation's write lock
-        # for their entire body, so no other writer can have appended to
-        # `turns` during that await -- `rest` is still accurate. The kept
-        # `rest` entries' own "turn" numbers are untouched, so the next
-        # index_chat_turn's max()+1 scan still yields a correct, monotonic
-        # number regardless of what number this summary entry carries.
-        self.store[conversation_id]["turns"] = [summary_entry] + rest
+        # Codex round 9: rebuild in place, like the retrieval topic filter
+        # does -- non-compressible entries (documents, prior summaries) stay
+        # exactly where they were; the summary entry replaces the compressed
+        # span at the position of its first compressed entry, and later
+        # compressed entries are dropped (not re-emitted). Codex round 3: no
+        # other writer can have appended to `turns` during the query_model
+        # await above (this conversation's write lock is held for this
+        # method's entire caller body), so this rebuild still sees an
+        # accurate snapshot. The kept entries' own "turn" numbers are
+        # untouched, so the next index_chat_turn's max()+1 scan still yields
+        # a correct, monotonic number regardless of what number this summary
+        # entry carries.
+        rebuilt = []
+        summary_inserted = False
+        for i, entry in enumerate(turns):
+            if i not in oldest_positions:
+                rebuilt.append(entry)
+                continue
+            if not summary_inserted:
+                rebuilt.append(summary_entry)
+                summary_inserted = True
+        self.store[conversation_id]["turns"] = rebuilt
         return response.get("usage") or {}
 
     async def index_document(self, conversation_id: str, filename: str, text: str, max_chars: int = 8000):

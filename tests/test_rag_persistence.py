@@ -1479,3 +1479,128 @@ async def test_document_indexed_during_compression_survives_the_write_back(tmp_p
     assert any(
         "important document contents" in t.get("memory", "") for t in turns
     ), "the document indexed during compression must survive the write-back"
+
+
+# --- Codex round 9 on PR #80: documents/summaries must never be compressed ---
+
+
+@pytest.mark.asyncio
+async def test_compression_skips_document_entry_between_plain_turns(tmp_path, monkeypatch):
+    """Codex P2: compression used to take turns[:half] blindly, which could
+    catch a document entry (turn == -1) sitting among the oldest plain
+    turns. Sweeping it into a summary destroys its sentinel -- the summary
+    entry's "turn" is a normal number, so the document loses the
+    always-eligible topic-filter bypass retrieve_with_stats_async grants it
+    (checking turn == -1 directly) and its content could get filtered out
+    of retrieval by topic mismatch post-compaction.
+
+    Seed a conversation whose oldest half contains a document entry
+    sandwiched between plain turns, trigger compression, and assert: the
+    document survives verbatim with turn == -1 intact; the plain turns
+    around it got compressed into one summary; and retrieval with a query
+    that shares NO topic with the document's filename-derived topic still
+    surfaces the document block (proving the bypass survived)."""
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    rag.store["conv-1"] = {"folder_id": "root", "turns": []}
+    turns = rag.store["conv-1"]["turns"]
+    # SUMMARY_COMPRESSION_THRESHOLD plain turns with a document sandwiched
+    # in the middle of what will become the oldest (compressible) half.
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        if i == SUMMARY_COMPRESSION_THRESHOLD // 4:
+            turns.append({
+                "turn": -1,
+                "topics": ["document:report.pdf"],
+                "memory": "[Uploaded Document: report.pdf]\nconfidential figures",
+            })
+        turns.append({"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"})
+
+    async def fake_query_model(*args, **kwargs):
+        return {"content": "Dense summary of earlier plain turns.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    # This call pushes past the threshold and triggers compaction.
+    await rag.index_chat_turn("conv-1", "triggers compaction", "answer", ["z"])
+
+    after = rag.store["conv-1"]["turns"]
+    doc_entries = [t for t in after if t.get("turn") == -1]
+    summary_entries = [t for t in after if t.get("kind") == "summary"]
+
+    # The document survives verbatim, sentinel intact, not folded into the summary.
+    assert len(doc_entries) == 1
+    assert doc_entries[0]["memory"] == "[Uploaded Document: report.pdf]\nconfidential figures"
+    assert doc_entries[0]["topics"] == ["document:report.pdf"]
+    # Exactly one summary entry covering the compressed plain turns.
+    assert len(summary_entries) == 1
+    assert summary_entries[0]["summary"] == "Dense summary of earlier plain turns."
+    # Order is sensible: summary appears before the document in the rebuilt
+    # list, matching the original relative order (document was inserted
+    # after some already-compressed plain turns but before the rest).
+    doc_index = after.index(doc_entries[0])
+    summary_index = after.index(summary_entries[0])
+    assert summary_index < doc_index
+
+    # Retrieval: a query sharing NO topic with the document's filename-
+    # derived topic (or the summary's union topics) must still surface the
+    # document block -- proving turn == -1's bypass survived compaction.
+    memory_section = await _retrieve_and_capture_memory_section(
+        rag, monkeypatch, None, query="completely unrelated astronomy question"
+    )
+    assert "confidential figures" in memory_section
+
+
+@pytest.mark.asyncio
+async def test_compression_does_not_recompress_an_existing_summary_entry(tmp_path, monkeypatch):
+    """Codex P2: an existing summary entry (kind == "summary") must be
+    excluded from the next compaction's "oldest half" too -- re-summarizing
+    a summary would compound lossily (summary-of-summary drift) instead of
+    compressing the newer plain turns that pushed the conversation over the
+    threshold again."""
+    from backend.rag import SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    existing_summary = {
+        "kind": "summary",
+        "turn": 0,
+        "topics": ["old"],
+        "summary": "Original summary of the earliest turns.",
+        "turns_compressed": 6,
+    }
+    rag.store["conv-1"] = {"folder_id": "root", "turns": [existing_summary]}
+    turns = rag.store["conv-1"]["turns"]
+    for i in range(1, SUMMARY_COMPRESSION_THRESHOLD):
+        turns.append({"turn": i, "topics": [f"topic{i}"], "memory": f"Q{i}\nA{i}"})
+
+    seen_prompts = []
+
+    async def fake_query_model(*args, **kwargs):
+        seen_prompts.append(args[1][0]["content"])
+        return {"content": "Second summary of newer plain turns.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    await rag.index_chat_turn("conv-1", "triggers second compaction", "answer", ["y"])
+
+    after = rag.store["conv-1"]["turns"]
+    summary_entries = [t for t in after if t.get("kind") == "summary"]
+
+    # The original summary's text must never appear in the compression
+    # prompt -- it was excluded from the compressible set entirely.
+    assert not any("Original summary of the earliest turns." in p for p in seen_prompts)
+    # The original summary entry survives unchanged, in place.
+    assert existing_summary in after
+    # A second, distinct summary entry now also exists for the newer turns.
+    assert len(summary_entries) == 2
+    assert any(s["summary"] == "Second summary of newer plain turns." for s in summary_entries)
