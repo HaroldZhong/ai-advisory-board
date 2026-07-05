@@ -1797,20 +1797,21 @@ async def test_cancelling_generator_during_indexing_still_records_base_cost(monk
 
 @pytest.mark.asyncio
 async def test_budget_warning_is_yielded_before_indexing_even_if_cancelled_during_it(monkeypatch, tmp_path):
-    """Codex round 23 P2: record_session_usage persists last_warning_level
-    as a side effect of the BASE call, but the budget_warning event used to
-    be emitted only in the tail, after the indexing awaits. A cancellation
-    in that window (client disconnect while index_chat_turn is blocked)
-    meant the warning was already marked "told you" in storage but the
-    client never got the event -- lost forever, since the NEXT turn's
-    warning-level comparison no longer sees it as new. Fixed: emit
-    synchronously right after the base record call (and after
-    chat_response), zero awaits later. This drives a real cancellation
-    (same pattern as the base-cost cancellation test above) while
-    index_chat_turn is blocked, and asserts the budget_warning event was
-    already yielded to the consumer BEFORE the cancellation -- fails
-    pre-fix (the warning would never arrive; the consumer would only see
-    chat_response before the block)."""
+    """Codex round 23 P2, tightened by round 25: record_session_usage
+    persists last_warning_level as a side effect of the BASE call, but the
+    budget_warning event used to be emitted only in the tail, after the
+    indexing awaits. A cancellation in that window (client disconnect while
+    index_chat_turn is blocked) meant the warning was already marked "told
+    you" in storage but the client never got the event -- lost forever,
+    since the NEXT turn's warning-level comparison no longer sees it as
+    new. Round 23 fixed the tail-vs-eager gap by emitting right after
+    chat_response; round 25 closed the last sliver by moving the emission
+    BEFORE chat_response -- zero yields, zero awaits, between the record
+    call and the warning reaching the stream. This drives a real
+    cancellation (same pattern as the base-cost cancellation test above)
+    while index_chat_turn is blocked, and asserts budget_warning arrived
+    BEFORE chat_response in the collected events -- fails pre-fix (either
+    round): the warning would arrive after chat_response, or not at all."""
     import asyncio
 
     main = import_module_with_api_key(monkeypatch, "backend.main")
@@ -1907,6 +1908,10 @@ async def test_budget_warning_is_yielded_before_indexing_even_if_cancelled_durin
     assert "chat_response" in received_events
     assert "budget_warning" in received_events, "the base crossing must be yielded before indexing, not lost to cancellation"
     assert "complete" not in received_events  # generator never reached the tail
+    # Codex round 25: budget_warning now arrives BEFORE chat_response --
+    # the FIRST post-record event, closing the last gap (a disconnect right
+    # after chat_response used to still lose the warning).
+    assert received_events.index("budget_warning") < received_events.index("chat_response")
 
 
 @pytest.mark.asyncio

@@ -397,6 +397,11 @@ async def run_turn(
             # gone forever, since the NEXT turn's comparison no longer sees
             # it as new. Invariant: a persisted last_warning_level is always
             # emitted in the same synchronous block that recorded it.
+            # Codex round 25: confirmed this branch is already gap-free --
+            # stage3_complete (the council answer) was yielded earlier,
+            # before add_assistant_message/this record call, so there is no
+            # equivalent "yield sitting between record and warning" gap
+            # here the way the chat branch had (fixed in round 25).
             base_warning_level = budget_state["warning_level"]
             if base_warning_level is not None:
                 base_warning_pct = int(base_warning_level * 100)
@@ -648,6 +653,22 @@ async def run_turn(
             main.storage.update_conversation_cost(conversation_id, turn_cost)
             budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
 
+            # Codex round 25 (P2): emit the budget_warning event HERE,
+            # BEFORE chat_response -- round 23 put it right after
+            # chat_response, but that still left one yield (chat_response
+            # itself) between record_session_usage persisting
+            # last_warning_level and the warning event reaching the
+            # stream. A client disconnecting right after receiving
+            # chat_response would still lose the warning forever (see the
+            # council branch's identical comment for the full invariant/
+            # rationale). Zero yields, zero awaits, between the record call
+            # and this yield closes that gap completely.
+            base_warning_level = budget_state["warning_level"]
+            if base_warning_level is not None:
+                base_warning_pct = int(base_warning_level * 100)
+                logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
+                yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
+
             # Codex round 15 (P2): deliver the answer NOW, before memory
             # indexing. Topic extraction + index_chat_turn (below) can burn
             # up to ~25s of utility-LLM time; previously chat_response
@@ -660,17 +681,6 @@ async def run_turn(
             # and best-effort (see the try/except below).
             yield {"type": "chat_response", "data": response_dict}
             logger.info("[CHAT] Chat response sent to client")
-
-            # Codex round 23 (P2): emit the budget_warning event HERE, right
-            # after chat_response and in the same synchronous block that
-            # just recorded the base cost (zero awaits in between) -- see
-            # the council branch's identical comment for the invariant and
-            # the cancellation-loses-the-warning-forever rationale.
-            base_warning_level = budget_state["warning_level"]
-            if base_warning_level is not None:
-                base_warning_pct = int(base_warning_level * 100)
-                logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
-                yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
 
             # Chat turns previously left no memory (P5-T5 feature 2). Skip
             # for effective-turn ZDR (audit §12, Decision #5), mirroring the
