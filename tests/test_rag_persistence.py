@@ -1786,3 +1786,213 @@ async def test_cancelling_generator_during_indexing_still_records_base_cost(monk
     assert conversation["total_cost"] == pytest.approx(base_cost)
     assert usage["spent_usd"] == pytest.approx(base_cost)
     assert usage["messages"] == 1
+
+
+# --- Codex round 11 on PR #80: read barrier hardening + summary merge ---
+
+
+@pytest.mark.asyncio
+async def test_retrieve_read_barrier_skips_source_conversation_whose_get_conversation_raises(tmp_path, monkeypatch):
+    """Codex P2: the round-10 read barrier calls get_conversation(cid) for
+    every source conversation. That call can RAISE (corrupt JSON, file
+    deleted mid-read) -- an unrelated source's read failure must not abort
+    retrieval for every OTHER source. Fails pre-fix (the whole call raises,
+    no context is returned at all)."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    storage.create_conversation("conv-good")
+    storage.create_conversation("conv-current")
+
+    real_get_conversation = storage.get_conversation
+
+    def flaky_get_conversation(cid):
+        if cid == "conv-bad":
+            raise OSError("simulated corrupt read for conv-bad")
+        return real_get_conversation(cid)
+
+    monkeypatch.setattr(rag_module, "get_conversation", flaky_get_conversation)
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    rag.store["conv-bad"] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "topics": [], "memory": "memory behind a raising read"}],
+    }
+    rag.store["conv-good"] = {
+        "folder_id": "root",
+        "turns": [{"turn": 0, "topics": [], "memory": "ordinary conv-good memory should still retrieve"}],
+    }
+
+    captured_kwargs = {}
+
+    async def fake_query_model(*args, **kwargs):
+        captured_kwargs["messages"] = args[1]
+        return {"content": "irrelevant"}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    # Must not raise, despite conv-bad's get_conversation raising.
+    result = await rag.retrieve_async("current question", "conv-current", max_tokens=None)
+
+    assert result[0] != ""  # retrieval succeeded overall
+    prompt = captured_kwargs["messages"][0]["content"]
+    memory_section = prompt.split("USER MEMORY LOGS:\n", 1)[1]
+
+    assert "ordinary conv-good memory should still retrieve" in memory_section
+    assert "memory behind a raising read" not in memory_section
+
+
+@pytest.mark.asyncio
+async def test_summary_merge_combines_accumulated_summaries_at_first_position(tmp_path, monkeypatch):
+    """Codex P2: summary entries are permanently exempt from plain-turn
+    compression (round 9), so without a second-level cap they accumulate
+    one per compaction cycle -- unbounded growth. Seed MAX_SUMMARY_ENTRIES+1
+    summaries, plus a document and some plain turns, and trigger a
+    compaction that also crosses the summary-merge threshold: the summaries
+    merge into ONE at the position of the first summary (min turn, union
+    topics, summed turns_compressed); plain turns and the document are
+    untouched."""
+    from backend.rag import MAX_SUMMARY_ENTRIES, SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    turns = []
+    for i in range(MAX_SUMMARY_ENTRIES + 1):
+        turns.append({
+            "kind": "summary",
+            "turn": i * 10,
+            "topics": [f"topic{i}"],
+            "summary": f"Summary number {i}.",
+            "turns_compressed": 2 + i,
+        })
+    document_entry = {
+        "turn": -1,
+        "topics": ["document:report.pdf"],
+        "memory": "[Uploaded Document: report.pdf]\nverbatim body",
+    }
+    turns.append(document_entry)
+    # Enough plain turns to cross SUMMARY_COMPRESSION_THRESHOLD and trigger
+    # the plain-turn compaction path too, so this exercises both tiers in
+    # one call (the merge runs from inside that same call).
+    for i in range(SUMMARY_COMPRESSION_THRESHOLD):
+        turns.append({"turn": 1000 + i, "topics": [f"plain{i}"], "memory": f"Q{i}\nA{i}"})
+    rag.store["conv-1"] = {"folder_id": "root", "turns": turns}
+
+    responses = iter([
+        {"content": "Compressed plain-turn summary.", "usage": {"prompt_tokens": 3, "completion_tokens": 3}},
+        {"content": "Merged summary of everything.", "usage": {"prompt_tokens": 7, "completion_tokens": 7}},
+    ])
+
+    async def fake_query_model(*args, **kwargs):
+        return next(responses)
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    usage = await rag.index_chat_turn("conv-1", "new question", "new answer", ["z"])
+
+    after = rag.store["conv-1"]["turns"]
+    summary_entries = [t for t in after if t.get("kind") == "summary"]
+    doc_entries = [t for t in after if t.get("turn") == -1]
+
+    # All original + new summaries merged into exactly one.
+    assert len(summary_entries) == 1
+    merged = summary_entries[0]
+    assert merged["summary"] == "Merged summary of everything."
+    # min turn across the pre-merge summaries (0, 10, 20, 30) is 0.
+    assert merged["turn"] == 0
+    assert set(merged["topics"]) >= {"topic0", "topic1", "topic2", "topic3"}
+    # summed turns_compressed: (2+3+4+5) from the original 4 summaries, plus
+    # whatever the plain-turn compaction's own new summary contributed.
+    assert merged["turns_compressed"] >= (2 + 3 + 4 + 5)
+
+    # Document survives verbatim, untouched.
+    assert len(doc_entries) == 1
+    assert doc_entries[0]["memory"] == "[Uploaded Document: report.pdf]\nverbatim body"
+
+    # The merged entry sits where the FIRST original summary was (before
+    # the document and the plain turns in original order).
+    merged_index = after.index(merged)
+    doc_index = after.index(doc_entries[0])
+    assert merged_index < doc_index
+
+    # Returned usage sums both LLM calls (compression + merge).
+    assert usage == {"prompt_tokens": 10, "completion_tokens": 10}
+
+
+@pytest.mark.asyncio
+async def test_summary_merge_skips_on_llm_failure_leaving_all_summaries_intact(tmp_path, monkeypatch, caplog):
+    """Codex P2: merge-LLM failure must be fail-open -- skip the merge
+    entirely, no data loss. All summaries stay intact."""
+    from backend.rag import MAX_SUMMARY_ENTRIES
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    turns = [
+        {
+            "kind": "summary",
+            "turn": i * 10,
+            "topics": [f"topic{i}"],
+            "summary": f"Summary number {i}.",
+            "turns_compressed": 2,
+        }
+        for i in range(MAX_SUMMARY_ENTRIES + 1)
+    ]
+    rag.store["conv-1"] = {"folder_id": "root", "turns": list(turns)}
+
+    async def fake_query_model_none(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model_none)
+
+    with caplog.at_level("WARNING"):
+        merge_usage = await rag._maybe_merge_summaries("conv-1")
+
+    assert merge_usage is None
+    after = rag.store["conv-1"]["turns"]
+    assert after == turns  # untouched
+    summary_entries = [t for t in after if t.get("kind") == "summary"]
+    assert len(summary_entries) == MAX_SUMMARY_ENTRIES + 1
+    assert any("summary merge" in r.message.lower() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_repeated_compaction_cycles_keep_entry_count_bounded(tmp_path, monkeypatch):
+    """Codex P2: growth-bound check. Loop many chat turns through a
+    conversation with a mocked (always-succeeding) compression/merge LLM,
+    and assert the total entry count never exceeds
+    threshold + MAX_SUMMARY_ENTRIES + documents -- proving the second-level
+    summary-merge tier actually keeps overall growth bounded over many
+    cycles, not just one."""
+    from backend.rag import MAX_SUMMARY_ENTRIES, SUMMARY_COMPRESSION_THRESHOLD
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    call_count = 0
+
+    async def fake_query_model(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {"content": f"Summary #{call_count}.", "usage": {}}
+
+    monkeypatch.setattr(rag_module, "query_model", fake_query_model)
+
+    max_seen = 0
+    for i in range(80):  # many cycles: several plain-turn compactions and summary merges
+        await rag.index_chat_turn("conv-1", f"question {i}", f"answer {i}", [f"topic{i}"])
+        max_seen = max(max_seen, len(rag.store["conv-1"]["turns"]))
+
+    documents = 0  # this conversation never indexes a document
+    bound = SUMMARY_COMPRESSION_THRESHOLD + MAX_SUMMARY_ENTRIES + documents
+    assert max_seen <= bound, f"entry count grew to {max_seen}, exceeding the bound {bound}"

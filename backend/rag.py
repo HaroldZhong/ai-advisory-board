@@ -26,7 +26,26 @@ MEMORY_STORE_VERSION = "2"
 # compressed into a single summary entry.
 SUMMARY_COMPRESSION_THRESHOLD = 12
 
+# Codex round 11: summary entries are permanently excluded from the plain-
+# turn compression tier above (round 9), so without a second-level cap they
+# accumulate one per compaction cycle -- unbounded growth in very long
+# conversations, defeating the whole point of this tier. Once a
+# conversation's summary-entry count exceeds this, merge them all into one.
+MAX_SUMMARY_ENTRIES = 3
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _sum_usage(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    """Add two usage dicts' prompt_tokens/completion_tokens together (Codex
+    round 11: a single index_session/index_chat_turn call can trigger both
+    plain-turn compression AND a summary merge in the same turn -- callers
+    bill the returned usage with one calculate_cost() call, so both LLM
+    calls' costs must land in one dict)."""
+    return {
+        "prompt_tokens": a.get("prompt_tokens", 0) + b.get("prompt_tokens", 0),
+        "completion_tokens": a.get("completion_tokens", 0) + b.get("completion_tokens", 0),
+    }
 
 
 def _tokenize(text: str) -> set:
@@ -581,6 +600,80 @@ class CouncilRAG:
                 rebuilt.append(summary_entry)
                 summary_inserted = True
         self.store[conversation_id]["turns"] = rebuilt
+
+        usage = response.get("usage") or {}
+        # Codex round 11: second-level compaction -- merge accumulated
+        # summaries so they don't grow unbounded. Runs under the same write
+        # lock the caller already holds, right after this compaction's own
+        # write-back, so it sees the just-rebuilt list.
+        merge_usage = await self._maybe_merge_summaries(conversation_id)
+        if merge_usage:
+            usage = _sum_usage(usage, merge_usage)
+        return usage
+
+    async def _maybe_merge_summaries(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Codex round 11: second-level compaction. Document entries
+        (turn == -1) are permanently exempt -- bounded by upload count in
+        practice, and their bodies must stay verbatim (retrieval's topic
+        filter bypass depends on turn == -1, round 9). Summary entries are
+        NOT permanently exempt: once their count exceeds MAX_SUMMARY_ENTRIES,
+        merge ALL of them into one via UTILITY_MODEL, replacing them at the
+        position of the FIRST summary. On LLM failure: skip entirely, no
+        data loss -- same fail-open convention as the plain-turn tier.
+        """
+        turns = self.store[conversation_id]["turns"]
+        summary_positions = [i for i, entry in enumerate(turns) if entry.get("kind") == "summary"]
+        if len(summary_positions) <= MAX_SUMMARY_ENTRIES:
+            return None
+
+        summaries = [turns[i] for i in summary_positions]
+        merge_text = "\n\n".join(s["summary"] for s in summaries)
+        prompt = (
+            "Combine the following summaries into a single dense, factual "
+            "summary. Preserve concrete facts, decisions, and numbers. "
+            "Be concise.\n\n" + merge_text
+        )
+        try:
+            response = await query_model(UTILITY_MODEL, [{"role": "user", "content": prompt}], timeout=15.0)
+        except Exception:
+            logger.exception("[RAG] Summary merge call failed for conv=%s; skipping merge", conversation_id)
+            return None
+
+        if not response or not (response.get("content") or "").strip():
+            logger.warning("[RAG] Summary merge returned no content for conv=%s; skipping merge", conversation_id)
+            return None
+
+        if conversation_id not in self.store:
+            logger.warning(
+                "[RAG] Conversation %s removed from PageIndex store during summary merge; discarding the merged result",
+                conversation_id,
+            )
+            return response.get("usage") or {}
+
+        union_topics = []
+        for s in summaries:
+            for topic in s.get("topics") or []:
+                if topic not in union_topics:
+                    union_topics.append(topic)
+
+        merged_entry = {
+            "kind": "summary",
+            "turn": min(s["turn"] for s in summaries),
+            "topics": union_topics,
+            "summary": response["content"].strip(),
+            "turns_compressed": sum(s.get("turns_compressed", 0) for s in summaries),
+        }
+        summary_positions_set = set(summary_positions)
+        rebuilt = []
+        merged_inserted = False
+        for i, entry in enumerate(turns):
+            if i not in summary_positions_set:
+                rebuilt.append(entry)
+                continue
+            if not merged_inserted:
+                rebuilt.append(merged_entry)
+                merged_inserted = True
+        self.store[conversation_id]["turns"] = rebuilt
         return response.get("usage") or {}
 
     async def index_document(self, conversation_id: str, filename: str, text: str, max_chars: int = 8000):
@@ -716,7 +809,16 @@ class CouncilRAG:
         # finishes (that delay is fine); this only closes the READ leak.
         filtered_convs = {}
         for cid, data in other_convs.items():
-            source_conversation = get_conversation(cid)
+            # Codex round 11 (P2): get_conversation can RAISE (corrupt JSON,
+            # file deleted mid-read) -- an unrelated source conversation's
+            # read failure must not abort retrieval for every OTHER source.
+            # Same fail-closed treatment as an unreadable/malformed result:
+            # skip just this one source.
+            try:
+                source_conversation = get_conversation(cid)
+            except Exception:
+                logger.info("[RAG] Skipping unreadable source conversation %s during retrieval", cid)
+                continue
             if not isinstance(source_conversation, dict) or not isinstance(source_conversation.get("metadata"), dict) or source_conversation["metadata"].get("zdr_enabled"):
                 continue
             filtered_convs[cid] = data
