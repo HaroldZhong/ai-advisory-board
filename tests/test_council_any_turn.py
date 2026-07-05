@@ -59,14 +59,14 @@ def _setup_council_fakes(monkeypatch, main, captured):
         return "Title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     _patch_both(monkeypatch, main, "run_tool_steward_phase", fake_steward)
     _patch_both(monkeypatch, main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     _patch_both(monkeypatch, main, "stage2_collect_rankings", fake_stage2)
     _patch_both(monkeypatch, main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
 
     async def fake_index_session(*args, **kwargs):
         return None

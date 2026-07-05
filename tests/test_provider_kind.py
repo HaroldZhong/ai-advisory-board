@@ -482,13 +482,13 @@ def _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, metadata
         return {"content": "response", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(
         main,
         "rag_system",

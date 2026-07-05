@@ -40,14 +40,14 @@ def _setup_council_fakes(monkeypatch, main, rag_system):
         return "Test title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
     monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "rag_system", rag_system)
 
 
@@ -520,7 +520,7 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
         return "Test title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     rag_system = SimpleNamespace(
         index_session=Mock(wraps=real_rag.index_session),
@@ -533,7 +533,7 @@ async def test_council_turn_skips_indexing_when_zdr_enabled_mid_turn(monkeypatch
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "rag_system", rag_system)
 
     await main.send_message(

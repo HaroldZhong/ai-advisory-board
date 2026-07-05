@@ -87,7 +87,6 @@ async def test_rag_write_barrier_blocks_index_session_and_index_document_for_zdr
 
     await rag.index_session(
         "conv-zdr",
-        0,
         "question",
         stage1_results=[],
         stage2_results=[],
@@ -618,6 +617,35 @@ def test_purge_skips_marker_and_retries_when_save_fails(tmp_path, monkeypatch, c
     assert marker_path.read_text(encoding="utf-8").strip() == "2"
 
 
+def test_purge_tolerates_marker_write_failure_without_crashing_construction(tmp_path, monkeypatch, caplog):
+    """Codex round 6 P2: the final write_text_atomic(marker) call on the
+    fresh-install/already-empty-store path sat OUTSIDE any try/except.
+    Disk-full or permissions there would raise straight out of
+    _apply_one_time_memory_reset, aborting CouncilRAG's constructor and
+    crashing backend startup entirely -- a much worse failure mode than a
+    missing marker. Must log an ERROR and continue with a consistent
+    (empty) in-memory store instead."""
+    pageindex_dir = tmp_path / "pageindex"  # fresh install: no store file at all
+
+    def fail_write(path, content, **kwargs):
+        raise PermissionError("disk full")
+
+    monkeypatch.setattr(rag_module, "write_text_atomic", fail_write)
+
+    with caplog.at_level("ERROR"):
+        rag = CouncilRAG(persist_path=str(pageindex_dir))
+
+    # Construction must succeed (no raise) and leave a consistent state.
+    assert rag.enabled is True
+    assert rag.store == {}
+    marker_path = pageindex_dir / "pageindex_memory.version"
+    assert not marker_path.exists()
+    assert any(
+        "memory version marker could not be written" in r.message.lower()
+        for r in caplog.records
+    )
+
+
 # --- P5-T5 feature 2: chat-turn indexing ---
 
 
@@ -841,13 +869,13 @@ async def test_summary_compression_usage_bills_totals_but_not_persisted_running_
         return {"content": "Budget-aware response", "usage": chairman_usage}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return compression_usage
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(
         main,
@@ -879,6 +907,158 @@ async def test_summary_compression_usage_bills_totals_but_not_persisted_running_
     assert conversation["total_cost"] == pytest.approx(expected_total)
     # The already-persisted message running_cost snapshot excludes it.
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(chairman_cost)
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
+    """Codex round 6 P2: extract_topics_with_usage's own call burns
+    UTILITY_MODEL tokens on every chat turn, but that usage used to be
+    discarded entirely (plain extract_topics returns only the topic list).
+    Now that compression usage is billed, this was the last remaining
+    invisible-cost gap in the chat branch. Billed the same delta way as
+    compression: turn_cost was already computed above this call, so the
+    topics usage is added on top."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-topics-billing-chat"
+
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    topics_usage = {"prompt_tokens": 50_000, "completion_tokens": 5_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], topics_usage
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None  # no compression this turn -- isolates the topics delta
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    # openai/gpt-4o-mini pricing: input=$0.15/M, output=$0.6/M
+    chairman_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    # google/gemini-2.5-flash (UTILITY_MODEL) pricing: input=$0.3/M, output=$2.5/M
+    topics_cost = (50_000 / 1_000_000) * 0.3 + (5_000 / 1_000_000) * 2.5
+    expected_total = chairman_cost + topics_cost
+
+    conversation = main.storage.get_conversation(conversation_id)
+
+    assert result["turn_cost"] == pytest.approx(expected_total)
+    assert result["total_cost"] == pytest.approx(expected_total)
+    assert conversation["total_cost"] == pytest.approx(expected_total)
+    # Same delta convention as compression: persisted running_cost predates it.
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(chairman_cost)
+
+
+@pytest.mark.asyncio
+async def test_council_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
+    """Codex round 6 P2, council side: extract_topics_with_usage's call in
+    the council branch burns UTILITY_MODEL tokens too and was equally
+    unbilled. Same delta-billing convention."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-topics-billing-council"
+
+    stage_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    topics_usage = {"prompt_tokens": 50_000, "completion_tokens": 5_000}
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+
+    from backend.tools.types import EvidencePack
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="run-1", query="q"), {}
+
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {"model": "openai/gpt-4o-mini", "response": "Answer A", "usage": stage_usage}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
+
+    async def fake_stage2(*args, **kwargs):
+        return (
+            [{"model": "openai/gpt-4o-mini", "ranking": "1. Response A", "parsed_ranking": ["Response A"], "usage": {}}],
+            {"Response A": "openai/gpt-4o-mini"},
+        )
+
+    async def fake_stage3(*args, **kwargs):
+        return {"model": "openai/gpt-4o-mini", "response": "Final answer", "usage": {}}
+
+    async def fake_title(*args, **kwargs):
+        return "Test title"
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], topics_usage
+
+    async def fake_index_session(*args, **kwargs):
+        return None  # no compression this turn -- isolates the topics delta
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
+    monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
+    monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            index_session=fake_index_session,
+            refresh_hybrid_index=lambda *a, **k: None,
+            index_document=lambda *a, **k: None,
+        ),
+    )
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="What should we do?", mode="council"),
+    )
+
+    # openai/gpt-4o-mini pricing (all three stages use it here): input=$0.15/M, output=$0.6/M
+    stage_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    # google/gemini-2.5-flash (UTILITY_MODEL) pricing: input=$0.3/M, output=$2.5/M
+    topics_cost = (50_000 / 1_000_000) * 0.3 + (5_000 / 1_000_000) * 2.5
+    expected_total = stage_cost + topics_cost
+
+    conversation = main.storage.get_conversation(conversation_id)
+
+    assert result["turn_cost"] == pytest.approx(expected_total)
+    assert result["total_cost"] == pytest.approx(expected_total)
+    assert conversation["total_cost"] == pytest.approx(expected_total)
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(stage_cost)
 
 
 # --- Codex round 3 on PR #80: per-conversation write serialization + monotonic turn numbers ---
@@ -1126,3 +1306,45 @@ async def test_purge_waits_for_in_flight_compression_then_deletes_cleanly(tmp_pa
     await purge_task  # then the purge runs and removes it
 
     assert "conv-1" not in rag.store
+
+
+# --- Codex round 6 on PR #80: id collisions between council and chat memory ---
+
+
+@pytest.mark.asyncio
+async def test_index_session_and_index_chat_turn_share_one_monotonic_turn_sequence(tmp_path, monkeypatch):
+    """Codex P2: index_session used to number its memory entries via
+    get_turn_index(conversation), which counts only COUNCIL messages -- so a
+    council turn and a chat turn in the SAME conversation could land in the
+    memory store under the same "turn" number (e.g. the conversation's first
+    council turn AND first chat turn both numbered 0). Fixed by having
+    index_session compute its turn number the same way index_chat_turn
+    already does: one past the max "turn" across ALL of this conversation's
+    memory entries, council or chat. Interleave a chat turn, a council turn,
+    then another chat turn for the same conversation and assert every stored
+    turn number is unique and strictly increasing."""
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+
+    await rag.index_chat_turn("conv-1", "chat question 1", "chat answer 1", ["a"])
+    await rag.index_session(
+        "conv-1",
+        "council question 1",
+        stage1_results=[],
+        stage2_results=[],
+        stage3_result={"model": "chair", "response": "council answer 1"},
+        topics=["b"],
+        quality_metrics={},
+    )
+    await rag.index_chat_turn("conv-1", "chat question 2", "chat answer 2", ["c"])
+
+    turns = rag.store["conv-1"]["turns"]
+    turn_numbers = [t["turn"] for t in turns]
+
+    assert len(turn_numbers) == len(set(turn_numbers)), "no duplicate turn numbers between chat and council entries"
+    assert turn_numbers == sorted(turn_numbers), "turn numbers strictly increase in insertion order"
+    assert turn_numbers == [0, 1, 2]

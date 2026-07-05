@@ -322,10 +322,6 @@ async def run_turn(
                 running_cost=turn_cost,
             )
 
-            # Calculate turn_index BEFORE using it
-            updated_conversation = main.storage.get_conversation(conversation_id)
-            turn_index = main.get_turn_index(updated_conversation) - 1
-
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
             # skip for effective-turn ZDR (audit §12, Decision #5): covers the
@@ -338,16 +334,24 @@ async def run_turn(
             # before it mutates the store, closing that race at the root
             # regardless of how many awaits happen in between.
             if stage3_result.get("model") != "error" and not zdr_enabled:
-                logger.info("[PHASE1] Indexing turn %d for conversation %s", turn_index, conversation_id)
+                logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
 
-                # Extract topics from question + final answer
-                from .council import extract_topics
+                # Extract topics from question + final answer. Codex round 6:
+                # this call burns UTILITY_MODEL tokens on every council turn;
+                # bill it the same delta way as compression usage below --
+                # turn_cost was already computed/persisted above, so this is
+                # a delta added on top, reaching conversation total/session
+                # budget/completion payload but not the persisted
+                # running_cost snapshot.
+                from .council import extract_topics_with_usage
                 combined_text = request.content + " " + stage3_result.get("response", "")
-                topics = await extract_topics(
+                topics, topics_usage = await extract_topics_with_usage(
                     combined_text,
                     max_topics=3,
                     zdr_enabled=zdr_enabled,
                 )
+                if topics_usage:
+                    turn_cost += main.calculate_cost(topics_usage, config.UTILITY_MODEL)
                 logger.info("[PHASE1] Topics extracted: %s", topics)
 
                 logger.info("[PHASE1] Quality metrics: %s", quality_metrics)
@@ -357,7 +361,6 @@ async def run_turn(
                 # turn count just crossed the compression threshold.
                 summary_usage = await main.rag_system.index_session(
                     conversation_id,
-                    turn_index,
                     request.content,
                     stage1_results,
                     stage2_results,
@@ -522,13 +525,19 @@ async def run_turn(
             # not become cross-conversation memory -- mirrors the council
             # branch's stage3_result.get("model") != "error" guard above.
             if not zdr_enabled and not response_dict.get("error"):
-                from .council import extract_topics
+                from .council import extract_topics_with_usage
                 combined_text = request.content + " " + response_dict.get("content", "")
-                chat_topics = await extract_topics(
+                chat_topics, chat_topics_usage = await extract_topics_with_usage(
                     combined_text,
                     max_topics=3,
                     zdr_enabled=zdr_enabled,
                 )
+                if chat_topics_usage:
+                    # Codex round 6: same delta-billing approach as the
+                    # council branch and as compression usage below --
+                    # turn_cost/running_cost were already computed and
+                    # persisted above.
+                    turn_cost += main.calculate_cost(chat_topics_usage, config.UTILITY_MODEL)
                 # Turn numbering (Codex round 3) now lives inside
                 # index_chat_turn itself, computed under its write lock, so
                 # concurrent chat turns for this conversation can't collide

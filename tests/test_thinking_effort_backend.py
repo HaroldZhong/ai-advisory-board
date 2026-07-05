@@ -296,13 +296,13 @@ async def test_sync_chat_passes_resolved_thinking_effort_to_chairman(monkeypatch
         return {"content": "Thinking response", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(
         main,
         "rag_system",
@@ -348,13 +348,13 @@ async def test_stream_chat_passes_request_thinking_effort_to_chairman(monkeypatc
         return {"content": "Thinking response", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(
         main,
         "rag_system",

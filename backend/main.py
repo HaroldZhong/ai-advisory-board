@@ -34,14 +34,6 @@ from .reasoning_stream import ReasoningStreamState
 # Initialize RAG system
 rag_system = CouncilRAG()
 
-def get_turn_index(conversation: Dict[str, Any]) -> int:
-    """Count the number of completed Council turns (messages with stage3)."""
-    count = 0
-    for msg in conversation.get("messages", []):
-        if msg.get("role") == "assistant" and "stage3" in msg:
-            count += 1
-    return count
-
 def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
     """Calculate cost based on usage and model pricing."""
     if not usage or not model_id:

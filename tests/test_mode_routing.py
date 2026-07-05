@@ -39,14 +39,14 @@ def _setup_council_fakes(monkeypatch, main):
         return "Title"
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
     monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
 
     async def fake_index_session(*args, **kwargs):
         return None
@@ -76,13 +76,13 @@ def _setup_chat_fakes(monkeypatch, main):
         return "", {}
 
     async def fake_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     # Chat-first turns start a title task now — never let tests hit the network.
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)

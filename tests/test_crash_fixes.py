@@ -11,7 +11,16 @@ def import_module_with_api_key(monkeypatch, module_name):
 
 
 @pytest.mark.asyncio
-async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
+async def test_sync_council_indexes_the_conversation_after_the_assistant_message_is_saved(monkeypatch):
+    """Codex round 6: index_session used to take a turn_index computed from
+    get_turn_index(conversation) -- a THIRD get_conversation read staged
+    between add_assistant_message and indexing. That parameter is gone now
+    (index_session computes its own memory turn number internally, under its
+    write lock, unified with index_chat_turn's scheme -- see
+    tests/test_rag_persistence.py::test_index_session_and_index_chat_turn_share_one_monotonic_turn_sequence
+    for the id-collision fix itself). What THIS test still verifies: the
+    council branch calls index_session with the right conversation_id after
+    the assistant message is saved, not before."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
 
     initial_conversation = {
@@ -31,9 +40,10 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
     monkeypatch.setattr(
         main.storage,
         "get_conversation",
-        # Three reads: endpoint pre-flight, turn-index calculation after the
-        # assistant message is saved, and the completion-event total-cost read.
-        Mock(side_effect=[initial_conversation, indexed_conversation, indexed_conversation]),
+        # Two reads: endpoint pre-flight, then the completion-event
+        # total-cost read. (A third read used to sit between them to compute
+        # get_turn_index -- gone along with that parameter.)
+        Mock(side_effect=[initial_conversation, indexed_conversation]),
     )
     monkeypatch.setattr(main.storage, "add_user_message", Mock())
     monkeypatch.setattr(main.storage, "update_conversation_title", Mock())
@@ -73,13 +83,13 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
         return {"model": "chair", "response": "Final answer", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["planning"]
+        return (["planning"], {})
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_run_tool_steward_phase)
     monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr("backend.council.calculate_quality_metrics", Mock(return_value={"model-a": {}}))
 
     fake_rag = SimpleNamespace(
@@ -95,7 +105,7 @@ async def test_sync_council_indexes_after_turn_index_is_available(monkeypatch):
 
     assert result["type"] == "council"
     fake_rag.index_session.assert_called_once()
-    assert fake_rag.index_session.call_args.args[1] == 0
+    assert fake_rag.index_session.call_args.args[0] == "conv-sync-crash"
 
 
 def test_truncate_messages_does_not_crash_when_logging(monkeypatch, tmp_path):

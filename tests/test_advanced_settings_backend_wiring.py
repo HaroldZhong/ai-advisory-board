@@ -41,14 +41,14 @@ def stub_sync_council_dependencies(main, monkeypatch, captured=None):
         return {"model": "chair", "response": "Final answer", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["planning"]
+        return (["planning"], {})
 
     monkeypatch.setattr(main, "generate_conversation_title", fake_generate_conversation_title)
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_run_tool_steward_phase)
     monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr("backend.council.calculate_quality_metrics", Mock(return_value={"model-a": {}}))
 
     async def fake_index_session(*args, **kwargs):
@@ -225,13 +225,13 @@ async def test_sync_chat_uses_advanced_settings_for_rag_and_chairman(monkeypatch
         return {"content": "Advanced response", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(
         main,
         "rag_system",
@@ -289,13 +289,13 @@ async def test_stream_chat_uses_advanced_settings_for_rag_and_chairman(monkeypat
         return {"content": "Advanced response", "usage": {}}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(
         main,
         "rag_system",

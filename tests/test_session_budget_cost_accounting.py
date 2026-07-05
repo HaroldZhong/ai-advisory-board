@@ -129,7 +129,7 @@ async def test_sync_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
         return "", {}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
@@ -142,7 +142,7 @@ async def test_sync_chat_updates_total_and_session_cost(monkeypatch, tmp_path):
     )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -200,7 +200,7 @@ async def test_sync_chat_counts_rag_extraction_usage_in_turn_cost(monkeypatch, t
         return "captured RAG context", rag_extraction_usage
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
@@ -213,7 +213,7 @@ async def test_sync_chat_counts_rag_extraction_usage_in_turn_cost(monkeypatch, t
     )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -261,7 +261,7 @@ async def test_sync_chat_skips_rag_cost_when_no_extraction_ran(monkeypatch, tmp_
         return "", {}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
@@ -274,7 +274,7 @@ async def test_sync_chat_skips_rag_cost_when_no_extraction_ran(monkeypatch, tmp_
     )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 
@@ -314,7 +314,7 @@ async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path)
         return "", {}
 
     async def fake_extract_topics(*args, **kwargs):
-        return ["topic"]
+        return (["topic"], {})
 
     async def fake_index_chat_turn(*args, **kwargs):
         return None
@@ -327,7 +327,7 @@ async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path)
     )
 
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics)
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
     monkeypatch.setattr(main, "rag_system", fake_rag)
 

@@ -165,7 +165,18 @@ class CouncilRAG:
             )
         # Fresh install (no prior store file) or an already-empty store: just
         # write the marker, no reset log spam since nothing was purged.
-        write_text_atomic(Path(self.version_file), MEMORY_STORE_VERSION)
+        # Codex round 6: this write can also fail (disk full, permissions)
+        # and, unlike the reset-save path above, was never wrapped -- letting
+        # it raise here would abort CouncilRAG's constructor and crash
+        # backend startup entirely. Tolerate it the same way: log and
+        # continue with an empty/unchanged in-memory store; the marker being
+        # absent just means the next startup retries this whole method.
+        try:
+            write_text_atomic(Path(self.version_file), MEMORY_STORE_VERSION)
+        except (OSError, RuntimeError):
+            logger.error(
+                "[RAG] Memory version marker could not be written; reset will retry next startup"
+            )
 
     def cleanup_zdr_conversations(self) -> int:
         """One-time-per-process startup sweep (audit §12, Decision #5).
@@ -316,7 +327,6 @@ class CouncilRAG:
     async def index_session(
         self,
         conversation_id: str,
-        turn_index: int,
         user_question: str,
         stage1_results: List[Dict[str, Any]],
         stage2_results: List[Dict[str, Any]],
@@ -326,6 +336,14 @@ class CouncilRAG:
     ) -> Optional[Dict[str, Any]]:
         """
         Index one council session as chronological memory blocks.
+
+        Turn number is computed here (not by the caller): Codex round 6 --
+        the pipeline used to pass get_turn_index(conversation), which counts
+        only COUNCIL messages, so a chat turn and a council turn in the same
+        conversation could land in the store under the same memory turn
+        number. Unified with index_chat_turn's scheme: one past the max
+        "turn" seen across ALL entries in this conversation's memory (council
+        or chat), computed under the same lock that guards the append.
 
         Returns the summary-compression LLM call's usage dict when the P5-T5
         summary tier compressed this conversation's oldest turns, else None.
@@ -366,13 +384,16 @@ class CouncilRAG:
                     "turns": []
                 }
 
+            turns = self.store[conversation_id]["turns"]
+            turn_index = max((entry.get("turn", -1) for entry in turns), default=-1) + 1
+
             # Only index the user's question and the final synthesized answer to save context tokens for reasoning retrieve
             turn_memory = {
                 "turn": turn_index,
                 "topics": topics,
                 "memory": f"Q: {user_question}\nA: {final_text}"
             }
-            self.store[conversation_id]["turns"].append(turn_memory)
+            turns.append(turn_memory)
             usage = await self._maybe_compress_oldest_half(conversation_id)
             self._save_store()
             if self.enabled:
