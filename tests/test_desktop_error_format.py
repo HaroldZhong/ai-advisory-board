@@ -2,7 +2,8 @@
 """Map raw startup tracebacks to actionable user hints (audit §4.4)."""
 import pytest
 
-from desktop import format_user_error
+import desktop
+from desktop import format_user_error, get_port_bind_error, startup_error_html
 
 
 def test_missing_key_hint():
@@ -37,3 +38,22 @@ def test_real_bind_conflict_error_maps_to_port_hint():
         holder.close()
     title, hint = format_user_error(str(exc_info.value))
     assert "8001" in hint
+
+
+def test_port_preflight_detects_held_port(monkeypatch):
+    import socket
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    port = holder.getsockname()[1]
+    monkeypatch.setattr(desktop, "SERVER_PORT", port)
+    try:
+        assert isinstance(get_port_bind_error(), OSError)
+    finally:
+        holder.close()
+
+
+def test_startup_error_html_uses_friendly_port_hint():
+    html = startup_error_html("OSError: [WinError 10048] Only one usage")
+    assert "Port 8001 is taken" in html
+    assert "Another program is using port 8001" in html

@@ -129,6 +129,31 @@ def format_user_error(traceback_str: str) -> tuple:
     return ("Server failed to start",
             "Check logs/desktop.log in the app data folder for details.")
 
+
+def get_port_bind_error() -> Exception | None:
+    """Return the bind error when another process owns the desktop port."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name != "nt":
+            # Match asyncio's POSIX bind semantics: without SO_REUSEADDR a
+            # quick app restart would false-positive on TIME_WAIT sockets.
+            # Not on Windows, where SO_REUSEADDR would bind through a
+            # live foreign listener and defeat the check.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind((SERVER_HOST, SERVER_PORT))
+    except OSError as exc:
+        return exc
+    finally:
+        probe.close()
+    return None
+
+
+def startup_error_html(error_text: str) -> str:
+    title, hint = format_user_error(error_text)
+    safe_error = error_text.replace("\\", "\\\\").replace("`", "'")
+    return ERROR_HTML.format(title=title, hint=hint, error=safe_error)
+
+
 def start_server():
     """Run the FastAPI server with error capture."""
     global server_error
@@ -142,22 +167,11 @@ def start_server():
         from backend.main import app
         logger.info("Backend imported successfully. Starting uvicorn...")
 
-        # Fail deterministically if another process already owns the port —
-        # otherwise wait_for_port() would see the foreign listener and
-        # navigate to whatever is running there instead of showing the hint.
-        # (Tiny race: something could grab the port between probe.close()
-        # and uvicorn's own bind below; accepted as low-probability.)
-        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            if os.name != "nt":
-                # Match asyncio's POSIX bind semantics: without SO_REUSEADDR a
-                # quick app restart would false-positive on TIME_WAIT sockets.
-                # Not on Windows, where SO_REUSEADDR would bind through a
-                # live foreign listener and defeat the check.
-                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.bind((SERVER_HOST, SERVER_PORT))
-        finally:
-            probe.close()
+        # Race guard: main() checks before opening the loading screen, but a
+        # process can still grab the port before uvicorn binds.
+        port_error = get_port_bind_error()
+        if port_error is not None:
+            raise port_error
 
         server_ready.set()  # Signal that import succeeded
         uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT, log_level="info")
@@ -187,6 +201,22 @@ def main():
     logger.info("=== AI Advisory Board Desktop Starting ===")
     logger.info("Python: %s", sys.version)
     logger.info("Frozen: %s", getattr(sys, 'frozen', False))
+
+    port_error = get_port_bind_error()
+    if port_error is not None:
+        error_text = f"OSError: {port_error}"
+        logger.error("Port preflight failed:\n%s", error_text)
+        webview.create_window(
+            title="AI Advisory Board",
+            html=startup_error_html(error_text),
+            width=1200,
+            height=800,
+            resizable=True,
+            min_size=(960, 600)
+        )
+        webview.start(private_mode=False)
+        logger.info("Application closed.")
+        return
     
     # Start the web server in a background thread
     server_thread = threading.Thread(target=start_server, daemon=True)
@@ -212,9 +242,7 @@ def main():
         
         if server_error:
             logger.error("Server had an error, showing error page.")
-            safe_error = server_error.replace("\\", "\\\\").replace("`", "'")
-            title, hint = format_user_error(safe_error)
-            window.load_html(ERROR_HTML.format(title=title, hint=hint, error=safe_error))
+            window.load_html(startup_error_html(server_error))
             return
 
         # Now wait for the port to be accepting connections
