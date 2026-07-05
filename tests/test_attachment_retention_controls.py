@@ -263,6 +263,133 @@ def test_truncated_attachment_survives_when_resent_via_keep_ids(monkeypatch, tmp
     assert relinked[0]["attachment_id"] == resent.attachment_id
 
 
+def test_deleted_attachment_ids_excludes_an_attachment_retained_by_another_conversation(monkeypatch, tmp_path):
+    """Codex round 23 P2: delete_truncated_message_attachments' attachment_ids
+    is only the CANDIDATE list built from the removed messages -- an
+    attachment referenced by ANOTHER conversation too is RETAINED by
+    delete_attachment (its files survive, refcounted across conversation_ids),
+    even though it's still in the candidate list. deleted_attachment_ids
+    (Codex round 23) is the narrower list of ids delete_attachment actually
+    deleted, computed from each result's own "deleted" flag -- this is the
+    list callers must use to purge document MEMORY, or a retained
+    attachment's memory gets purged even though its files (and the other
+    conversation's reference) are still there."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    attachment_storage = import_module_with_api_key(monkeypatch, "backend.attachment_storage")
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+
+    conversation_id = "conv-truncate-shared"
+    other_conversation_id = "conv-other-shares-it"
+    storage.create_conversation(conversation_id)
+    storage.create_conversation(other_conversation_id)
+
+    shared = attachment_storage.create_attachment(b"shared file", "shared.txt", "text/plain")
+    dropped = attachment_storage.create_attachment(b"dropped file", "dropped.txt", "text/plain")
+    linked = attachment_storage.link_attachments_to_conversation(
+        [shared.attachment_id, dropped.attachment_id],
+        conversation_id,
+    )
+    # The OTHER conversation also references the shared attachment.
+    attachment_storage.link_attachments_to_conversation([shared.attachment_id], other_conversation_id)
+
+    storage.add_user_message(
+        conversation_id,
+        "Use these files",
+        attachment_ids=[shared.attachment_id, dropped.attachment_id],
+        attachments=[a.model_dump() for a in linked],
+    )
+    storage.add_chat_message(conversation_id, "Response")
+
+    result = main.delete_truncated_message_attachments(conversation_id, keep_count=0)
+    storage.truncate_messages(conversation_id, 0)
+
+    # Both ids are CANDIDATES (both were in the truncated tail).
+    assert set(result["attachment_ids"]) == {shared.attachment_id, dropped.attachment_id}
+    # But only "dropped" was ACTUALLY deleted -- "shared" is retained
+    # (the other conversation's reference keeps its files alive).
+    assert result["deleted_attachment_ids"] == [dropped.attachment_id]
+    assert attachment_storage.get_attachment(shared.attachment_id) is not None
+    assert attachment_storage.get_attachment(dropped.attachment_id) is None
+
+
+@pytest.mark.asyncio
+async def test_edit_truncation_does_not_purge_document_memory_for_a_retained_attachment(monkeypatch, tmp_path):
+    """Codex round 23 P2 end-to-end: an attachment shared with another
+    conversation survives an edit-truncation's cleanup (files retained via
+    refcounting) -- its document memory must survive too. Only a
+    truncated-only attachment's memory gets purged. Fails pre-fix: the old
+    code passed attachment_ids (the broader candidate list, including the
+    retained "shared" id) to purge_document_memories, purging a memory
+    whose attachment (and the other conversation's own reference to it)
+    was never actually deleted."""
+    storage = import_module_with_api_key(monkeypatch, "backend.storage")
+    attachment_storage = import_module_with_api_key(monkeypatch, "backend.attachment_storage")
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    from unittest.mock import AsyncMock
+    configure_attachment_storage(monkeypatch, attachment_storage, tmp_path)
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path / "conversations"))
+
+    conversation_id = "conv-truncate-shared-e2e"
+    other_conversation_id = "conv-other-shares-it-e2e"
+    storage.create_conversation(conversation_id)
+    storage.create_conversation(other_conversation_id)
+
+    shared = attachment_storage.create_attachment(b"shared file", "shared.txt", "text/plain")
+    dropped = attachment_storage.create_attachment(b"dropped file", "dropped.txt", "text/plain")
+    linked = attachment_storage.link_attachments_to_conversation(
+        [shared.attachment_id, dropped.attachment_id],
+        conversation_id,
+    )
+    attachment_storage.link_attachments_to_conversation([shared.attachment_id], other_conversation_id)
+
+    storage.add_user_message(
+        conversation_id,
+        "Use these files",
+        attachment_ids=[shared.attachment_id, dropped.attachment_id],
+        attachments=[a.model_dump() for a in linked],
+    )
+    storage.add_chat_message(conversation_id, "Response")
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Regenerated", "usage": {}}
+
+    async def fake_topics(*args, **kwargs):
+        return (["topic"], {})
+
+    purge_document_memories = AsyncMock(return_value=1)
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_topics)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=AsyncMock(return_value=None),
+            refresh_hybrid_index=lambda *a, **k: None,
+            purge_truncated_memories=AsyncMock(return_value=0),
+            purge_document_memories=purge_document_memories,
+            store={},
+        ),
+    )
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Edited question", mode="chat", edit_index=0),
+    )
+
+    # Only the truncated-only, ACTUALLY-deleted attachment's memory is purged.
+    purge_document_memories.assert_awaited_once_with([dropped.attachment_id], conversation_id=conversation_id)
+
+
 @pytest.mark.asyncio
 async def test_edit_regenerate_resent_attachment_survives_end_to_end(monkeypatch, tmp_path):
     """Full run_turn path: editing a message and resending its attachment_id

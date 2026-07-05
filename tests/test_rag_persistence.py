@@ -1792,6 +1792,361 @@ async def test_cancelling_generator_during_indexing_still_records_base_cost(monk
     assert usage["messages"] == 1
 
 
+# --- Codex round 23 on PR #80: emit budget_warning as soon as it's recorded ---
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_is_yielded_before_indexing_even_if_cancelled_during_it(monkeypatch, tmp_path):
+    """Codex round 23 P2: record_session_usage persists last_warning_level
+    as a side effect of the BASE call, but the budget_warning event used to
+    be emitted only in the tail, after the indexing awaits. A cancellation
+    in that window (client disconnect while index_chat_turn is blocked)
+    meant the warning was already marked "told you" in storage but the
+    client never got the event -- lost forever, since the NEXT turn's
+    warning-level comparison no longer sees it as new. Fixed: emit
+    synchronously right after the base record call (and after
+    chat_response), zero awaits later. This drives a real cancellation
+    (same pattern as the base-cost cancellation test above) while
+    index_chat_turn is blocked, and asserts the budget_warning event was
+    already yielded to the consumer BEFORE the cancellation -- fails
+    pre-fix (the warning would never arrive; the consumer would only see
+    chat_response before the block)."""
+    import asyncio
+
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-cancel-after-warning"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+    main.storage.set_session_policy(
+        conversation_id,
+        {
+            "budget_usd": 1.0,
+            "notify_thresholds": [0.75, 0.85, 1.00],
+            "mode": "auto",
+            "allow_overage": True,
+        },
+    )
+
+    # Base chairman usage alone crosses the 0.75 threshold: openai/gpt-4o-mini
+    # pricing is input=$0.15/M, output=$0.6/M -- 1M/1M tokens costs $0.75.
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}
+
+    index_started = asyncio.Event()
+    never_releases = asyncio.Event()
+
+    async def blocking_index_chat_turn(*args, **kwargs):
+        index_started.set()
+        await never_releases.wait()  # never set -- simulates the client disconnecting here
+        return None
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=blocking_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    conversation, mode, zdr_enabled, thinking_effort, is_first_message = main.prepare_turn(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+    gen = main.run_turn(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+        conversation=conversation,
+        mode=mode,
+        zdr_enabled=zdr_enabled,
+        thinking_effort=thinking_effort,
+        is_first_message=is_first_message,
+    )
+
+    received_events = []
+
+    async def consume():
+        async for event in gen:
+            received_events.append(event["type"])
+
+    consumer_task = asyncio.create_task(consume())
+
+    # index_chat_turn has started (blocked mid-await) -- by this point
+    # chat_response and (if the fix works) budget_warning have both
+    # already been yielded and collected by the consumer.
+    await index_started.wait()
+    consumer_task.cancel()
+    try:
+        await consumer_task
+    except asyncio.CancelledError:
+        pass
+    await gen.aclose()
+
+    assert "chat_response" in received_events
+    assert "budget_warning" in received_events, "the base crossing must be yielded before indexing, not lost to cancellation"
+    assert "complete" not in received_events  # generator never reached the tail
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_from_delta_still_emits_in_the_tail(monkeypatch, tmp_path):
+    """Codex round 23 P2: a crossing reported by the DELTA call (topics/
+    compression usage pushes spend over a threshold that the base call
+    alone did not cross) must still emit -- from the tail, since it's a NEW
+    crossing discovered only after indexing ran, not the base call's
+    already-emitted one."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-delta-crossing"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+    main.storage.set_session_policy(
+        conversation_id,
+        {
+            "budget_usd": 1.0,
+            "notify_thresholds": [0.75, 0.85, 1.00],
+            "mode": "auto",
+            "allow_overage": True,
+        },
+    )
+
+    # Base chairman usage alone stays UNDER 0.75: input=$0.15/M, output=$0.6/M.
+    chairman_usage = {"prompt_tokens": 500_000, "completion_tokens": 500_000}  # $0.375
+    # Delta (compression) usage pushes total spend to $0.80 (over 0.75, under
+    # 0.85): google/gemini-2.5-flash pricing output=$2.5/M -- 170_000 tokens
+    # of completion-only usage costs $0.425, for a $0.375 + $0.425 = $0.80 total.
+    compression_usage = {"prompt_tokens": 0, "completion_tokens": 170_000}
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return compression_usage
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    from tests.test_session_budget_cost_accounting import parse_sse_events
+
+    chunks = [chunk async for chunk in response.body_iterator]
+    events = parse_sse_events(chunks)
+
+    warning_events = [e for e in events if e["type"] == "budget_warning"]
+    assert len(warning_events) == 1, "the delta call's new 0.75 crossing must emit from the tail"
+    assert warning_events[0]["data"]["threshold"] == pytest.approx(0.75)
+    # It arrives AFTER chat_response, from the tail -- not eagerly, since
+    # the base call alone never crossed anything.
+    event_types = [e["type"] for e in events]
+    assert event_types.index("budget_warning") > event_types.index("chat_response")
+
+    usage = main.storage.get_session_usage(conversation_id)
+    assert usage["last_warning_level"] == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_does_not_double_emit_when_neither_call_crosses(monkeypatch, tmp_path):
+    """Codex round 23 P2: with the base warning now emitted eagerly and the
+    tail only handling a NEW delta crossing, a turn where NEITHER the base
+    NOR the delta call crosses a threshold must emit budget_warning ZERO
+    times -- not once from a stale tail read of the base call's own (still
+    None) warning_level, and definitely not twice."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-no-crossing"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+    main.storage.set_session_policy(
+        conversation_id,
+        {
+            "budget_usd": 100.0,  # high enough that nothing below crosses 75%
+            "notify_thresholds": [0.75, 0.85, 1.00],
+            "mode": "auto",
+            "allow_overage": True,
+        },
+    )
+
+    chairman_usage = {"prompt_tokens": 1_000, "completion_tokens": 1_000}
+    compression_usage = {"prompt_tokens": 1_000, "completion_tokens": 1_000}
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return compression_usage
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    from tests.test_session_budget_cost_accounting import parse_sse_events
+
+    chunks = [chunk async for chunk in response.body_iterator]
+    events = parse_sse_events(chunks)
+
+    warning_events = [e for e in events if e["type"] == "budget_warning"]
+    assert warning_events == []
+
+
+@pytest.mark.asyncio
+async def test_budget_warning_does_not_double_emit_when_base_crosses_and_no_delta_runs(monkeypatch, tmp_path):
+    """Codex round 23 P2: the sharpest double-emission risk -- the base
+    call crosses a threshold (emitted eagerly, right after chat_response)
+    and NO delta usage is discovered at all (delta_cost stays 0, so
+    budget_state is never reassigned -- it's still the BASE call's own
+    dict, whose warning_level is the SAME crossing already emitted). If the
+    tail read budget_state["warning_level"] directly (the pre-round-23
+    code), it would re-read that same non-None value and emit a SECOND
+    budget_warning event for the identical crossing. tail_warning_level
+    stays None unless the delta block actually ran and set it -- exactly
+    one event total. Fails pre-fix (reverting the tail's read back to
+    budget_state["warning_level"] directly): 2 events."""
+    main = import_module_with_api_key(monkeypatch, "backend.main")
+    conversation_id = "conv-base-crosses-delta-doesnt"
+
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation(
+        conversation_id,
+        {"chairman_model": "openai/gpt-4o-mini"},
+    )
+    main.storage.add_user_message(conversation_id, "Earlier question")
+    main.storage.add_chat_message(conversation_id, "Earlier answer")
+    main.storage.set_session_policy(
+        conversation_id,
+        {
+            "budget_usd": 1.0,
+            "notify_thresholds": [0.75, 0.85, 1.00],
+            "mode": "auto",
+            "allow_overage": True,
+        },
+    )
+
+    # Base chairman usage alone crosses 0.75: input=$0.15/M, output=$0.6/M.
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    async def fake_rewrite_query(*args, **kwargs):
+        return "rewritten"
+
+    async def fake_retrieve_async(*args, **kwargs):
+        return "", {}
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    async def fake_extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}  # no usage -- delta_cost stays 0, delta block never runs
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None  # no compression usage either
+
+    monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
+    monkeypatch.setattr("backend.council.extract_topics_with_usage", fake_extract_topics_with_usage)
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
+
+    response = await main.send_message_stream(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    from tests.test_session_budget_cost_accounting import parse_sse_events
+
+    chunks = [chunk async for chunk in response.body_iterator]
+    events = parse_sse_events(chunks)
+
+    warning_events = [e for e in events if e["type"] == "budget_warning"]
+    assert len(warning_events) == 1, "exactly one warning -- the eager base emission, not re-emitted from the tail"
+    assert warning_events[0]["data"]["threshold"] == pytest.approx(0.75)
+
+
 # --- Codex round 11 on PR #80: read barrier hardening + summary merge ---
 
 
@@ -2260,8 +2615,9 @@ async def test_purge_document_memories_scoped_and_store_wide(monkeypatch, tmp_pa
 @pytest.mark.asyncio
 async def test_edit_truncation_purges_deleted_attachments_document_memories(monkeypatch, tmp_path):
     """Pipeline wiring: the edit branch passes exactly the truncation
-    cleanup's deleted attachment ids (keep_ids-resent ones excluded by the
-    cleanup itself) to the conversation-scoped document purge."""
+    cleanup's deleted_attachment_ids (Codex round 23) -- the ids
+    delete_attachment ACTUALLY DELETED, not the broader candidate
+    attachment_ids list -- to the conversation-scoped document purge."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
     from unittest.mock import AsyncMock
 
@@ -2290,7 +2646,14 @@ async def test_edit_truncation_purges_deleted_attachments_document_memories(monk
     monkeypatch.setattr(
         main,
         "delete_truncated_message_attachments",
-        lambda cid, keep, keep_ids=None: {"attachment_ids": ["att-gone"], "deleted": 1, "retained": 0, "missing": 0, "files_deleted": 1, "results": []},
+        # attachment_ids intentionally includes a RETAINED id (still
+        # referenced by a kept-prefix message or another conversation) to
+        # prove the pipeline uses deleted_attachment_ids, not attachment_ids.
+        lambda cid, keep, keep_ids=None: {
+            "attachment_ids": ["att-gone", "att-retained"],
+            "deleted": 1, "retained": 1, "missing": 0, "files_deleted": 1, "results": [],
+            "deleted_attachment_ids": ["att-gone"],
+        },
     )
     monkeypatch.setattr(
         main,

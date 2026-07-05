@@ -363,19 +363,30 @@ async def test_stream_chat_updates_total_and_session_cost(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 async def test_budget_warning_survives_a_billed_delta_after_the_base_crossing(monkeypatch, tmp_path):
-    """Codex round 12 P2: the BASE record_session_usage call (recorded
-    immediately after the chat message is persisted, round 10) can be the
-    one that actually crosses a budget threshold. _get_new_warning_level
-    only reports a threshold the FIRST time it's crossed (comparing against
-    the already-persisted last_warning_level), so the SECOND, incremental
-    delta call (topics/compression usage discovered during indexing)
-    returns warning_level=None for the SAME turn -- and that None used to
-    silently overwrite the base call's crossing, dropping the
-    budget_warning event entirely even though a threshold really was just
-    crossed. Fixed by remembering the base call's warning_level and
-    merging it back in if the delta call didn't report one of its own.
+    """Codex round 12 P2, superseded by round 23: the BASE
+    record_session_usage call (recorded immediately after the chat message
+    is persisted, round 10) can be the one that actually crosses a budget
+    threshold. _get_new_warning_level only reports a threshold the FIRST
+    time it's crossed (comparing against the already-persisted
+    last_warning_level), so the SECOND, incremental delta call
+    (topics/compression usage discovered during indexing) returns
+    warning_level=None for the SAME turn.
 
-    Fails pre-fix: no budget_warning event at all."""
+    Round 12 fixed this by remembering the base call's warning_level and
+    merging it back into the tail's emission if the delta call didn't
+    report one of its own. Round 23 changed WHERE the base crossing is
+    emitted: synchronously, right after chat_response, in the same block
+    that recorded it -- not merged into the tail after the indexing awaits.
+    This closes a cancellation gap (round 23's finding): a persisted
+    last_warning_level with no corresponding emitted event, if the
+    generator were cancelled during indexing before the old tail-merge
+    point, would be gone forever (the next turn's comparison no longer
+    sees it as new). This test now also pins the warning event's POSITION
+    (before chat_response's indexing work, i.e. among the first events) to
+    prove it, not just its count/threshold.
+
+    Fails pre-fix (pre-round-23): the warning event would still be last-ish
+    in the stream, arriving only after the delta call's tail-merge."""
     main = import_main(monkeypatch)
     conversation_id = "conv-warning-survives-delta"
 
@@ -452,3 +463,10 @@ async def test_budget_warning_survives_a_billed_delta_after_the_base_crossing(mo
     # just the base amount.
     assert complete_events[0]["data"]["turn_cost"] == pytest.approx(expected_total)
     assert complete_events[0]["data"]["total_cost"] == pytest.approx(expected_total)
+
+    # Codex round 23: the warning is emitted right after chat_response, in
+    # the same synchronous block that recorded the base crossing -- well
+    # before the indexing-derived complete event, not merged in at the end.
+    event_types = [e["type"] for e in events]
+    assert event_types.index("budget_warning") < event_types.index("complete")
+    assert event_types.index("budget_warning") == event_types.index("chat_response") + 1

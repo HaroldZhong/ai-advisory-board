@@ -478,7 +478,7 @@ def delete_truncated_message_attachments(
     """
     conversation = storage.get_conversation(conversation_id)
     if not conversation:
-        return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": []}
+        return {"attachment_ids": [], "deleted": 0, "retained": 0, "missing": 0, "files_deleted": 0, "results": [], "deleted_attachment_ids": []}
 
     removed_messages = conversation.get("messages", [])[keep_count:]
     attachment_ids = [
@@ -497,6 +497,17 @@ def delete_truncated_message_attachments(
         "missing": sum(1 for result in results if not result["found"]),
         "files_deleted": sum(result["files_deleted"] for result in results),
         "results": results,
+        # Codex round 23 (P2): attachment_ids is the CANDIDATE list (from
+        # removed messages, minus keep_ids) -- an id also referenced by a
+        # KEPT-prefix message, or by another conversation entirely, is
+        # RETAINED by delete_attachment (it refcounts across all
+        # conversation_ids, not just this one's kept prefix), so its files
+        # survive. Callers that purge document MEMORY for deleted
+        # attachments must use this narrower, actually-deleted list, not
+        # attachment_ids -- otherwise a retained attachment's memory gets
+        # purged even though its files (and any OTHER conversation's
+        # reference to it) are still there.
+        "deleted_attachment_ids": [result["attachment_id"] for result in results if result["deleted"]],
     }
 
 

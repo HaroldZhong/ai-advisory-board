@@ -140,10 +140,18 @@ async def run_turn(
             # too, or an edited-away answer stays retrievable from OTHER
             # conversations forever. Both modes go through this same branch.
             await main.rag_system.purge_truncated_memories(conversation_id, request.edit_index)
-            # Codex round 14: same for document memories whose attachments the
-            # cleanup above actually deleted (keep_ids-resent attachments are
-            # excluded from attachment_ids, so their memories survive too).
-            deleted_attachment_ids = attachment_cleanup.get("attachment_ids") or []
+            # Codex round 14/23: same for document memories whose attachments
+            # the cleanup ACTUALLY DELETED. attachment_ids is only the
+            # CANDIDATE list (removed messages, minus keep_ids-resent ids);
+            # an id also referenced by a message in the KEPT prefix -- or by
+            # another conversation entirely -- is RETAINED by
+            # delete_attachment (files survive), not deleted, so purging its
+            # memory anyway would be wrong. deleted_attachment_ids (Codex
+            # round 23) is the narrower, actually-deleted list computed from
+            # each result's own "deleted" flag -- this also correctly
+            # respects refs from OTHER conversations, which a kept-prefix-
+            # only filter would not have.
+            deleted_attachment_ids = attachment_cleanup.get("deleted_attachment_ids") or []
             if deleted_attachment_ids:
                 await main.rag_system.purge_document_memories(
                     deleted_attachment_ids, conversation_id=conversation_id
@@ -180,6 +188,14 @@ async def run_turn(
             metadata.get("chairman_model"),
             request,
         )
+
+        # Codex round 23 (P2): the base call's warning_level is emitted
+        # synchronously right where it's recorded, in each branch below --
+        # it must NOT also fire from the tail emission point further down,
+        # or a base-crossing turn with no indexing delta would double-emit.
+        # tail_warning_level stays None unless the DELTA call (if one runs)
+        # reports its own NEW crossing; only that belongs in the tail.
+        tail_warning_level = None
 
         if mode == "council":
             title_task = _start_title_task(main, needs_title, request.content, zdr_enabled)
@@ -368,15 +384,24 @@ async def run_turn(
             # be lost (bounded, and noted below where the delta is applied).
             main.storage.update_conversation_cost(conversation_id, turn_cost)
             budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
-            # Codex round 12 (P2): the base call's warning_level (if any
-            # threshold was JUST crossed) must survive the delta call below.
-            # _get_new_warning_level only returns non-None the FIRST time a
-            # threshold is crossed (it compares against the already-persisted
-            # last_warning_level) -- so the delta call's own warning_level is
-            # None even though the base call's crossing still needs to be
-            # emitted. Remember it here; the delta call's totals/usage still
-            # win (they're the final numbers), only warning_level is merged.
-            pending_warning = budget_state["warning_level"]
+            # Codex round 23 (P2): emit the budget_warning event HERE, in
+            # the same synchronous block that just recorded it (zero awaits
+            # between record_session_usage and this yield) -- not in the
+            # tail after the indexing awaits below. record_session_usage
+            # persists last_warning_level as a side effect of the call
+            # above; _get_new_warning_level only reports a crossing the
+            # FIRST time (it compares against the already-persisted value),
+            # so if this generator is cancelled during indexing before the
+            # tail's old emission point, that crossing was already marked
+            # "told you" in storage but the client never got the event --
+            # gone forever, since the NEXT turn's comparison no longer sees
+            # it as new. Invariant: a persisted last_warning_level is always
+            # emitted in the same synchronous block that recorded it.
+            base_warning_level = budget_state["warning_level"]
+            if base_warning_level is not None:
+                base_warning_pct = int(base_warning_level * 100)
+                logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
+                yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
 
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
@@ -456,13 +481,13 @@ async def run_turn(
                 turn_cost += delta_cost
                 main.storage.update_conversation_cost(conversation_id, delta_cost)
                 budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
-                # Codex round 12 (P2): keep the base call's crossing alive --
-                # totals/usage/budget_spent_pct come from this LAST call
-                # (correct, they're cumulative), but warning_level would
-                # otherwise be silently dropped if the base call was the one
-                # that actually crossed a threshold.
-                if pending_warning is not None and budget_state["warning_level"] is None:
-                    budget_state = {**budget_state, "warning_level": pending_warning}
+                # Codex round 23 (P2): the base call's crossing (if any) was
+                # already emitted synchronously right after it was recorded,
+                # above -- it is no longer "pending" into this tail. Only a
+                # NEW crossing reported by THIS delta call belongs in the
+                # tail's emission; totals/usage/budget_spent_pct still come
+                # from this LAST call regardless (they're cumulative).
+                tail_warning_level = budget_state["warning_level"]
                 # Codex round 22 (P2): identity addressing, not cost
                 # equality -- round 21's "last message + running_cost
                 # equality" guard was ambiguous when two turns overlap and
@@ -622,11 +647,6 @@ async def run_turn(
             # applied).
             main.storage.update_conversation_cost(conversation_id, turn_cost)
             budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
-            # Codex round 12 (P2): same as the council branch -- remember
-            # the base call's warning_level, since the delta call below
-            # would otherwise silently drop a threshold crossing that
-            # already happened on this same base call.
-            pending_warning = budget_state["warning_level"]
 
             # Codex round 15 (P2): deliver the answer NOW, before memory
             # indexing. Topic extraction + index_chat_turn (below) can burn
@@ -640,6 +660,17 @@ async def run_turn(
             # and best-effort (see the try/except below).
             yield {"type": "chat_response", "data": response_dict}
             logger.info("[CHAT] Chat response sent to client")
+
+            # Codex round 23 (P2): emit the budget_warning event HERE, right
+            # after chat_response and in the same synchronous block that
+            # just recorded the base cost (zero awaits in between) -- see
+            # the council branch's identical comment for the invariant and
+            # the cancellation-loses-the-warning-forever rationale.
+            base_warning_level = budget_state["warning_level"]
+            if base_warning_level is not None:
+                base_warning_pct = int(base_warning_level * 100)
+                logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
+                yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
 
             # Chat turns previously left no memory (P5-T5 feature 2). Skip
             # for effective-turn ZDR (audit §12, Decision #5), mirroring the
@@ -700,10 +731,10 @@ async def run_turn(
                 turn_cost += delta_cost
                 main.storage.update_conversation_cost(conversation_id, delta_cost)
                 budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
-                # Codex round 12 (P2): same warning-preservation as the
-                # council branch.
-                if pending_warning is not None and budget_state["warning_level"] is None:
-                    budget_state = {**budget_state, "warning_level": pending_warning}
+                # Codex round 23 (P2): same as the council branch -- the
+                # base call's crossing was already emitted above; only a
+                # NEW crossing from THIS delta call belongs in the tail.
+                tail_warning_level = budget_state["warning_level"]
                 # Codex round 22 (P2): identity addressing -- see the
                 # council branch's identical comment. expected_anchor was
                 # computed right after add_chat_message above.
@@ -714,14 +745,17 @@ async def run_turn(
         # Codex round 10 (P2): budget_state here is whichever call was LAST
         # for this turn -- the base call above if there was no delta, or the
         # delta call if indexing found one. Either way it reflects the
-        # correct final totals for this turn's warning/completion payload.
-        warning_level = budget_state["warning_level"]
-
-        # Send budget warning if threshold crossed
-        if warning_level is not None:
-            warning_pct = int(warning_level * 100)
+        # correct final totals/usage/budget_spent_pct for this turn's
+        # completion payload. Codex round 23 (P2): warning_level itself is
+        # NOT read from budget_state here -- the base call's crossing was
+        # already emitted synchronously where it was recorded (see above in
+        # each branch); re-emitting it here on the no-delta path would
+        # double-fire the same warning. tail_warning_level carries only a
+        # NEW crossing the delta call (if one ran) reported.
+        if tail_warning_level is not None:
+            warning_pct = int(tail_warning_level * 100)
             logger.info(f"[BUDGET] Emitting warning at {warning_pct}% for conversation {conversation_id}")
-            yield {"type": "budget_warning", "data": {"threshold": warning_level, "percentage": warning_pct}}
+            yield {"type": "budget_warning", "data": {"threshold": tail_warning_level, "percentage": warning_pct}}
 
         # Get updated total cost
         updated_conv = main.storage.get_conversation(conversation_id)
