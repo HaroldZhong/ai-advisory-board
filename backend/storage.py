@@ -433,6 +433,39 @@ def record_session_usage(conversation_id: str, cost_delta: float, count_message:
     }
 
 
+def update_last_message_running_cost(conversation_id: str, running_cost: float) -> None:
+    """Codex round 21 (P2): patch the last message's persisted running_cost
+    after a delta (topics/compression usage discovered during best-effort
+    indexing) lands on top of the base cost recorded at message-save time.
+    Without this, GET /api/conversations shows a per-turn cost that
+    disagrees with the conversation's total_cost on any turn that billed
+    indexing usage -- the delta reached total_cost/session_usage but never
+    the message itself. Dumb by design: no general message-patching API,
+    just this one field on the last message, guarded by the same
+    ConversationLock pattern record_session_usage uses above.
+
+    No messages, or the last message doesn't already carry a running_cost
+    (shouldn't happen -- the turn that's calling this just wrote it moments
+    earlier), is a no-op with a warning: patching a field that was never
+    set would be guessing at a shape this function doesn't own.
+    """
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            raise ValueError(f"Conversation {conversation_id} not found")
+
+        messages = conversation.get("messages", [])
+        if not messages or "running_cost" not in messages[-1]:
+            logger.warning(
+                "[STORAGE] update_last_message_running_cost: no message with running_cost to patch for conversation %s",
+                conversation_id,
+            )
+            return
+
+        messages[-1]["running_cost"] = running_cost
+        save_conversation(conversation)
+
+
 def check_budget_warning(conversation_id: str) -> Optional[float]:
     """
     Check if a budget warning should be emitted.

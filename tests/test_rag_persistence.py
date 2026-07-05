@@ -903,14 +903,14 @@ async def test_chat_turn_where_query_model_returns_none_is_not_indexed(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_summary_compression_usage_bills_totals_but_not_persisted_running_cost(monkeypatch, tmp_path):
-    """Codex P2: summary-compression usage is discovered AFTER turn_cost is
-    computed and the message is persisted (persistence-first: indexing must
-    never risk losing the saved answer). The fix bills it as a delta added to
-    the in-memory turn_cost, which reaches update_conversation_cost/
-    record_session_usage/the completion event -- but the message's already
-    -persisted running_cost snapshot predates the delta and must stay
-    unchanged."""
+async def test_summary_compression_usage_bills_totals_and_persisted_running_cost(monkeypatch, tmp_path):
+    """Codex P2, updated round 21: summary-compression usage is discovered
+    AFTER turn_cost is computed and the message is persisted (persistence-
+    first: indexing must never risk losing the saved answer). The delta is
+    added to the in-memory turn_cost, which reaches update_conversation_cost/
+    record_session_usage/the completion event -- AND (round 21) the
+    message's persisted running_cost is patched to match, so GET
+    /api/conversations no longer disagrees with total_cost after a reload."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
     conversation_id = "conv-compression-billing"
 
@@ -967,12 +967,12 @@ async def test_summary_compression_usage_bills_totals_but_not_persisted_running_
 
     conversation = main.storage.get_conversation(conversation_id)
 
-    # Completion payload / conversation total DO include the compression delta.
+    # Completion payload / conversation total include the compression delta.
     assert result["turn_cost"] == pytest.approx(expected_total)
     assert result["total_cost"] == pytest.approx(expected_total)
     assert conversation["total_cost"] == pytest.approx(expected_total)
-    # The already-persisted message running_cost snapshot excludes it.
-    assert conversation["messages"][-1]["running_cost"] == pytest.approx(chairman_cost)
+    # Codex round 21: the persisted message running_cost is patched to match.
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(expected_total)
 
 
 @pytest.mark.asyncio
@@ -983,7 +983,8 @@ async def test_chat_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
     Now that compression usage is billed, this was the last remaining
     invisible-cost gap in the chat branch. Billed the same delta way as
     compression: turn_cost was already computed above this call, so the
-    topics usage is added on top."""
+    topics usage is added on top. Round 21: the persisted message's
+    running_cost is patched to base+delta too."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
     conversation_id = "conv-topics-billing-chat"
 
@@ -1043,15 +1044,16 @@ async def test_chat_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
     assert result["turn_cost"] == pytest.approx(expected_total)
     assert result["total_cost"] == pytest.approx(expected_total)
     assert conversation["total_cost"] == pytest.approx(expected_total)
-    # Same delta convention as compression: persisted running_cost predates it.
-    assert conversation["messages"][-1]["running_cost"] == pytest.approx(chairman_cost)
+    # Codex round 21: persisted running_cost is patched to base+delta.
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(expected_total)
 
 
 @pytest.mark.asyncio
 async def test_council_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
     """Codex round 6 P2, council side: extract_topics_with_usage's call in
     the council branch burns UTILITY_MODEL tokens too and was equally
-    unbilled. Same delta-billing convention."""
+    unbilled. Same delta-billing convention. Round 21: persisted
+    running_cost is patched to base+delta too."""
     main = import_module_with_api_key(monkeypatch, "backend.main")
     conversation_id = "conv-topics-billing-council"
 
@@ -1127,7 +1129,8 @@ async def test_council_turn_bills_topic_extraction_usage(monkeypatch, tmp_path):
     assert result["turn_cost"] == pytest.approx(expected_total)
     assert result["total_cost"] == pytest.approx(expected_total)
     assert conversation["total_cost"] == pytest.approx(expected_total)
-    assert conversation["messages"][-1]["running_cost"] == pytest.approx(stage_cost)
+    # Codex round 21: persisted running_cost is patched to base+delta.
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(expected_total)
 
 
 # --- Codex round 3 on PR #80: per-conversation write serialization + monotonic turn numbers ---
@@ -2931,3 +2934,183 @@ async def test_chat_indexing_partial_delta_survives_a_later_indexing_failure(mon
     # UTILITY_MODEL pricing, same as the council twin above.
     topics_cost = (1_000_000 / 1_000_000) * 0.3 + (1_000_000 / 1_000_000) * 2.5
     assert result["turn_cost"] == pytest.approx(topics_cost)
+
+
+# --- Codex round 21 on PR #80: persist the post-indexing turn cost on the saved message ---
+
+
+def test_update_last_message_running_cost_patches_the_last_message(tmp_path, monkeypatch):
+    """Codex round 21 P2: the new storage helper itself -- load, patch
+    messages[-1]["running_cost"], save, under the same ConversationLock
+    pattern record_session_usage uses."""
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
+    storage.create_conversation("conv-1")
+    storage.add_user_message("conv-1", "Question")
+    storage.add_chat_message("conv-1", "Answer", running_cost=0.75)
+
+    storage.update_last_message_running_cost("conv-1", 3.25)
+
+    conversation = storage.get_conversation("conv-1")
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(3.25)
+
+
+def test_update_last_message_running_cost_is_a_noop_without_an_existing_running_cost(tmp_path, monkeypatch, caplog):
+    """Codex round 21 P2: guard -- no messages, or the last message never
+    had running_cost set, is a no-op with a warning rather than guessing at
+    a shape this dumb helper doesn't own."""
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
+    storage.create_conversation("conv-1")
+    storage.add_user_message("conv-1", "Question")
+    storage.add_chat_message("conv-1", "Answer")  # no running_cost kwarg
+
+    with caplog.at_level("WARNING"):
+        storage.update_last_message_running_cost("conv-1", 3.25)
+
+    conversation = storage.get_conversation("conv-1")
+    assert "running_cost" not in conversation["messages"][-1]
+    assert any("update_last_message_running_cost" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_with_billed_delta_persists_running_cost_matching_complete_event(monkeypatch, tmp_path):
+    """Codex round 21 P2: end-to-end round-trip -- a chat turn with a billed
+    indexing delta (topics usage) must, after completion, show the SAME
+    turn_cost in three places: the complete event's turn_cost, the
+    conversation's total_cost, AND the last persisted message's
+    running_cost (reloaded fresh from storage, simulating a GET
+    /api/conversations after a page reload). Fails pre-fix: the message's
+    running_cost would still hold the base cost alone, disagreeing with the
+    other two."""
+    conversation_id = "conv-running-cost-roundtrip"
+    chairman_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    topics_usage = {"prompt_tokens": 50_000, "completion_tokens": 5_000}
+
+    async def extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], topics_usage
+
+    async def index_chat_turn(*args, **kwargs):
+        return None  # no compression this turn -- isolates the topics delta
+
+    main = _chat_turn_setup(
+        monkeypatch, tmp_path, conversation_id,
+        index_chat_turn=index_chat_turn,
+        extract_topics_with_usage=extract_topics_with_usage,
+    )
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": chairman_usage}
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    result = await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    # openai/gpt-4o-mini pricing: input=$0.15/M, output=$0.6/M
+    base_cost = (1_000_000 / 1_000_000) * 0.15 + (1_000_000 / 1_000_000) * 0.6
+    # google/gemini-2.5-flash (UTILITY_MODEL) pricing: input=$0.3/M, output=$2.5/M
+    topics_cost = (50_000 / 1_000_000) * 0.3 + (5_000 / 1_000_000) * 2.5
+    expected_total = base_cost + topics_cost
+
+    assert result["turn_cost"] == pytest.approx(expected_total)
+
+    # Fresh reload from storage, as GET /api/conversations would see it.
+    conversation = main.storage.get_conversation(conversation_id)
+    assert conversation["total_cost"] == pytest.approx(expected_total)
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(expected_total)
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(result["turn_cost"])
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_without_a_delta_does_not_patch_running_cost(monkeypatch, tmp_path):
+    """Codex round 21 P2: the delta-less path is unchanged -- no indexing
+    usage means delta_cost stays 0, so the round-21 patch block (guarded by
+    `if delta_cost:`) must never run, and update_last_message_running_cost
+    must never be called. Asserted directly via a spy on the storage
+    function, not just via the resulting value (which would also pass if
+    the patch ran and happened to write the same number back)."""
+    conversation_id = "conv-no-delta-no-patch"
+
+    async def extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], {}  # no usage -- delta stays 0
+
+    async def index_chat_turn(*args, **kwargs):
+        return None  # no compression usage either
+
+    main = _chat_turn_setup(
+        monkeypatch, tmp_path, conversation_id,
+        index_chat_turn=index_chat_turn,
+        extract_topics_with_usage=extract_topics_with_usage,
+    )
+
+    calls = []
+    real_update_last_message_running_cost = main.storage.update_last_message_running_cost
+
+    def spy_update_last_message_running_cost(*args, **kwargs):
+        calls.append(args)
+        return real_update_last_message_running_cost(*args, **kwargs)
+
+    monkeypatch.setattr(main.storage, "update_last_message_running_cost", spy_update_last_message_running_cost)
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": {}}
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    await main.send_message(
+        conversation_id,
+        main.SendMessageRequest(content="Follow up", mode="chat"),
+    )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_skips_running_cost_patch_when_last_message_was_replaced(monkeypatch, tmp_path, caplog):
+    """Codex round 21 P2: mismatched-last-message guard. Simulate an
+    edit/regenerate replacing the last message between the base-cost write
+    and the delta block by overwriting its running_cost via a fake
+    index_chat_turn (indexing is the last await before the delta block
+    runs). The patch must be skipped (logged), not overwrite the
+    replacement message's running_cost with this turn's total."""
+    conversation_id = "conv-running-cost-guard"
+    topics_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+
+    async def extract_topics_with_usage(*args, **kwargs):
+        return ["topic"], topics_usage
+
+    async def replacing_index_chat_turn(*args, **kwargs):
+        # Simulate a concurrent edit/regenerate landing right here: some
+        # OTHER turn's message now occupies the "last message" slot, with
+        # its own unrelated running_cost.
+        storage.update_last_message_running_cost(conversation_id, 999.0)
+        return None
+
+    main = _chat_turn_setup(
+        monkeypatch, tmp_path, conversation_id,
+        index_chat_turn=replacing_index_chat_turn,
+        extract_topics_with_usage=extract_topics_with_usage,
+    )
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "Budget-aware response", "usage": {}}  # base cost 0
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    with caplog.at_level("INFO"):
+        result = await main.send_message(
+            conversation_id,
+            main.SendMessageRequest(content="Follow up", mode="chat"),
+        )
+
+    assert result["type"] == "chat"
+    # The delta (topics usage) still reaches totals -- only the message
+    # patch is skipped.
+    topics_cost = (1_000_000 / 1_000_000) * 0.3 + (1_000_000 / 1_000_000) * 2.5
+    assert result["turn_cost"] == pytest.approx(topics_cost)
+
+    conversation = main.storage.get_conversation(conversation_id)
+    # The replacement value from inside the fake survives untouched.
+    assert conversation["messages"][-1]["running_cost"] == pytest.approx(999.0)
+    assert any("Skipping running_cost patch" in r.message for r in caplog.records)
