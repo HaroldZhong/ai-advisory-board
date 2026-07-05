@@ -306,16 +306,6 @@ class CouncilRAG:
         if not self.enabled:
             return None
 
-        # ZDR write barrier: never index a conversation whose CURRENT metadata
-        # says ZDR. Synchronous check-then-write (no await window) closes the
-        # runtime-flip race for good; flips after the write are handled by the
-        # purge in update_conversation. Per-message ZDR (request flag, not
-        # visible in metadata) is enforced by the pipeline-level guards.
-        conversation = get_conversation(conversation_id)
-        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
-            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
-            return None
-
         stage3_model = stage3_result.get('model', 'unknown')
         final_text = stage3_result.get('response', '')
         if not final_text:
@@ -329,6 +319,19 @@ class CouncilRAG:
         # silently drop it. A per-conversation lock (not global) serializes
         # writers to one conversation without blocking unrelated ones.
         async with self._get_write_lock(conversation_id):
+            # ZDR write barrier: never index a conversation whose CURRENT
+            # metadata says ZDR. Codex round 4 -- checked UNDER the
+            # per-conversation write lock (not before acquiring it) so a task
+            # that was suspended waiting for the lock while the user flipped
+            # ZDR on and update_conversation purged this conversation cannot
+            # then acquire the lock and undo that purge by writing anyway.
+            # Per-message ZDR (request flag, not visible in metadata) is
+            # enforced by the pipeline-level guards.
+            conversation = get_conversation(conversation_id)
+            if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
+                logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
+                return None
+
             # Ensure conversation exists in store
             if conversation_id not in self.store:
                 self.store[conversation_id] = {
@@ -378,21 +381,23 @@ class CouncilRAG:
         if not self.enabled:
             return None
 
-        # ZDR write barrier: identical to index_session's (copied, not
-        # refactored into a shared helper here, to keep this diff minimal and
-        # match the existing index_document barrier's own copy of the same
-        # check).
-        conversation = get_conversation(conversation_id)
-        if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
-            logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
-            return None
-
         if not answer:
             return None
 
         # Codex round 3: append + compress must be atomic per conversation,
         # same rationale as index_session's lock above.
         async with self._get_write_lock(conversation_id):
+            # ZDR write barrier: identical to index_session's (copied, not
+            # refactored into a shared helper here, to keep this diff minimal
+            # and match the existing index_document barrier's own copy of the
+            # same check). Codex round 4 -- checked UNDER the per-conversation
+            # write lock so a purge triggered while waiting for the lock
+            # cannot be undone.
+            conversation = get_conversation(conversation_id)
+            if not isinstance(conversation, dict) or not isinstance(conversation.get("metadata"), dict) or conversation["metadata"].get("zdr_enabled"):
+                logger.info("[RAG] Skipping index for %s (ZDR or unreadable)", conversation_id)
+                return None
+
             if conversation_id not in self.store:
                 self.store[conversation_id] = {"folder_id": "root", "turns": []}
 

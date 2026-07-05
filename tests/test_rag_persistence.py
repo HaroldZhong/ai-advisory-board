@@ -962,3 +962,58 @@ async def test_chat_turn_numbering_is_monotonic_after_compaction(tmp_path, monke
     assert new_entry["turn"] > max_turn_after_compaction
     all_turn_numbers = [t["turn"] for t in rag.store["conv-1"]["turns"]]
     assert len(all_turn_numbers) == len(set(all_turn_numbers)), "no duplicate turn numbers"
+
+
+# --- Codex round 4 on PR #80: ZDR barrier must be re-checked UNDER the write lock ---
+
+
+@pytest.mark.asyncio
+async def test_zdr_flip_while_pending_on_write_lock_blocks_the_write(tmp_path, monkeypatch):
+    """Codex P1: if the ZDR barrier runs BEFORE lock acquisition, a task can
+    pass the (now-stale) barrier, suspend waiting for the lock while the user
+    enables ZDR (which purges this conversation via update_conversation),
+    then acquire the lock and write anyway -- re-indexing a now-ZDR
+    conversation and undoing the purge. The fix checks the barrier UNDER the
+    lock, immediately before the store mutation, so it always sees the
+    CURRENT metadata.
+
+    The test holds conv-1's write lock directly (no need to route a real
+    call through it) while index_chat_turn -- which passes the barrier check
+    the moment it's able to run, since it's the very first thing inside the
+    lock -- is pending on that same lock. While it waits, flip the
+    conversation's metadata to zdr_enabled=True and purge, simulating the
+    user enabling ZDR mid-flight. Release the lock; index_chat_turn then
+    acquires it, re-checks the barrier, sees ZDR, and must write nothing."""
+    import asyncio
+
+    conversations_dir = tmp_path / "conversations"
+    monkeypatch.setattr(storage, "DATA_DIR", str(conversations_dir))
+    monkeypatch.setattr(rag_module, "get_conversation", storage.get_conversation)
+    storage.create_conversation("conv-1")  # starts non-ZDR
+
+    rag = CouncilRAG(persist_path=str(tmp_path / "pageindex"))
+    rag.store["conv-1"] = {"folder_id": "root", "turns": [{"turn": 0, "topics": [], "memory": "Q0\nA0"}]}
+
+    lock = rag._get_write_lock("conv-1")
+    await lock.acquire()
+
+    pending_task = asyncio.create_task(
+        rag.index_chat_turn("conv-1", "pending question", "pending answer", ["b"])
+    )
+    await asyncio.sleep(0)
+
+    # The pending call must be provably blocked on the lock -- it has not
+    # re-checked ZDR or written anything yet.
+    assert not pending_task.done()
+
+    # Simulate the user enabling ZDR mid-flight: real metadata flip + the
+    # same purge update_conversation performs.
+    storage.update_conversation_metadata("conv-1", {"zdr_enabled": True})
+    rag.delete_conversation_memories("conv-1")
+
+    lock.release()
+    await pending_task
+
+    # The pending call must have written nothing: the barrier, re-checked
+    # under the lock, saw the now-current ZDR metadata and refused.
+    assert "conv-1" not in rag.store

@@ -481,8 +481,24 @@ def _setup_zdr_chat_fakes(main, monkeypatch, tmp_path, conversation_id, metadata
     async def fake_chat_with_chairman(*args, **kwargs):
         return {"content": "response", "usage": {}}
 
+    async def fake_extract_topics(*args, **kwargs):
+        return ["topic"]
+
+    async def fake_index_chat_turn(*args, **kwargs):
+        return None
+
     monkeypatch.setattr("backend.council.rewrite_query", fake_rewrite_query)
-    monkeypatch.setattr(main, "rag_system", SimpleNamespace(retrieve_async=fake_retrieve_async))
+    monkeypatch.setattr("backend.council.extract_topics", fake_extract_topics)
+    monkeypatch.setattr(
+        main,
+        "rag_system",
+        SimpleNamespace(
+            retrieve_async=fake_retrieve_async,
+            index_chat_turn=fake_index_chat_turn,
+            refresh_hybrid_index=lambda *a, **k: None,
+            store={},
+        ),
+    )
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
 
