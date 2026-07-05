@@ -445,7 +445,7 @@ async def run_turn(
             # Codex round 10 (P2): topics/compression usage discovered during
             # indexing is billed as a SECOND, incremental call for this same
             # turn -- on top of the base cost already recorded above.
-            # Codex round 21 (P2): also patch the message's persisted
+            # Codex round 21/22 (P2): also patch the message's persisted
             # running_cost to base+delta -- previously the delta reached
             # total_cost/session_usage but never the message itself, so GET
             # /api/conversations showed a per-turn cost that disagreed with
@@ -453,7 +453,6 @@ async def run_turn(
             # count_message=False: this is the same turn as the base call,
             # not an extra message.
             if delta_cost:
-                base_turn_cost = turn_cost
                 turn_cost += delta_cost
                 main.storage.update_conversation_cost(conversation_id, delta_cost)
                 budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
@@ -464,27 +463,21 @@ async def run_turn(
                 # that actually crossed a threshold.
                 if pending_warning is not None and budget_state["warning_level"] is None:
                     budget_state = {**budget_state, "warning_level": pending_warning}
-                # Codex round 21 (P2): the anchor-verification work (rounds
-                # 17-18) means an edit/regenerate may have REPLACED the last
-                # message between persistence and this point -- indexing
-                # would then usually have been skipped (delta stays 0), but
-                # delta CAN be nonzero even when indexing skipped (e.g.
-                # topics billed before a later step's own skip/failure), so
-                # this isn't reachable only through the "same message"
-                # case. Guard by comparing the last message's CURRENT
-                # running_cost to the base cost we just wrote above: equal
-                # means nothing replaced it since -- patch away. Different
-                # means some other turn's message now sits there; skip and
-                # log rather than overwrite an unrelated turn's cost.
-                current_conversation = main.storage.get_conversation(conversation_id)
-                last_message = (current_conversation.get("messages") or [None])[-1] if current_conversation else None
-                if last_message is not None and last_message.get("running_cost") == base_turn_cost:
-                    main.storage.update_last_message_running_cost(conversation_id, turn_cost)
-                else:
-                    logger.info(
-                        "[PHASE1] Skipping running_cost patch for %s: last message no longer matches this turn's base cost",
-                        conversation_id,
-                    )
+                # Codex round 22 (P2): identity addressing, not cost
+                # equality -- round 21's "last message + running_cost
+                # equality" guard was ambiguous when two turns overlap and
+                # their costs coincide (e.g. two zero-usage errors), letting
+                # the patch land on ANOTHER turn's message. expected_anchor
+                # (computed right after add_assistant_message above) is
+                # this turn's true identity: expected_anchor - 1 is the
+                # assistant slot in the persisted [.., user, assistant]
+                # layout (round 17/18). Identity = (position, content) --
+                # immune to cost collisions and to a same-cost concurrent
+                # append; update_message_running_cost verifies both before
+                # patching, skipping + logging on any mismatch.
+                main.storage.update_message_running_cost(
+                    conversation_id, expected_anchor - 1, stage3_result.get("response", ""), turn_cost,
+                )
 
         else:
             # Chat mode
@@ -700,11 +693,10 @@ async def run_turn(
 
             # Codex round 10 (P2): same incremental delta-billing as the
             # council branch -- on top of the base cost already recorded
-            # above. Codex round 21 (P2): same running_cost patch as the
+            # above. Codex round 21/22 (P2): same running_cost patch as the
             # council branch -- see its identical comment.
             # count_message=False: same turn as the base call above.
             if delta_cost:
-                base_turn_cost = turn_cost
                 turn_cost += delta_cost
                 main.storage.update_conversation_cost(conversation_id, delta_cost)
                 budget_state = main.storage.record_session_usage(conversation_id, delta_cost, count_message=False)
@@ -712,17 +704,12 @@ async def run_turn(
                 # council branch.
                 if pending_warning is not None and budget_state["warning_level"] is None:
                     budget_state = {**budget_state, "warning_level": pending_warning}
-                # Codex round 21 (P2): same mismatched-last-message guard as
-                # the council branch -- see its identical comment.
-                current_conversation = main.storage.get_conversation(conversation_id)
-                last_message = (current_conversation.get("messages") or [None])[-1] if current_conversation else None
-                if last_message is not None and last_message.get("running_cost") == base_turn_cost:
-                    main.storage.update_last_message_running_cost(conversation_id, turn_cost)
-                else:
-                    logger.info(
-                        "[CHAT] Skipping running_cost patch for %s: last message no longer matches this turn's base cost",
-                        conversation_id,
-                    )
+                # Codex round 22 (P2): identity addressing -- see the
+                # council branch's identical comment. expected_anchor was
+                # computed right after add_chat_message above.
+                main.storage.update_message_running_cost(
+                    conversation_id, expected_anchor - 1, response_dict["content"], turn_cost,
+                )
 
         # Codex round 10 (P2): budget_state here is whichever call was LAST
         # for this turn -- the base call above if there was no delta, or the

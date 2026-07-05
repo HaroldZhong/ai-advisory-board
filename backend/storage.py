@@ -433,21 +433,34 @@ def record_session_usage(conversation_id: str, cost_delta: float, count_message:
     }
 
 
-def update_last_message_running_cost(conversation_id: str, running_cost: float) -> None:
-    """Codex round 21 (P2): patch the last message's persisted running_cost
-    after a delta (topics/compression usage discovered during best-effort
-    indexing) lands on top of the base cost recorded at message-save time.
-    Without this, GET /api/conversations shows a per-turn cost that
-    disagrees with the conversation's total_cost on any turn that billed
-    indexing usage -- the delta reached total_cost/session_usage but never
-    the message itself. Dumb by design: no general message-patching API,
-    just this one field on the last message, guarded by the same
-    ConversationLock pattern record_session_usage uses above.
+def update_message_running_cost(conversation_id: str, message_index: int, expected_text: str, running_cost: float) -> None:
+    """Codex round 22 (P2): patch a message's persisted running_cost after a
+    delta (topics/compression usage discovered during best-effort indexing)
+    lands on top of the base cost recorded at message-save time. Without
+    this, GET /api/conversations shows a per-turn cost that disagrees with
+    the conversation's total_cost on any turn that billed indexing usage.
 
-    No messages, or the last message doesn't already carry a running_cost
-    (shouldn't happen -- the turn that's calling this just wrote it moments
-    earlier), is a no-op with a warning: patching a field that was never
-    set would be guessing at a shape this function doesn't own.
+    Round 21 addressed the target message by "last message + running_cost
+    equality" -- ambiguous when two turns overlap and their costs coincide
+    (e.g. two zero-usage errors, or equal token counts), letting the patch
+    land on ANOTHER turn's message. This replaces that with identity
+    addressing: (position, content) -- message_index is the caller's
+    expected_anchor - 1 (the assistant slot for THIS turn, derived from the
+    persisted [.., user, assistant] layout -- see turn_pipeline.py's round
+    17/18 comments), and expected_text is THIS turn's own answer. Both must
+    match the CURRENT message at that index before patching. A same-cost
+    concurrent append can't fool this the way it could fool a cost-only
+    check, since content identity doesn't collide the way small integer
+    costs can.
+
+    Verifies the message at message_index is assistant-role and its text
+    matches expected_text -- text is message.get("content") for a chat
+    message, or message.get("stage3", {}).get("response") for a council
+    message (whichever is present; a message never has both). Any mismatch
+    (out of bounds, wrong role, text doesn't match) is a no-op with a
+    warning -- some other turn's message occupies that slot now (an edit/
+    regenerate raced in), so overwriting it would be patching the wrong
+    turn's cost.
     """
     with ConversationLock.get_lock(conversation_id):
         conversation = get_conversation(conversation_id)
@@ -455,14 +468,23 @@ def update_last_message_running_cost(conversation_id: str, running_cost: float) 
             raise ValueError(f"Conversation {conversation_id} not found")
 
         messages = conversation.get("messages", [])
-        if not messages or "running_cost" not in messages[-1]:
+        if not (0 <= message_index < len(messages)):
             logger.warning(
-                "[STORAGE] update_last_message_running_cost: no message with running_cost to patch for conversation %s",
-                conversation_id,
+                "[STORAGE] update_message_running_cost: index %d out of bounds for conversation %s",
+                message_index, conversation_id,
             )
             return
 
-        messages[-1]["running_cost"] = running_cost
+        message = messages[message_index]
+        actual_text = message.get("content") if "content" in message else message.get("stage3", {}).get("response")
+        if message.get("role") != "assistant" or actual_text != expected_text:
+            logger.warning(
+                "[STORAGE] update_message_running_cost: message at index %d no longer matches the expected turn for conversation %s",
+                message_index, conversation_id,
+            )
+            return
+
+        message["running_cost"] = running_cost
         save_conversation(conversation)
 
 

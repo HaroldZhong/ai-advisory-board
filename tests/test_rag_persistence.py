@@ -2936,49 +2936,73 @@ async def test_chat_indexing_partial_delta_survives_a_later_indexing_failure(mon
     assert result["turn_cost"] == pytest.approx(topics_cost)
 
 
-# --- Codex round 21 on PR #80: persist the post-indexing turn cost on the saved message ---
+# --- Codex round 21/22 on PR #80: persist the post-indexing turn cost on the saved message ---
 
 
-def test_update_last_message_running_cost_patches_the_last_message(tmp_path, monkeypatch):
-    """Codex round 21 P2: the new storage helper itself -- load, patch
-    messages[-1]["running_cost"], save, under the same ConversationLock
-    pattern record_session_usage uses."""
+def test_update_message_running_cost_patches_the_message_at_that_index(tmp_path, monkeypatch):
+    """Codex round 22 P2: the storage helper itself -- identity addressing
+    by (message_index, expected_text), not "last message"."""
     monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
     storage.create_conversation("conv-1")
     storage.add_user_message("conv-1", "Question")
     storage.add_chat_message("conv-1", "Answer", running_cost=0.75)
 
-    storage.update_last_message_running_cost("conv-1", 3.25)
+    storage.update_message_running_cost("conv-1", 1, "Answer", 3.25)
 
     conversation = storage.get_conversation("conv-1")
-    assert conversation["messages"][-1]["running_cost"] == pytest.approx(3.25)
+    assert conversation["messages"][1]["running_cost"] == pytest.approx(3.25)
 
 
-def test_update_last_message_running_cost_is_a_noop_without_an_existing_running_cost(tmp_path, monkeypatch, caplog):
-    """Codex round 21 P2: guard -- no messages, or the last message never
-    had running_cost set, is a no-op with a warning rather than guessing at
-    a shape this dumb helper doesn't own."""
+def test_update_message_running_cost_matches_council_stage3_response_text(tmp_path, monkeypatch):
+    """Codex round 22 P2: council messages carry their text in
+    stage3.response, not content -- the helper must check whichever shape
+    the message actually has."""
     monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
     storage.create_conversation("conv-1")
     storage.add_user_message("conv-1", "Question")
-    storage.add_chat_message("conv-1", "Answer")  # no running_cost kwarg
+    storage.add_assistant_message(
+        "conv-1", [], [], {"model": "model-a", "response": "Final answer"}, running_cost=0.75,
+    )
 
-    with caplog.at_level("WARNING"):
-        storage.update_last_message_running_cost("conv-1", 3.25)
+    storage.update_message_running_cost("conv-1", 1, "Final answer", 3.25)
 
     conversation = storage.get_conversation("conv-1")
-    assert "running_cost" not in conversation["messages"][-1]
-    assert any("update_last_message_running_cost" in r.message for r in caplog.records)
+    assert conversation["messages"][1]["running_cost"] == pytest.approx(3.25)
+
+
+@pytest.mark.parametrize(
+    "message_index,expected_text",
+    [(1, "A different answer"), (5, "Answer"), (0, "Answer")],
+    ids=["text_mismatch", "out_of_bounds", "wrong_role"],
+)
+def test_update_message_running_cost_is_a_noop_on_any_identity_mismatch(
+    tmp_path, monkeypatch, caplog, message_index, expected_text,
+):
+    """Codex round 22 P2: any identity mismatch (wrong text, out of bounds,
+    or a non-assistant message at that index) is a no-op with a warning --
+    some other turn's message occupies that slot, so overwriting it would
+    patch the wrong turn's cost."""
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
+    storage.create_conversation("conv-1")
+    storage.add_user_message("conv-1", "Question")  # index 0
+    storage.add_chat_message("conv-1", "Answer", running_cost=0.75)  # index 1
+
+    with caplog.at_level("WARNING"):
+        storage.update_message_running_cost("conv-1", message_index, expected_text, 3.25)
+
+    conversation = storage.get_conversation("conv-1")
+    assert conversation["messages"][1]["running_cost"] == pytest.approx(0.75)  # untouched
+    assert any("update_message_running_cost" in r.message for r in caplog.records)
 
 
 @pytest.mark.asyncio
 async def test_chat_turn_with_billed_delta_persists_running_cost_matching_complete_event(monkeypatch, tmp_path):
-    """Codex round 21 P2: end-to-end round-trip -- a chat turn with a billed
-    indexing delta (topics usage) must, after completion, show the SAME
-    turn_cost in three places: the complete event's turn_cost, the
-    conversation's total_cost, AND the last persisted message's
-    running_cost (reloaded fresh from storage, simulating a GET
-    /api/conversations after a page reload). Fails pre-fix: the message's
+    """Codex round 21/22 P2: end-to-end round-trip -- a chat turn with a
+    billed indexing delta (topics usage) must, after completion, show the
+    SAME turn_cost in three places: the complete event's turn_cost, the
+    conversation's total_cost, AND the persisted message's running_cost
+    (reloaded fresh from storage, simulating a GET /api/conversations after
+    a page reload). Fails pre-fix (pre-round-21): the message's
     running_cost would still hold the base cost alone, disagreeing with the
     other two."""
     conversation_id = "conv-running-cost-roundtrip"
@@ -3024,12 +3048,12 @@ async def test_chat_turn_with_billed_delta_persists_running_cost_matching_comple
 
 @pytest.mark.asyncio
 async def test_chat_turn_without_a_delta_does_not_patch_running_cost(monkeypatch, tmp_path):
-    """Codex round 21 P2: the delta-less path is unchanged -- no indexing
-    usage means delta_cost stays 0, so the round-21 patch block (guarded by
-    `if delta_cost:`) must never run, and update_last_message_running_cost
-    must never be called. Asserted directly via a spy on the storage
-    function, not just via the resulting value (which would also pass if
-    the patch ran and happened to write the same number back)."""
+    """Codex round 21/22 P2: the delta-less path is unchanged -- no
+    indexing usage means delta_cost stays 0, so the patch block (guarded by
+    `if delta_cost:`) must never run, and update_message_running_cost must
+    never be called. Asserted directly via a spy on the storage function,
+    not just via the resulting value (which would also pass if the patch
+    ran and happened to write the same number back)."""
     conversation_id = "conv-no-delta-no-patch"
 
     async def extract_topics_with_usage(*args, **kwargs):
@@ -3045,13 +3069,13 @@ async def test_chat_turn_without_a_delta_does_not_patch_running_cost(monkeypatch
     )
 
     calls = []
-    real_update_last_message_running_cost = main.storage.update_last_message_running_cost
+    real_update_message_running_cost = main.storage.update_message_running_cost
 
-    def spy_update_last_message_running_cost(*args, **kwargs):
+    def spy_update_message_running_cost(*args, **kwargs):
         calls.append(args)
-        return real_update_last_message_running_cost(*args, **kwargs)
+        return real_update_message_running_cost(*args, **kwargs)
 
-    monkeypatch.setattr(main.storage, "update_last_message_running_cost", spy_update_last_message_running_cost)
+    monkeypatch.setattr(main.storage, "update_message_running_cost", spy_update_message_running_cost)
 
     async def fake_chat_with_chairman(*args, **kwargs):
         return {"content": "Budget-aware response", "usage": {}}
@@ -3067,13 +3091,73 @@ async def test_chat_turn_without_a_delta_does_not_patch_running_cost(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_chat_turn_skips_running_cost_patch_when_last_message_was_replaced(monkeypatch, tmp_path, caplog):
-    """Codex round 21 P2: mismatched-last-message guard. Simulate an
-    edit/regenerate replacing the last message between the base-cost write
-    and the delta block by overwriting its running_cost via a fake
-    index_chat_turn (indexing is the last await before the delta block
-    runs). The patch must be skipped (logged), not overwrite the
-    replacement message's running_cost with this turn's total."""
+async def test_chat_turn_patches_its_own_message_despite_a_same_cost_overlapping_append(monkeypatch, tmp_path, caplog):
+    """Codex round 22 P2: the ambiguity round 21's cost-equality guard had.
+    While this turn's indexing is still in flight (a blocking fake), append
+    ANOTHER assistant message directly via storage with the SAME
+    running_cost as this turn's base cost -- round 21's "last message +
+    cost equality" check would match that NEWER message (it's now the
+    "last message" with an equal cost) and patch the WRONG turn. Identity
+    addressing (this turn's expected_anchor - 1, this turn's own answer
+    text) must patch THIS turn's message instead, leaving the overlapping
+    append's own running_cost untouched. Fails pre-fix: the last-message
+    guard would patch index 3 (the overlapping append), not index 1 (this
+    turn)."""
+    conversation_id = "conv-running-cost-overlap"
+    topics_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    same_base_cost = 0.0  # this turn's chairman usage is empty -> base cost 0.0
+
+    async def extract_topics_and_append_overlapping_turn(*args, **kwargs):
+        # Runs during THIS turn's best-effort indexing window. Simulate a
+        # concurrent turn's message landing with the SAME running_cost as
+        # this turn's own base cost (e.g. another all-empty-usage turn).
+        storage.add_user_message(conversation_id, "Overlapping question")
+        storage.add_chat_message(conversation_id, "Overlapping answer", running_cost=same_base_cost)
+        return ["topic"], topics_usage
+
+    async def index_chat_turn(*args, **kwargs):
+        return None
+
+    main = _chat_turn_setup(
+        monkeypatch, tmp_path, conversation_id,
+        index_chat_turn=index_chat_turn,
+        extract_topics_with_usage=extract_topics_and_append_overlapping_turn,
+    )
+
+    async def fake_chat_with_chairman(*args, **kwargs):
+        return {"content": "This turn's answer", "usage": {}}  # base cost 0.0, matches same_base_cost
+
+    monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
+
+    with caplog.at_level("INFO"):
+        result = await main.send_message(
+            conversation_id,
+            main.SendMessageRequest(content="Follow up", mode="chat"),
+        )
+
+    assert result["type"] == "chat"
+    topics_cost = (1_000_000 / 1_000_000) * 0.3 + (1_000_000 / 1_000_000) * 2.5
+    assert result["turn_cost"] == pytest.approx(topics_cost)
+
+    conversation = main.storage.get_conversation(conversation_id)
+    messages = conversation["messages"]
+    # index 0: earlier user, index 1: THIS turn's user message... wait --
+    # _chat_turn_setup seeds 2 prior messages (indices 0-1), so THIS turn's
+    # user/assistant land at indices 2-3, and the overlapping append lands
+    # at indices 4-5 (added from inside the topics fake, after THIS turn's
+    # own persistence). THIS turn's assistant message is index 3.
+    assert messages[3]["content"] == "This turn's answer"
+    assert messages[3]["running_cost"] == pytest.approx(topics_cost)  # patched correctly
+    assert messages[5]["content"] == "Overlapping answer"
+    assert messages[5]["running_cost"] == pytest.approx(same_base_cost)  # untouched by the patch
+
+
+@pytest.mark.asyncio
+async def test_chat_turn_skips_running_cost_patch_when_its_own_message_was_replaced(monkeypatch, tmp_path, caplog):
+    """Codex round 22 P2: identity mismatch guard -- an edit/regenerate
+    that replaces THIS turn's own message (same index, different text)
+    between persistence and the delta block must skip the patch, not
+    overwrite the replacement's running_cost."""
     conversation_id = "conv-running-cost-guard"
     topics_usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
 
@@ -3081,10 +3165,12 @@ async def test_chat_turn_skips_running_cost_patch_when_last_message_was_replaced
         return ["topic"], topics_usage
 
     async def replacing_index_chat_turn(*args, **kwargs):
-        # Simulate a concurrent edit/regenerate landing right here: some
-        # OTHER turn's message now occupies the "last message" slot, with
-        # its own unrelated running_cost.
-        storage.update_last_message_running_cost(conversation_id, 999.0)
+        # Simulate a concurrent edit/regenerate replacing THIS turn's own
+        # message (same index, different content) with its own cost.
+        conversation = storage.get_conversation(conversation_id)
+        conversation["messages"][-1]["content"] = "Replacement answer"
+        conversation["messages"][-1]["running_cost"] = 999.0
+        storage.save_conversation(conversation)
         return None
 
     main = _chat_turn_setup(
@@ -3098,7 +3184,7 @@ async def test_chat_turn_skips_running_cost_patch_when_last_message_was_replaced
 
     monkeypatch.setattr(main, "chat_with_chairman", fake_chat_with_chairman)
 
-    with caplog.at_level("INFO"):
+    with caplog.at_level("WARNING"):
         result = await main.send_message(
             conversation_id,
             main.SendMessageRequest(content="Follow up", mode="chat"),
@@ -3113,4 +3199,4 @@ async def test_chat_turn_skips_running_cost_patch_when_last_message_was_replaced
     conversation = main.storage.get_conversation(conversation_id)
     # The replacement value from inside the fake survives untouched.
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(999.0)
-    assert any("Skipping running_cost patch" in r.message for r in caplog.records)
+    assert any("update_message_running_cost" in r.message for r in caplog.records)
