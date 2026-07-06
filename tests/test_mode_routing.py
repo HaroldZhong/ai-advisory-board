@@ -23,8 +23,10 @@ def _setup_council_fakes(monkeypatch, main):
     async def fake_steward(*args, **kwargs):
         return EvidencePack(run_id="run-1", query="q"), None
 
-    async def fake_stage1(*args, **kwargs):
-        return [{"model": "model-a", "response": "Answer A", "usage": {}}]
+    async def fake_stage1_progressive(*args, **kwargs):
+        result = {"model": "model-a", "response": "Answer A", "usage": {}}
+        yield "model_complete", 0, result
+        yield "complete", [result], None
 
     async def fake_stage2(*args, **kwargs):
         return (
@@ -42,7 +44,7 @@ def _setup_council_fakes(monkeypatch, main):
         return (["topic"], {})
 
     monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
-    monkeypatch.setattr(main, "stage1_collect_responses", fake_stage1)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", fake_stage1_progressive)
     monkeypatch.setattr(main, "stage2_collect_rankings", fake_stage2)
     monkeypatch.setattr(main, "stage3_synthesize_final", fake_stage3)
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)

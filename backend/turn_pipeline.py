@@ -19,6 +19,7 @@ from .logger import logger
 ALL_FAIL_STAGE3 = {
     "model": "error",
     "response": "All models failed to respond. Please try again.",
+    "error": True,
 }
 
 
@@ -375,32 +376,33 @@ async def run_turn(
                 ):
                     yield event
                 yield {"type": "stage3_complete", "data": stage3_result}
-                if stage3_result.get("error"):
-                    turn_cost = main.calculate_turn_cost(
-                        mode="council",
-                        stage1_results=stage1_results,
-                        stage2_results=stage2_results,
-                        stage3_result=stage3_result,
-                        extra_usage_records=extra_usage_records,
-                    )
-                    main.storage.update_conversation_cost(conversation_id, turn_cost)
-                    budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
-                    if budget_state["warning_level"] is not None:
-                        warning_pct = int(budget_state["warning_level"] * 100)
-                        yield {
-                            "type": "budget_warning",
-                            "data": {
-                                "threshold": budget_state["warning_level"],
-                                "percentage": warning_pct,
-                            },
-                        }
-                    await _cancel_title_task(title_task)
+
+            if stage3_result.get("error"):
+                turn_cost = main.calculate_turn_cost(
+                    mode="council",
+                    stage1_results=stage1_results,
+                    stage2_results=stage2_results,
+                    stage3_result=stage3_result,
+                    extra_usage_records=extra_usage_records,
+                )
+                main.storage.update_conversation_cost(conversation_id, turn_cost)
+                budget_state = main.storage.record_session_usage(conversation_id, turn_cost)
+                if budget_state["warning_level"] is not None:
+                    warning_pct = int(budget_state["warning_level"] * 100)
                     yield {
-                        "type": "error",
-                        "message": stage3_result.get("response")
-                        or "Stage 3 synthesis failed. Please try again.",
+                        "type": "budget_warning",
+                        "data": {
+                            "threshold": budget_state["warning_level"],
+                            "percentage": warning_pct,
+                        },
                     }
-                    return
+                await _cancel_title_task(title_task)
+                yield {
+                    "type": "error",
+                    "message": stage3_result.get("response")
+                    or "Stage 3 synthesis failed. Please try again.",
+                }
+                return
 
             # Wait for title generation if it was started
             async for event in _finish_title_task(main, conversation_id, title_task):
