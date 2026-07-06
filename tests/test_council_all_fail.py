@@ -36,8 +36,8 @@ async def test_run_full_council_all_models_fail_returns_five_tuple(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_message_all_fail_skips_indexing_and_returns_error(monkeypatch, tmp_path):
-    """The sync council endpoint must return the clean error result, not KeyError
-    on metadata["label_to_model"], and must not RAG-index the failed turn."""
+    """The sync council endpoint must surface all-fail as a retryable error,
+    not persist/index a fake assistant turn."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     main = importlib.import_module("backend.main")
     monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
@@ -64,11 +64,16 @@ async def test_send_message_all_fail_skips_indexing_and_returns_error(monkeypatc
     monkeypatch.setattr(main, "generate_conversation_title", fake_title)
     monkeypatch.setattr(main.rag_system, "index_session", lambda *a, **k: indexed.append(a))
 
-    result = await main.send_message(conv_id, main.SendMessageRequest(content="hi", mode="council"))
+    with pytest.raises(HTTPException) as excinfo:
+        await main.send_message(conv_id, main.SendMessageRequest(content="hi", mode="council"))
 
-    assert result["type"] == "council"
-    assert result["stage3"]["model"] == "error"
+    assert excinfo.value.status_code == 500
+    assert "All models failed" in excinfo.value.detail
     assert indexed == [], "failed turns must not be RAG-indexed"
+
+    saved = main.storage.get_conversation(conv_id)
+    assert [message["role"] for message in saved["messages"]] == ["user"]
+    assert "All models failed" not in json.dumps(saved)
 
 
 @pytest.mark.asyncio
