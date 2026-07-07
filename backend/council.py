@@ -54,7 +54,7 @@ def build_stage1_result(model: str, response: Optional[Dict[str, Any]]) -> Optio
     Returns:
         The result dict, or None if the model failed (caller should skip it).
     """
-    if response is None:
+    if response is None or response.get("error"):
         return None
 
     result = {
@@ -181,9 +181,16 @@ async def stage1_collect_responses_progressive(
     resolved: List[Any] = [None] * len(target_models)
     next_to_flush = 0
     stage1_results: List[Dict[str, Any]] = []
+    failure_kinds: List[str] = []
 
-    async for model, response in query_models_as_completed(target_models, messages, **query_kwargs):
+    async for model, response in query_models_as_completed(
+        target_models, messages, include_error_kind=True, **query_kwargs
+    ):
         result = build_stage1_result(model, response)
+        if result is None:
+            failure_kinds.append(
+                response.get("error_kind", "unknown") if isinstance(response, dict) else "unknown"
+            )
         resolved[position_of[model]] = result if result is not None else False
 
         while next_to_flush < len(resolved) and resolved[next_to_flush] is not None:
@@ -194,7 +201,7 @@ async def stage1_collect_responses_progressive(
             stage1_results.append(flushed)
             yield "model_complete", len(stage1_results) - 1, flushed
 
-    yield "complete", stage1_results, None
+    yield "complete", stage1_results, {"failure_kinds": failure_kinds} if failure_kinds else None
 
 
 async def stage2_collect_rankings(

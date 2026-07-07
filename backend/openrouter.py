@@ -44,6 +44,7 @@ async def query_model(
     timeout: float = 120.0,
     zdr_enabled: bool = False,
     thinking_effort: Optional[str] = None,
+    include_error_kind: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Query a single model via OpenRouter API.
@@ -54,6 +55,7 @@ async def query_model(
         timeout: Request timeout in seconds
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
         thinking_effort: Optional OpenRouter reasoning effort for supported models
+        include_error_kind: Return {"error": True, "error_kind": kind} instead of None on failure
 
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
@@ -78,6 +80,8 @@ async def query_model(
     api_key = get_openrouter_api_key()
     if not api_key:
         logger.error("OpenRouter API key not configured")
+        if include_error_kind:
+            return {"error": True, "error_kind": "auth"}
         return None
 
     headers = {
@@ -153,10 +157,13 @@ async def query_model(
             }
 
     except Exception as e:
+        kind = classify_openrouter_error(e)
         logger.error(
             "OpenRouter call failed model=%s kind=%s error=%s",
-            model, classify_openrouter_error(e), e,
+            model, kind, e,
         )
+        if include_error_kind:
+            return {"error": True, "error_kind": kind}
         return None
 
 
@@ -287,6 +294,7 @@ async def query_models_as_completed(
     messages: List[Dict[str, str]],
     zdr_enabled: bool = False,
     thinking_effort: Optional[str] = None,
+    include_error_kind: bool = False,
 ) -> AsyncIterator[Tuple[str, Optional[Dict[str, Any]]]]:
     """
     Query multiple models concurrently, yielding (model, response) as each
@@ -297,13 +305,17 @@ async def query_models_as_completed(
         messages: List of message dicts to send to each model
         zdr_enabled: Restrict routing to OpenRouter ZDR endpoints
         thinking_effort: Optional OpenRouter reasoning effort for supported models
+        include_error_kind: Preserve coarse failure kinds instead of yielding bare None
 
     Yields:
-        (model, response) tuples in completion order; response is None on failure.
+        (model, response) tuples in completion order; response is None on failure
+        unless include_error_kind is true.
     """
     query_kwargs = {"zdr_enabled": zdr_enabled}
     if thinking_effort is not None:
         query_kwargs["thinking_effort"] = thinking_effort
+    if include_error_kind:
+        query_kwargs["include_error_kind"] = True
 
     async def _labeled(model: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         return model, await query_model(model, messages, **query_kwargs)

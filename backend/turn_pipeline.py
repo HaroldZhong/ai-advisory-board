@@ -14,6 +14,7 @@ import uuid
 from typing import Any, AsyncIterator, Dict
 
 from .logger import logger
+from .openrouter_client import OPENROUTER_NETWORK_HINT
 
 # Kept in sync with council.run_full_council's all-fail early return.
 ALL_FAIL_STAGE3 = {
@@ -296,6 +297,7 @@ async def run_turn(
             # instead of all waiting on the slowest (audit §11, P3-W5).
             yield {"type": "stage1_start"}
             stage1_results = []
+            stage1_failure_kinds = []
             async for kind, index, result in main.stage1_collect_responses_progressive(
                 llm_content,
                 models=council_models,
@@ -305,6 +307,7 @@ async def run_turn(
             ):
                 if kind == "complete":
                     stage1_results = index  # (kind, stage1_results, None)
+                    stage1_failure_kinds = (result or {}).get("failure_kinds", [])
                     continue
                 # kind == "model_complete"
                 for event in main.build_reasoning_stream_events(
@@ -327,6 +330,8 @@ async def run_turn(
                 label_to_model = {}
                 aggregate_rankings = []
                 stage3_result = dict(ALL_FAIL_STAGE3)
+                if stage1_failure_kinds and all(kind == "network" for kind in stage1_failure_kinds):
+                    stage3_result["response"] = OPENROUTER_NETWORK_HINT
                 yield {"type": "stage3_complete", "data": stage3_result}
             else:
                 # Stage 2: Collect rankings
