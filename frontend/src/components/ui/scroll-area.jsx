@@ -13,7 +13,7 @@ const ScrollArea = React.forwardRef(({ className, children, viewportRef, onScrol
     <ScrollAreaPrimitive.Viewport
       ref={viewportRef}
       onScroll={onScroll}
-      className="h-full w-full rounded-[inherit]"
+      className="h-full w-full rounded-[inherit] [&>div]:!block [&>div]:!w-full"
       data-radix-scroll-area-viewport
     >
       {children}

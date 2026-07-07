@@ -5,6 +5,8 @@ const CONVERSATION_ID = 'e2e-private-conversation';
 const MODEL_GLM = 'z-ai/glm-5.1';
 const MODEL_QWEN = 'qwen/qwen3.5-35b-a3b';
 const MODEL_CLAUDE = 'anthropic/claude-opus-4.7';
+const MODEL_CLAUDE_HAIKU = 'anthropic/claude-haiku-4.5';
+const MODEL_CLAUDE_SONNET = 'anthropic/claude-sonnet-5';
 const MODEL_GPT = 'openai/gpt-5.5-pro';
 const MODEL_GPT_ZDR = 'openai/gpt-5.4';
 const SLOW_KEY = 'sk-or-v1-slow-probe-key';
@@ -49,7 +51,9 @@ function model(id, name, { type = 'both', supportsZdr = true, input = 1, output 
 
 const modelsPayload = {
   models: [
-    model(MODEL_CLAUDE, 'Anthropic: Claude Opus 4.7', { input: 5, output: 25 }),
+    model(MODEL_CLAUDE_HAIKU, 'Anthropic: Claude Haiku 4.5 Extended Reasoning Preview', { input: 1, output: 5 }),
+    model(MODEL_CLAUDE_SONNET, 'Anthropic: Claude Sonnet 5 Deep Research Preview', { input: 3, output: 15 }),
+    model(MODEL_CLAUDE, 'Anthropic: Claude Opus 4.8 Chairman Default Preview', { input: 5, output: 25 }),
     model(MODEL_GLM, 'Z.ai: GLM 5.1', { input: 1.05, output: 3.5 }),
     model(MODEL_QWEN, 'Qwen: Qwen3.5-35B-A3B', { input: 0.6, output: 1.2 }),
     model(MODEL_GPT, 'OpenAI: GPT-5.5 Pro', { supportsZdr: false, input: 30, output: 120 }),
@@ -296,6 +300,89 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+async function completeSetupToNewConversation(page) {
+  await installMockApi(page);
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await page.goto('/app');
+
+  await page.getByLabel('OpenRouter API key').fill('sk-or-v1-layout-key');
+  await page.getByRole('button', { name: 'Test connection' }).click();
+  await expect(page.getByText('Connected to OpenRouter.')).toBeVisible();
+  await page.getByRole('button', { name: /Continue/ }).click();
+  await page.getByText('Private routing by default').click();
+  await page.getByRole('button', { name: /Continue/ }).click();
+  await page.getByRole('button', { name: /Finish/ }).click();
+  await expect(page.getByRole('heading', { name: 'New conversation' })).toBeVisible();
+}
+
+async function expectVisibleModelGridsFit(page, label) {
+  const metrics = await page.locator('[role="dialog"]').evaluate((dialog) => {
+    const dialogRect = dialog.getBoundingClientRect();
+    const scrollWrappers = [...dialog.querySelectorAll('[data-radix-scroll-area-viewport]')]
+      .map((viewport) => {
+        const content = viewport.firstElementChild;
+        if (!content?.querySelector?.('[role="button"][aria-pressed]')) return null;
+        const viewportRect = viewport.getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        return {
+          display: window.getComputedStyle(content).display,
+          viewportClientWidth: viewport.clientWidth,
+          contentScrollWidth: content.scrollWidth,
+          contentRight: contentRect.right,
+          viewportRight: viewportRect.right,
+          hasModelCards: [...content.querySelectorAll('[role="button"][aria-pressed]')]
+            .some((card) => card.textContent?.includes('/M in /')),
+        };
+      })
+      .filter((wrapper) => wrapper?.hasModelCards);
+    const grids = [...dialog.querySelectorAll('.grid')]
+      .map((grid) => {
+        const gridRect = grid.getBoundingClientRect();
+        const cards = [...grid.querySelectorAll('[role="button"][aria-pressed]')]
+          .map((card) => {
+            const rect = card.getBoundingClientRect();
+            return {
+              text: card.textContent?.replace(/\s+/g, ' ').trim(),
+              left: rect.left,
+              right: rect.right,
+              width: rect.width,
+              visible: rect.width > 0 && rect.height > 0,
+            };
+          })
+          .filter((card) => card.visible && card.text?.includes('/M in /'));
+
+        return {
+          gridClientWidth: grid.clientWidth,
+          gridScrollWidth: grid.scrollWidth,
+          gridRight: gridRect.right,
+          cards,
+        };
+      })
+      .filter((grid) => grid.cards.length >= 3);
+
+    return {
+      dialogRight: dialogRect.right,
+      scrollWrappers,
+      grids,
+    };
+  });
+
+  expect(metrics.scrollWrappers.length, `${label} should render model cards inside a ScrollArea`).toBeGreaterThan(0);
+  for (const wrapper of metrics.scrollWrappers) {
+    expect(wrapper.display, `${label} ScrollArea content wrapper should let grids resolve against the viewport`).toBe('block');
+    expect(wrapper.contentScrollWidth, `${label} ScrollArea content should not horizontally overflow`).toBeLessThanOrEqual(wrapper.viewportClientWidth + 1);
+    expect(wrapper.contentRight, `${label} ScrollArea content clipped at viewport right edge`).toBeLessThanOrEqual(wrapper.viewportRight + 1);
+  }
+
+  expect(metrics.grids.length, `${label} should render a visible 3-card model grid`).toBeGreaterThan(0);
+  for (const grid of metrics.grids) {
+    expect(grid.gridScrollWidth, `${label} model grid should not horizontally overflow`).toBeLessThanOrEqual(grid.gridClientWidth + 1);
+    for (const card of grid.cards) {
+      expect(card.right, `${label} model card clipped at modal right edge: ${card.text}`).toBeLessThanOrEqual(metrics.dialogRight + 1);
+    }
+  }
+}
+
 test('first-run setup creates a private preset conversation and renders streamed reasoning', async ({ page }) => {
   const requests = await installMockApi(page);
 
@@ -355,6 +442,16 @@ test('first-run setup creates a private preset conversation and renders streamed
     mode: 'auto',
     zdr_enabled: true,
   });
+});
+
+test('new-conversation model grids fit inside the modal on wide screens', async ({ page }) => {
+  await completeSetupToNewConversation(page);
+
+  await expectVisibleModelGridsFit(page, 'Chat');
+
+  await page.getByRole('button', { name: 'Council' }).click();
+  await page.getByRole('button', { name: 'Custom' }).click();
+  await expectVisibleModelGridsFit(page, 'Council');
 });
 
 test('first-run setup can be dismissed and lands on the landing page', async ({ page }) => {
