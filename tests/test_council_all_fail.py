@@ -77,6 +77,75 @@ async def test_send_message_all_fail_skips_indexing_and_returns_error(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_send_message_all_network_fail_names_network(monkeypatch, tmp_path):
+    """All-network Stage 1 failures should point users at proxy/relay setup."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    main = importlib.import_module("backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    conversation = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conversation["id"]
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="r", query="q", tools_used=[], key_facts=[], limits=UsageLimits()), None
+
+    async def network_fail_stage1_progressive(*args, **kwargs):
+        yield "complete", [], {"failure_kinds": ["network", "network"]}
+
+    async def fake_title(*args, **kwargs):
+        return "title"
+
+    indexed = []
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", network_fail_stage1_progressive)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+    monkeypatch.setattr(main.rag_system, "index_session", lambda *a, **k: indexed.append(a))
+
+    with pytest.raises(HTTPException) as excinfo:
+        await main.send_message(conv_id, main.SendMessageRequest(content="hi", mode="council"))
+
+    assert excinfo.value.status_code == 500
+    assert "Could not reach openrouter.ai" in excinfo.value.detail
+    assert "HTTPS_PROXY" in excinfo.value.detail
+    assert indexed == []
+
+    saved = main.storage.get_conversation(conv_id)
+    assert [message["role"] for message in saved["messages"]] == ["user"]
+    assert "Could not reach openrouter.ai" not in json.dumps(saved)
+
+
+@pytest.mark.asyncio
+async def test_send_message_mixed_all_fail_stays_generic(monkeypatch, tmp_path):
+    """Mixed all-fail causes should not masquerade as a network block."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    main = importlib.import_module("backend.main")
+    monkeypatch.setattr(main.storage, "DATA_DIR", tmp_path)
+
+    conversation = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conversation["id"]
+
+    async def fake_steward(*args, **kwargs):
+        return EvidencePack(run_id="r", query="q", tools_used=[], key_facts=[], limits=UsageLimits()), None
+
+    async def mixed_fail_stage1_progressive(*args, **kwargs):
+        yield "complete", [], {"failure_kinds": ["network", "timeout"]}
+
+    async def fake_title(*args, **kwargs):
+        return "title"
+
+    monkeypatch.setattr(main, "run_tool_steward_phase", fake_steward)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", mixed_fail_stage1_progressive)
+    monkeypatch.setattr(main, "generate_conversation_title", fake_title)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await main.send_message(conv_id, main.SendMessageRequest(content="hi", mode="council"))
+
+    assert excinfo.value.status_code == 500
+    assert "All models failed" in excinfo.value.detail
+    assert "Could not reach openrouter.ai" not in excinfo.value.detail
+
+
+@pytest.mark.asyncio
 async def test_stage3_synthesis_failure_is_retryable_and_not_indexed(monkeypatch, tmp_path):
     """A Stage 3 chairman failure after successful stages 1/2 must not be
     persisted or indexed as a normal assistant answer."""

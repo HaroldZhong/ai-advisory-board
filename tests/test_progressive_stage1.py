@@ -143,6 +143,27 @@ async def test_stage1_model_complete_index_stable_when_earlier_model_fails(monke
 
 
 @pytest.mark.asyncio
+async def test_stage1_progressive_reports_failure_kinds(monkeypatch):
+    captured_include_error_kind = []
+
+    async def fake_query_model(model, messages, **kwargs):
+        captured_include_error_kind.append(kwargs.get("include_error_kind"))
+        kind = "network" if model == "model-a" else "timeout"
+        return {"error": True, "error_kind": kind}
+
+    monkeypatch.setattr(openrouter, "query_model", fake_query_model)
+
+    events = []
+    async for event in council.stage1_collect_responses_progressive(
+        "question", models=["model-a", "model-b"]
+    ):
+        events.append(event)
+
+    assert captured_include_error_kind == [True, True]
+    assert events == [("complete", [], {"failure_kinds": ["network", "timeout"]})]
+
+
+@pytest.mark.asyncio
 async def test_query_models_as_completed_cancels_pending_on_early_close(monkeypatch):
     """Closing the generator mid-stream (browser closes/navigates) must cancel
     in-flight model calls instead of letting them run to their full HTTP

@@ -11,6 +11,12 @@ OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 OPENROUTER_ZDR_ENDPOINTS_URL = f"{OPENROUTER_BASE_URL}/endpoints/zdr"
 CACHE_TTL_SECONDS = 3600  # 1 hour cache
 
+OPENROUTER_NETWORK_HINT = (
+    "Could not reach openrouter.ai. If you are behind a firewall "
+    "or in a region where openrouter.ai is blocked, set HTTPS_PROXY "
+    "or OPENROUTER_BASE_URL."
+)
+
 # Injection point for tests (httpx.MockTransport); None = real network.
 _probe_transport = None
 
@@ -247,11 +253,7 @@ async def check_connectivity(api_key: Optional[str] = None) -> Dict[str, Any]:
         except Exception as e:
             kind = classify_openrouter_error(e)
             details = {
-                "network": (
-                    "Could not reach openrouter.ai. If you are behind a firewall "
-                    "or in a region where openrouter.ai is blocked, set HTTPS_PROXY "
-                    "or OPENROUTER_BASE_URL."
-                ),
+                "network": OPENROUTER_NETWORK_HINT,
                 "timeout": "openrouter.ai did not respond in time. Check your network or proxy.",
             }
             logger.warning("[OpenRouter] Reachability probe failed kind=%s: %s", kind, e)
