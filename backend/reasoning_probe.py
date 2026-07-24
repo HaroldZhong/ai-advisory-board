@@ -268,11 +268,55 @@ def probe_call_bound_usd(pricing: Dict[str, Any]) -> float:
     The worst case charges the capped tokens at BOTH rates: every token billed as
     completion and surcharged as reasoning. That is deliberately conservative -- it
     stays a true upper bound whether the provider counts reasoning inside the
-    completion cap or bills it on top."""
-    reasoning_rate = pricing.get("internal_reasoning_per_token") or 0.0
+    completion cap or bills it on top.
+
+    When the endpoint publishes NO internal_reasoning rate, the surcharge is assumed
+    to equal the completion rate rather than zero. An absent field is not evidence
+    that reasoning is free: classify_billing detects separate reasoning billing on
+    endpoints publishing no such rate, by observing a surcharge of
+    (reasoning_tokens x completion_rate) ON TOP of the completion-priced cost.
+
+    Also counted, because endpoints bill more than the two token rates:
+      * FLAT per-request fees (`per_request_usd`). Non-zero on search-native models:
+        perplexity/sonar publishes 0.005/search and searches on every completion, so
+        omitting it under-counts those calls by more than half.
+      * The prompt is priced at the WORSE of the prompt and cache-WRITE rates, since
+        a provider that auto-caches bills the prompt as a cache write.
+
+    Refuses when the endpoint publishes a non-zero rate this module cannot map to a
+    probe call: silently dropping an unknown charge fails OPEN, and a ceiling is only
+    a guarantee if every published charge is either counted or explicitly ruled out.
+
+    ASSUMPTION (documented, not enforceable here): the provider honours `max_tokens`.
+    _post sends it on every call; a provider that ignored it could bill unbounded
+    output, which no client-side arithmetic can bound."""
+    unaccounted = pricing.get("unaccounted_nonzero_price_keys") or []
+    if unaccounted:
+        raise EndpointPricingError(
+            f"endpoint publishes non-zero charges this bound does not model "
+            f"({', '.join(unaccounted)}); counting only the known components would "
+            f"under-count the ceiling -- refusing to price this call"
+        )
+    completion_rate = float(pricing["completion_per_token"])
+    published_reasoning = pricing.get("internal_reasoning_per_token")
+    if published_reasoning not in (None, "") and float(published_reasoning) > 0:
+        # Explicit rate -> use exactly what this endpoint says it charges.
+        reasoning_rate = float(published_reasoning)
+    else:
+        # NOT published is not evidence that it is free. classify_billing detects
+        # separate reasoning billing on endpoints that publish NO internal_reasoning
+        # rate, by observing a surcharge of reasoning_tokens x completion_rate on top
+        # of the completion-priced cost. Assuming zero there would make the ceiling a
+        # guess about the favourable regime; assume that documented surcharge instead.
+        reasoning_rate = completion_rate
+    prompt_rate = max(
+        float(pricing["prompt_per_token"]),
+        float(pricing.get("input_cache_write_per_token") or 0.0),
+    )
     return (
-        (float(pricing["completion_per_token"]) + float(reasoning_rate)) * PROBE_MAX_TOKENS
-        + float(pricing["prompt_per_token"]) * PROBE_PROMPT_TOKENS_EST
+        (completion_rate + reasoning_rate) * PROBE_MAX_TOKENS
+        + prompt_rate * PROBE_PROMPT_TOKENS_EST
+        + float(pricing.get("per_request_usd") or 0.0)
     )
 
 

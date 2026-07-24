@@ -37,6 +37,43 @@ from . import config
 OPENROUTER_ENDPOINTS_URL = f"{config.OPENROUTER_BASE_URL}/models/{{model}}/endpoints"
 
 
+# What a TEXT-ONLY, plugin-free probe call can be billed for, and how a bound must
+# account for each. Anything published non-zero and NOT listed here is unaccounted:
+# the caller refuses rather than silently leaving it out of a spend ceiling.
+_TOKEN_PRICE_KEYS = frozenset({"prompt", "completion", "internal_reasoning"})
+# Providers publish a FAMILY of prompt-side cache rates, not one key: Anthropic adds
+# `input_cache_write_1h` alongside `input_cache_write` for its 1-hour tier. Match the
+# family by prefix so a new TTL variant is accounted for automatically instead of
+# tripping the fail-closed guard (or, worse, being dropped from a ceiling).
+_CACHE_KEY_PREFIXES = ("input_cache_write", "input_cache_read")
+_PER_REQUEST_PRICE_KEYS = frozenset({"request", "web_search"})
+# Cannot apply: the probe sends one short text message and attaches no plugin, so no
+# image/audio/video units are ever billed (see reasoning_probe._post).
+_INAPPLICABLE_PRICE_KEYS = frozenset({
+    "image", "image_output", "audio", "input_audio_cache", "video",
+})
+# Not charges: `discount` reduces cost, `overrides` is routing metadata.
+_NON_PRICE_KEYS = frozenset({"discount", "overrides"})
+_ACCOUNTED_PRICE_KEYS = (
+    _TOKEN_PRICE_KEYS | _PER_REQUEST_PRICE_KEYS | _INAPPLICABLE_PRICE_KEYS | _NON_PRICE_KEYS
+)
+
+
+def _is_accounted_price_key(key):
+    return key in _ACCOUNTED_PRICE_KEYS or key.startswith(_CACHE_KEY_PREFIXES)
+
+
+def _is_nonzero_rate(value):
+    """True when a published price could actually bill. Unparseable values count as
+    non-zero: an unreadable rate is not evidence that it is free."""
+    if value in (None, ""):
+        return False
+    try:
+        return float(value) != 0.0
+    except (TypeError, ValueError):
+        return True
+
+
 class EndpointPricingError(RuntimeError):
     """A pinned endpoint's rate could not be resolved with certainty. Callers must
     treat this as fatal for the route in question: guessing a rate would silently
@@ -87,6 +124,22 @@ def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
             "cannot price this capture"
         )
 
+    # Endpoints bill more than the two token rates. Surface every component a caller
+    # bounding spend must account for; omitting one silently under-counts a ceiling.
+    # `web_search` is real and INTRINSIC on search-native models (perplexity/sonar
+    # publishes 0.005/search and searches on every completion -- backend/web_search.py
+    # documents them as having native search built in), and providers that auto-cache
+    # can bill the prompt at the cache-WRITE rate instead of the prompt rate.
+    def rate0(key):
+        return rate(key) or 0.0
+
+    # FAIL CLOSED on anything we do not know how to charge for. A silently ignored
+    # non-zero rate is an under-counted ceiling; the caller must refuse instead.
+    unaccounted = sorted(
+        key for key, value in pricing.items()
+        if not _is_accounted_price_key(key) and _is_nonzero_rate(value)
+    )
+
     return {
         "source": url,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -102,5 +155,16 @@ def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
         # A non-zero internal_reasoning price on THIS endpoint is an explicit,
         # named separate charge for reasoning tokens.
         "internal_reasoning_per_token": rate("internal_reasoning"),
+        # A provider that auto-caches bills the prompt at the cache-WRITE rate. Take
+        # the WORST across the whole cache-write family (plain + TTL variants such as
+        # Anthropic's input_cache_write_1h), since any of them could apply.
+        "input_cache_write_per_token": max(
+            [rate0(key) for key in pricing if key.startswith("input_cache_write")] or [0.0]
+        ),
+        # Flat charges that land once per call regardless of token counts.
+        "per_request_usd": rate0("request") + rate0("web_search"),
+        # Non-zero published rates this module cannot map to a probe call. Non-empty
+        # means NO sound bound can be computed -- callers must refuse, not guess.
+        "unaccounted_nonzero_price_keys": unaccounted,
         "pricing_raw": pricing,
     }
