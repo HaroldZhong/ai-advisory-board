@@ -229,36 +229,18 @@ def models_needing_probe(
     return needing
 
 
-def _per_call_cost_usd(model_entry: Dict[str, Any]) -> Optional[float]:
-    """Worst-case dollar cost of ONE probe call for this model, derived from the
-    registry pricing ($/M tokens) and the enforced PROBE_MAX_TOKENS output bound.
-    Returns None when the model has no usable output price -- the caller must then
-    refuse, since an unpriced model can't be bounded."""
-    pricing = model_entry.get("pricing") or {}
-    # BOTH sides must be usable non-negative numbers: a probe call sends prompt
-    # tokens too, so a missing/negative/non-numeric input price can't be treated as
-    # free -- return None so the sweep refuses rather than under-bounding spend.
-    out_price = pricing.get("output")
-    in_price = pricing.get("input")
-    for price in (out_price, in_price):
-        if not isinstance(price, (int, float)) or isinstance(price, bool) or price < 0:
-            return None
-    return (in_price * PROBE_PROMPT_TOKENS_EST + out_price * PROBE_MAX_TOKENS) / 1_000_000
-
-
-def estimate_max_probe_cost(models_needing: Iterable[Dict[str, Any]], levels: Iterable[str]) -> Optional[float]:
-    """Real upper bound on sweep spend: for each model, (1 baseline + one call per
-    level) x its own registry-priced per-call cost (output price x PROBE_MAX_TOKENS).
-    Returns None if ANY model lacks a usable price, so the caller refuses rather than
-    trusting a flat per-call assumption that a $180/M model would blow past."""
+def estimate_max_probe_cost(num_models: int, levels: Iterable[str], max_cost_per_call_usd: float) -> float:
+    """Upper bound on sweep spend: num_models x (1 baseline + one call per level) x
+    the maintainer-asserted worst-case per-call cost. Because every probe call caps
+    output at PROBE_MAX_TOKENS, the maintainer sets max_cost_per_call_usd to (the
+    PINNED endpoint's output price x PROBE_MAX_TOKENS + prompt) and this is a real
+    upper bound. We deliberately do NOT derive it from the registry's model-wide
+    `pricing`: --provider-tag pins a specific endpoint whose price can differ from
+    the curated model-wide value, so a registry-derived bound could under-count and
+    break the ceiling (exact per-endpoint price auto-resolution via /endpoints is a
+    documented follow-up)."""
     calls_per_model = 1 + len(tuple(levels))
-    total = 0.0
-    for m in models_needing:
-        per_call = _per_call_cost_usd(m)
-        if per_call is None:
-            return None
-        total += calls_per_model * per_call
-    return total
+    return num_models * calls_per_model * max_cost_per_call_usd
 
 
 async def run_probe_sweep(
@@ -267,6 +249,7 @@ async def run_probe_sweep(
     api_key: str,
     *,
     max_probe_usd: Optional[float],
+    max_cost_per_call_usd: Optional[float],
     existing: Optional[Dict[str, Dict[str, Any]]] = None,
     levels: Iterable[str] = CANDIDATE_LEVELS,
     transport=None,
@@ -275,42 +258,45 @@ async def run_probe_sweep(
 ) -> Dict[str, Dict[str, Any]]:
     """Probe every model that needs it, resumably, and return the merged records.
 
-    SPEND-CEILING GUARD (PAID PROBE AUTHORIZATION): before any paid call, refuse
-    if the authorized ceiling is unset/non-positive/non-finite, or if the worst-case
-    sweep cost (priced from the registry) cannot be guaranteed under it. One model
-    erroring degrades to a skipped row, but a SYSTEMIC failure (every call fails)
-    aborts loudly rather than publishing an all-skipped matrix. Bounded concurrency;
-    the caller persists the result via reasoning_capability.save_capabilities.
+    SPEND-CEILING GUARD (PAID PROBE AUTHORIZATION): before any paid call, refuse if
+    the authorized ceiling or the per-call bound is unset/non-positive/non-finite,
+    or if the worst-case sweep cost (num calls x the asserted per-call bound) exceeds
+    the ceiling. One model erroring degrades to a skipped row, but a SYSTEMIC failure
+    (every call fails) aborts loudly rather than publishing an all-skipped matrix.
+    Bounded concurrency; the caller persists via reasoning_capability.save_capabilities.
     """
     levels = tuple(levels)
     merged = dict(existing or {})
     needing = models_needing_probe(registry_models, merged, provider_of)
 
+    def _positive_finite(value):
+        return (not isinstance(value, bool) and isinstance(value, (int, float))
+                and math.isfinite(value) and value > 0)
+
     if max_probe_usd is None:
         raise CeilingError(
             "no authorized probe spend ceiling (<MAX_PROBE_USD> is unset) -- refusing to probe"
         )
-    if (isinstance(max_probe_usd, bool) or not isinstance(max_probe_usd, (int, float))
-            or not math.isfinite(max_probe_usd) or max_probe_usd <= 0):
-        # `not (x > 0)` alone would miss NaN slipping through the ceiling check.
+    # `not (x > 0)` alone would miss NaN slipping through the ceiling comparison.
+    if not _positive_finite(max_probe_usd):
         raise CeilingError(
             f"authorized probe ceiling {max_probe_usd!r} must be a positive, finite number -- refusing to probe"
+        )
+    if not _positive_finite(max_cost_per_call_usd):
+        raise CeilingError(
+            f"per-call cost bound {max_cost_per_call_usd!r} must be a positive, finite number "
+            f"(the pinned endpoint's output price x {PROBE_MAX_TOKENS} max tokens) -- refusing to probe"
         )
     if concurrency < 1:
         # asyncio.Semaphore(0) starts locked -> every task blocks forever.
         raise ValueError(f"concurrency must be >= 1 (got {concurrency})")
 
-    worst_case = estimate_max_probe_cost(needing, levels)
-    if worst_case is None:
-        raise CeilingError(
-            "cannot bound worst-case spend: a model needing a probe has no registry output "
-            "price -- refusing to probe (add pricing or exclude the model)"
-        )
+    worst_case = estimate_max_probe_cost(len(needing), levels, max_cost_per_call_usd)
     if worst_case > max_probe_usd:
         raise CeilingError(
             f"worst-case probe spend ${worst_case:.4f} ({len(needing)} models x "
-            f"{1 + len(levels)} calls, registry-priced x {PROBE_MAX_TOKENS} max tokens) exceeds "
-            f"the authorized ceiling ${max_probe_usd:.4f} -- refusing to probe"
+            f"{1 + len(levels)} calls x ${max_cost_per_call_usd}/call) exceeds the authorized "
+            f"ceiling ${max_probe_usd:.4f} -- refusing to probe"
         )
 
     sem = asyncio.Semaphore(concurrency)

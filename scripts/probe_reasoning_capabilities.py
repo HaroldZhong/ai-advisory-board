@@ -6,14 +6,16 @@ twice: --max-probe-usd is a required arg, and run_probe_sweep re-checks the
 worst-case cost against it). Writes the capability sidecar; resumable (fresh rows
 are skipped), bounded concurrency, per-model degradation.
 
-The worst-case cost is derived from each model's registry pricing x the enforced
-PROBE_MAX_TOKENS output bound (no flat per-call assumption to get wrong), and the
-sweep refuses if that exceeds --max-probe-usd or if a model needing a probe has no
-registry price.
+Every probe call caps output at PROBE_MAX_TOKENS, so the worst-case per-call cost is
+(pinned endpoint output price x PROBE_MAX_TOKENS + prompt). The maintainer asserts
+that via the REQUIRED --max-cost-per-call, and the ceiling = calls x that bound. We
+do not derive it from the registry's model-wide price, because --provider-tag pins a
+specific endpoint whose price can differ (auto-resolving the exact endpoint price via
+the /endpoints API is a documented follow-up).
 
 Usage:
   OPENROUTER_API_KEY=... uv run python scripts/probe_reasoning_capabilities.py \
-      --max-probe-usd 5.00 [--concurrency 4]
+      --max-probe-usd 5.00 --max-cost-per-call 0.05 [--concurrency 4]
 
 Provider routing (correction #6): each model is pinned to an exact endpoint tag.
 By default the tag is the model id's provider prefix (e.g. openai/gpt-x -> openai);
@@ -53,6 +55,7 @@ async def _run(args) -> int:
         lambda m: resolve_provider_tag(m, args.provider_tag),
         api_key,
         max_probe_usd=args.max_probe_usd,
+        max_cost_per_call_usd=args.max_cost_per_call,
         existing=existing,
         concurrency=args.concurrency,
     )
@@ -72,6 +75,11 @@ def main(argv=None) -> int:
     # Required: no ceiling -> no run. This is the CLI-level spend guard.
     parser.add_argument("--max-probe-usd", type=float, required=True,
                         help="Hard maximum authorized spend for this sweep (USD).")
+    parser.add_argument("--max-cost-per-call", type=float, required=True,
+                        help="Worst-case USD cost of ONE probe call. Set to the PINNED "
+                             "endpoint's output price x the probe's max output tokens (+ prompt); "
+                             "the ceiling = calls x this. Required so the bound reflects the "
+                             "endpoint you route to, not the registry's model-wide price.")
     parser.add_argument("--concurrency", type=int, default=4,
                         help="Parallel probe calls (>= 1).")
     parser.add_argument("--provider-tag", default=None,
@@ -80,6 +88,9 @@ def main(argv=None) -> int:
 
     if args.max_probe_usd <= 0:
         print("error: --max-probe-usd must be positive", file=sys.stderr)
+        return 2
+    if args.max_cost_per_call <= 0:
+        print("error: --max-cost-per-call must be positive", file=sys.stderr)
         return 2
     if args.concurrency < 1:
         print("error: --concurrency must be >= 1", file=sys.stderr)

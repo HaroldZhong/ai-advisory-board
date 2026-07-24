@@ -205,10 +205,8 @@ async def test_probe_posts_to_configured_base_url(monkeypatch):
 
 # --- A4: sweep orchestration (resumable, ceiling-guarded) --------------------
 
-def _entry(mid, extraction="field", output=1.0, input=0.5):
-    # pricing ($/M tokens) so the sweep can derive a real per-call cost bound
-    return {"id": mid, "supports_reasoning": True, "reasoning_extraction": extraction,
-            "pricing": {"input": input, "output": output}}
+def _entry(mid, extraction="field"):
+    return {"id": mid, "supports_reasoning": True, "reasoning_extraction": extraction}
 
 
 def test_models_needing_probe_skips_fresh_includes_stale_and_unprobed():
@@ -223,18 +221,10 @@ def test_models_needing_probe_skips_fresh_includes_stale_and_unprobed():
     assert needing == {"b", "c"}
 
 
-def test_estimate_max_probe_cost_from_registry_pricing():
+def test_estimate_max_probe_cost():
     probe = _probe()
-    # 1 model, output $180/M, PROBE_MAX_TOKENS=8000 -> ~$1.44/call x 4 calls ~ $5.76
-    one = probe.estimate_max_probe_cost([_entry("a", output=180.0, input=2.0)], ("low", "medium", "high"))
-    assert one == pytest.approx(4 * (2.0 * probe.PROBE_PROMPT_TOKENS_EST + 180.0 * probe.PROBE_MAX_TOKENS) / 1_000_000)
-    # an unpriced model can't be bounded -> None (caller must refuse)
-    assert probe.estimate_max_probe_cost([{"id": "x"}], ("low",)) is None
-    # malformed INPUT price (prompt tokens still cost money) also can't be bounded
-    for bad_in in ({"output": 5.0}, {"output": 5.0, "input": -1}, {"output": 5.0, "input": "x"}):
-        assert probe.estimate_max_probe_cost([{"id": "x", "pricing": bad_in}], ("low",)) is None
-    # explicit free input (0) is valid, not malformed
-    assert probe.estimate_max_probe_cost([{"id": "x", "pricing": {"input": 0, "output": 5.0}}], ("low",)) is not None
+    # num_models x (1 baseline + 3 levels) x the asserted per-call bound
+    assert probe.estimate_max_probe_cost(2, ("low", "medium", "high"), 0.01) == pytest.approx(0.08)
 
 
 @pytest.mark.asyncio
@@ -242,7 +232,7 @@ async def test_sweep_refuses_without_a_ceiling():
     probe = _probe()
     with pytest.raises(probe.CeilingError, match="unset"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=None,
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=None, max_cost_per_call_usd=0.01,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -255,18 +245,20 @@ async def test_sweep_refuses_nonpositive_or_nonfinite_ceiling(bad):
     # slip through the `worst_case > ceiling` comparison and fire the paid sweep.
     with pytest.raises(probe.CeilingError, match="positive, finite"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=bad,
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=bad, max_cost_per_call_usd=0.01,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
 
 @pytest.mark.asyncio
-async def test_sweep_refuses_when_a_model_has_no_price():
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf")])
+async def test_sweep_refuses_bad_per_call_bound(bad):
     probe = _probe()
-    # Can't bound an unpriced model's spend -> refuse rather than guess.
-    with pytest.raises(probe.CeilingError, match="no registry output price"):
+    # The per-call bound must be a real positive, finite number: a 0/negative/NaN
+    # bound would zero-or-poison the worst-case estimate and defeat the ceiling.
+    with pytest.raises(probe.CeilingError, match="per-call cost bound"):
         await probe.run_probe_sweep(
-            [_entry("a"), {"id": "unpriced"}], lambda m: "openai", "k", max_probe_usd=100.0,
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=100.0, max_cost_per_call_usd=bad,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -277,7 +269,7 @@ async def test_sweep_rejects_zero_concurrency():
     # Semaphore(0) starts locked -> the sweep would hang forever.
     with pytest.raises(ValueError, match="concurrency"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=100.0, concurrency=0,
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, concurrency=0,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -291,7 +283,7 @@ async def test_sweep_fails_loud_when_every_probe_fails():
         return httpx.Response(401, json={"error": "invalid key"})
     with pytest.raises(RuntimeError, match="every call failed"):
         await probe.run_probe_sweep(
-            [_entry("a"), _entry("b")], lambda m: "openai", "k", max_probe_usd=100.0,
+            [_entry("a"), _entry("b")], lambda m: "openai", "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01,
             transport=httpx.MockTransport(all_fail),
         )
 
@@ -318,10 +310,10 @@ async def test_probe_sends_bounded_max_tokens():
 async def test_sweep_refuses_when_worst_case_exceeds_ceiling():
     probe = _probe()
     with pytest.raises(probe.CeilingError, match="exceeds the authorized ceiling"):
-        # 3 expensive models ($180/M) x 4 calls x ~$1.44 ~ $17 worst case, ceiling $0.50
+        # 3 models x 4 calls x $0.10 = $1.20 worst case, ceiling $0.50
         await probe.run_probe_sweep(
-            [_entry("a", output=180.0), _entry("b", output=180.0), _entry("c", output=180.0)],
-            lambda m: "openai", "k", max_probe_usd=0.50,
+            [_entry("a"), _entry("b"), _entry("c")],
+            lambda m: "openai", "k", max_probe_usd=0.50, max_cost_per_call_usd=0.10,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -332,7 +324,7 @@ async def test_sweep_probes_within_ceiling_and_merges():
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
         [_entry("a"), _entry("b")], lambda m: "openai", "k",
-        max_probe_usd=1.00, transport=tx,
+        max_probe_usd=1.00, max_cost_per_call_usd=0.01, transport=tx,
     )
     assert merged["a"]["control_surface"] == "levels"
     assert merged["b"]["control_surface"] == "levels"
@@ -347,7 +339,7 @@ async def test_sweep_is_resumable_skips_fresh_rows():
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
         [a, b], lambda m: "openai", "k",
-        max_probe_usd=1.00, existing=existing, transport=tx,
+        max_probe_usd=1.00, max_cost_per_call_usd=0.01, existing=existing, transport=tx,
     )
     # a is fresh (fingerprint + provider match) -> untouched; b is newly probed
     assert merged["a"]["control_surface"] == "onoff"
@@ -383,7 +375,7 @@ async def test_sweep_degrades_per_model_on_error():
 
     merged = await probe.run_probe_sweep(
         [_entry("bad"), _entry("good")], lambda m: "openai", "k",
-        max_probe_usd=1.00,
+        max_probe_usd=1.00, max_cost_per_call_usd=0.01,
         transport=httpx.MockTransport(flaky_transport),
     )
     # one failing model does not abort the sweep; the good one still lands
@@ -409,7 +401,7 @@ async def test_failed_reprobe_replaces_stale_row_with_unknown():
                                          "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}}})
 
     merged = await probe.run_probe_sweep(
-        [a, b], lambda m: "azure", "k", max_probe_usd=100.0, existing=existing,
+        [a, b], lambda m: "azure", "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, existing=existing,
         transport=httpx.MockTransport(handler),
     )
     # the stale openai-measured row must NOT survive as authoritative -> unknown
