@@ -205,13 +205,13 @@ def test_model_supports_reasoning_runtime_path_uses_cached_sidecar():
 def test_resolve_model_reasoning_uses_probed_surface_and_pins_endpoint():
     from backend import openrouter
     from backend.reasoning_capability import model_fingerprint
-    model_id = "openai/gpt-5.3-chat"
+    model_id = FIELD_MODEL  # registry reasoning_extraction == "field" -> runtime CAN parse
     entry = openrouter._lookup_registry_model(model_id)
     fp = model_fingerprint(entry)
 
     def rec(**kw):
         base = {"model_id": model_id, "probed": True, "fingerprint": fp,
-                "provider_pinned": "openai", "supports_reasoning": True}
+                "provider_pinned": "google", "supports_reasoning": True}
         base.update(kw)
         return {model_id: base}
 
@@ -222,11 +222,26 @@ def test_resolve_model_reasoning_uses_probed_surface_and_pins_endpoint():
         (dict(control_surface="budget", budget={"min": 1000, "max": 10000}), {"max_tokens": 8000}),
     ):
         payload, pin = openrouter.resolve_model_reasoning(model_id, "high", capability_records=rec(**surface_kw))
-        assert payload == expected and pin == "openai"
+        assert payload == expected and pin == "google"
     # none -> omit entirely; no shape sent -> no pin needed
     payload, pin = openrouter.resolve_model_reasoning(
         model_id, "high", capability_records=rec(control_surface="none", supports_reasoning=False))
     assert payload is None and pin is None
+
+
+def test_resolve_model_reasoning_omits_shape_the_runtime_cannot_extract():
+    # The sidecar can flip a model to reasoning-supported, but if the runtime has no
+    # extraction mode for it (registry reasoning_extraction unset) it would burn
+    # reasoning tokens while dropping the text -> omit the shape instead.
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+    model_id = NON_REASONING_MODEL  # registry reasoning_extraction is unset
+    entry = openrouter._lookup_registry_model(model_id)
+    assert entry.get("reasoning_extraction") not in ("field", "tags")  # precondition
+    probed = {model_id: {"model_id": model_id, "probed": True, "fingerprint": model_fingerprint(entry),
+                         "provider_pinned": "openai", "supports_reasoning": True,
+                         "control_surface": "levels", "levels": ["low", "medium", "high"]}}
+    assert openrouter.resolve_model_reasoning(model_id, "high", capability_records=probed) == (None, None)
 
 
 def test_resolve_model_reasoning_unprobed_fallback_is_non_regressing():

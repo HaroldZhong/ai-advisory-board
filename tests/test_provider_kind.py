@@ -1028,7 +1028,7 @@ async def test_probed_endpoint_pin_only_sent_on_openrouter(monkeypatch):
     """The probed record's provider.order/allow_fallbacks pin is OpenRouter-only; an
     openai-compatible relay rejects `provider`, so the pin must be skipped there while
     the reasoning object itself is still sent (the existing 400-retry protects it)."""
-    model_id = "openai/gpt-5.3-chat"
+    model_id = "google/gemini-3.1-pro-preview"  # registry reasoning_extraction == "field" (parseable)
 
     # OpenRouter default -> the pin IS sent
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

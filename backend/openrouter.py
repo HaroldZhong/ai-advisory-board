@@ -253,6 +253,13 @@ def resolve_model_reasoning(
     cap = get_capability(records, model, registry_model)
     if cap.get("control_surface") != "unknown":
         reasoning = resolve_reasoning_payload(cap, thinking_effort)
+        # Only send a shape the runtime can also PARSE. A probed record can flip a
+        # model to reasoning-supported, but extract_reasoning() still needs a known
+        # extraction mode (registry `reasoning_extraction`); without one we'd burn
+        # reasoning tokens while dropping the returned reasoning TEXT. Omit until the
+        # extraction mode is known (a probe that records it -> the follow-up).
+        if reasoning is not None and (registry_model or {}).get("reasoning_extraction") not in ("field", "tags"):
+            return None, None
         # Pin only when we actually send a probed shape (nothing to mis-route otherwise).
         pin = cap.get("provider_pinned") if reasoning is not None else None
         return reasoning, pin
