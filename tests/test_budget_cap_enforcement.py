@@ -1,4 +1,5 @@
 import importlib
+import inspect
 
 import pytest
 
@@ -174,11 +175,9 @@ def test_budget_path_single_enforcement_point_respects_allow_overage(monkeypatch
     tests (test_sync_send_rejects_*, test_stream_send_rejects_*) pin the ONE opt-in
     raise from the other side.
 
-    Chosen over a source-text 409 count because that cannot be both precise AND
-    complete: scoped to ensure_budget_allows_new_turn it misses a duplicate branch in
-    prepare_turn/the endpoints (Codex #109 R2); scoped to the whole module it
-    false-trips on any unrelated non-budget 409 (Codex #109 R1). This behavioral guard
-    has neither flaw."""
+    This proves the flip WORKS (opt-in is respected end-to-end); its companion
+    test_budget_cap_has_a_single_409_enforcement_point proves the SINGLE-point
+    invariant from the source side. Together they cover both properties."""
     main = import_main(monkeypatch)
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
     conversation_id = "conv-allow-overage-preflight"
@@ -191,3 +190,36 @@ def test_budget_path_single_enforcement_point_respects_allow_overage(monkeypatch
         main.SendMessageRequest(content="over budget but allowed", mode="chat"),
     )
     assert mode == "chat"
+
+
+def test_budget_cap_has_a_single_409_enforcement_point(monkeypatch):
+    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): exactly one
+    status_code=409 across the send budget path -- the opt-in cap is a SINGLE
+    enforcement point.
+
+    Scans the functions that make up the budget path: ensure_budget_allows_new_turn
+    (raises the cap), prepare_turn (the shared pre-flight that calls it), and both
+    send endpoints (send_message / send_message_stream). A re-introduced hard-cap
+    branch in ANY of them -- even a `not allow_overage` opt-in duplicate that the
+    allow-overage behavioral test can't see (Codex #109 R3) -- adds a second 409 and
+    trips this. Scoping to the budget path (not the whole module) means an unrelated
+    non-budget 409 on some OTHER endpoint never false-trips it (Codex #109 R1), which
+    a naive whole-module count would; scoping to the full path (not just the helper)
+    catches a duplicate in prepare_turn or the endpoints (Codex #109 R2)."""
+    main = import_main(monkeypatch)
+    budget_path_source = "".join(
+        inspect.getsource(fn)
+        for fn in (
+            main.ensure_budget_allows_new_turn,
+            main.prepare_turn,
+            main.send_message,
+            main.send_message_stream,
+        )
+    )
+    count = budget_path_source.count("status_code=409")
+    assert count == 1, (
+        f"expected exactly one status_code=409 across the send budget path "
+        f"(ensure_budget_allows_new_turn / prepare_turn / send_message / "
+        f"send_message_stream), found {count} -- a re-introduced enforcement branch "
+        f"would revert the D3 default flip"
+    )
