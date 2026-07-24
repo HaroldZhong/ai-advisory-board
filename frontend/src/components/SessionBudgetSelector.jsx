@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import {
     Dialog,
@@ -62,13 +62,31 @@ export default function SessionBudgetSelector({
     onClose,
     onConfirm,
     currentBudget = null,
+    currentAllowOverage = true,
 }) {
     const [selectedBudget, setSelectedBudget] = useState(
         currentBudget ?? BUDGET_PRESETS.find(p => p.default)?.value ?? null
     );
+    // v1.3.0 D3: budget is user-owned -- allow overage by default (warn, don't
+    // block). Users who want a strict cap opt in here; the backend then enforces
+    // the 409 hard cap. Hard cap is meaningless without a limit, so it's tied to
+    // having a budget selected.
+    const [allowOverage, setAllowOverage] = useState(currentAllowOverage);
+
+    // v1.3.0 D3: this dialog stays mounted across conversation switches and
+    // reopens, so re-seed the draft from the persisted policy every time it
+    // opens (and if the props change). Without this, a stale local toggle from
+    // another conversation or a cancelled edit would silently overwrite the
+    // saved hard cap on confirm -- downgrading a 409 hard cap to warn-only.
+    useEffect(() => {
+        if (isOpen) {
+            setSelectedBudget(currentBudget ?? BUDGET_PRESETS.find(p => p.default)?.value ?? null);
+            setAllowOverage(currentAllowOverage);
+        }
+    }, [isOpen, currentBudget, currentAllowOverage]);
 
     const handleConfirm = () => {
-        onConfirm(selectedBudget);
+        onConfirm(selectedBudget, allowOverage);
         onClose();
     };
 
@@ -123,10 +141,31 @@ export default function SessionBudgetSelector({
                         })}
                     </div>
 
+                    {selectedBudget !== null && (
+                        <label className="mt-4 flex items-start gap-2 text-sm cursor-pointer">
+                            <input
+                                type="checkbox"
+                                className="mt-0.5"
+                                aria-label="Enforce hard budget cap"
+                                checked={!allowOverage}
+                                onChange={(e) => setAllowOverage(!e.target.checked)}
+                            />
+                            <span>
+                                <span className="font-medium">Enforce a hard cap</span>
+                                <span className="block text-xs text-muted-foreground">
+                                    Block new turns once the budget is reached, instead of
+                                    only warning. Off by default — you own your spend.
+                                </span>
+                            </span>
+                        </label>
+                    )}
+
                     <div className="mt-4 rounded-lg bg-muted/50 p-2 text-xs">
                         <p className="text-muted-foreground">
                             <strong>How it works:</strong> Warnings appear as you approach
-                            the cap. Raise the budget before 100% to keep sending new turns.
+                            the cap. {allowOverage
+                                ? 'Sending continues past 100% unless you enable the hard cap.'
+                                : 'New turns are blocked at 100% until you raise the budget.'}
                         </p>
                     </div>
                 </div>

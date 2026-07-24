@@ -8,12 +8,24 @@ import {
   getBudgetTone,
   getBudgetWarningText,
   getBudgetCapBlockState,
+  buildBudgetPolicyUpdate,
   getPrivacyToggleDisabledReason,
   mergeConversationPrivacyUpdate,
   resolveAttachmentEnhancementZdr,
   resolveEffectiveZdr,
   setConversationPrivacyMetadata,
 } from '../src/utils/trustState.js';
+
+test('buildBudgetPolicyUpdate carries the D3 hard-cap opt-in', () => {
+  // default: allow overage (warn, don't block)
+  assert.deepEqual(buildBudgetPolicyUpdate(2), { budget_usd: 2, allow_overage: true });
+  // explicit hard-cap opt-in
+  assert.deepEqual(buildBudgetPolicyUpdate(2, false), { budget_usd: 2, allow_overage: false });
+  assert.deepEqual(buildBudgetPolicyUpdate(2, true), { budget_usd: 2, allow_overage: true });
+  // "No Limit" -> a hard cap is meaningless, always allow overage even if toggled
+  assert.deepEqual(buildBudgetPolicyUpdate(null, false), { budget_usd: null, allow_overage: true });
+  assert.deepEqual(buildBudgetPolicyUpdate(undefined, false), { budget_usd: null, allow_overage: true });
+});
 
 test('budget tone follows 75, 85, and 100 percent thresholds', () => {
   assert.equal(getBudgetTone(null), 'neutral');

@@ -168,7 +168,11 @@ class CreateConversationRequest(BaseModel):
     preset_id: Optional[str] = None
     zdr_enabled: Optional[bool] = None
     budget_usd: Optional[float] = None
-    budget_allow_overage: bool = False
+    # v1.3.0 D3: user-owned budget. A NEW budgeted conversation defaults to
+    # allow-overage (warn, don't block); the single 409 hard cap becomes opt-in.
+    # Only affects new conversations -- existing stored allow_overage values are
+    # never migrated (they are read from persisted policy, not this default).
+    budget_allow_overage: bool = True
     thinking_effort: Optional[str] = None
     default_mode: Optional[str] = None
 

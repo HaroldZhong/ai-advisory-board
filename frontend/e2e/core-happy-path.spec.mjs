@@ -112,7 +112,8 @@ function createConversation(body) {
       budget_usd: body.budget_usd,
       notify_thresholds: [0.75, 0.85, 1],
       mode: 'auto',
-      allow_overage: false,
+      // echo the requested overage choice (v1.3.0 D3 default is allow-overage)
+      allow_overage: body.budget_allow_overage ?? true,
     },
     session_usage: {
       spent_usd: 0,
@@ -420,7 +421,8 @@ test('first-run setup creates a private preset conversation and renders streamed
     preset_id: 'private',
     zdr_enabled: true,
     budget_usd: 2,
-    budget_allow_overage: false,
+    // v1.3.0 D3: new conversations allow overage by default (warn, don't block).
+    budget_allow_overage: true,
   });
 
   await expect(page.getByText('Private').first()).toBeVisible();
@@ -481,4 +483,32 @@ test('editing the key mid-probe discards the stale connection result', async ({ 
   // Give the slow probe time to resolve; its result must be discarded, not shown.
   await page.waitForTimeout(500);
   await expect(page.getByText('Connected to OpenRouter.')).not.toBeVisible();
+});
+
+test('reopening the budget dialog re-seeds the hard-cap toggle from the saved policy', async ({ page }) => {
+  // v1.3.0 D3 regression guard: the budget dialog stays mounted across opens, so a
+  // stale/cancelled local toggle must never survive to overwrite the saved policy.
+  await completeSetupToNewConversation(page);
+
+  await page.getByRole('button', { name: 'Council' }).click();
+  await page.getByRole('button', { name: /Private ZDR-only panel/ }).click();
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+
+  const openBudget = page.getByRole('button', { name: 'Open session budget settings' });
+  const hardCap = page.getByRole('checkbox', { name: 'Enforce hard budget cap' });
+
+  // New conversations persist allow_overage=true (D3 default) -> hard cap OFF.
+  await openBudget.click();
+  await expect(hardCap).not.toBeChecked();
+
+  // Toggle the hard cap ON, then CANCEL without saving.
+  await hardCap.check();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+
+  // Reopening must reflect the PERSISTED policy again, not the cancelled toggle.
+  // Pre-fix the dialog kept allowOverage=false (checkbox stayed checked) and a later
+  // "Set Budget" would silently strip the saved policy (409 hard cap -> warn-only).
+  await openBudget.click();
+  await expect(hardCap).not.toBeChecked();
 });
