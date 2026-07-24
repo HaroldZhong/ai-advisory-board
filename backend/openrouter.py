@@ -93,9 +93,18 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
+    reasoning_payload, endpoint_pin = resolve_model_reasoning(model, thinking_effort)
+    provider = {}
     if zdr_enabled:
-        payload["provider"] = {"zdr": True}
-    reasoning_payload = resolve_model_reasoning_payload(model, thinking_effort)
+        provider["zdr"] = True  # HARD: never weakened; a non-ZDR pin below yields no route, not a downgrade
+    if endpoint_pin:
+        # Capabilities are provider-specific: route to the endpoint the shape was
+        # learned on (probe pins the same way), so a probed reasoning object can't be
+        # mis-applied on a different endpoint.
+        provider["order"] = [endpoint_pin]
+        provider["allow_fallbacks"] = False
+    if provider:
+        payload["provider"] = provider
     if reasoning_payload:
         payload["reasoning"] = reasoning_payload
 
@@ -216,19 +225,24 @@ def model_supports_reasoning(model: str, capability_records: Optional[Dict[str, 
     return registry_model is not None and registry_model.get("supports_reasoning") is True
 
 
-def resolve_model_reasoning_payload(
+def resolve_model_reasoning(
     model: str,
     thinking_effort: Optional[str],
     capability_records: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
-    """The OpenRouter `reasoning` object to send for this model, from the single
-    capability authority (correction #2 + the B4 wire boundary). A PROBED model uses
-    the B2/B4 per-surface translation -- `levels` snaps to the nearest supported
-    effort, `onoff` -> {"enabled": ...}, `budget` -> {"max_tokens": ...}, `none`/Auto
-    -> omit -- so a probed model never receives an unsupported or wrong-shape payload.
-    An UN-PROBED model falls back to a plain {"effort": ...} object iff the DEPRECATED
-    registry supports_reasoning says so (today's behavior, until the probe runs).
-    Returns None to send no reasoning object."""
+) -> tuple:
+    """Return `(reasoning_object, endpoint_pin)` for this model from the single
+    capability authority (correction #2 + the B4 wire boundary).
+
+    A PROBED model uses the B2/B4 per-surface translation -- `levels` snaps to the
+    nearest supported effort, `onoff` -> {"enabled": ...}, `budget` ->
+    {"max_tokens": ...}, `none`/Auto -> omit -- and, when a shape IS sent, returns
+    the record's `provider_pinned` endpoint tag as `endpoint_pin`: capabilities are
+    provider-specific (the probe pins `provider.order` and re-probes on a provider
+    change), so the caller MUST route to that endpoint or the shape can be silently
+    dropped/mis-applied on a different one. An UN-PROBED model falls back to a plain
+    {"effort": ...} object iff the DEPRECATED registry supports_reasoning says so
+    (today's behavior, until the probe runs), with no pin.
+    `reasoning_object` is None to send no reasoning object."""
     from .reasoning_capability import get_capability
     from .reasoning_control import resolve_reasoning_payload
 
@@ -236,13 +250,15 @@ def resolve_model_reasoning_payload(
     records = capability_records if capability_records is not None else _reasoning_capability_records()
     cap = get_capability(records, model, registry_model)
     if cap.get("control_surface") != "unknown":
-        # Probed -> verified per-surface translation (B2 -> B4).
-        return resolve_reasoning_payload(cap, thinking_effort)
+        reasoning = resolve_reasoning_payload(cap, thinking_effort)
+        # Pin only when we actually send a probed shape (nothing to mis-route otherwise).
+        pin = cap.get("provider_pinned") if reasoning is not None else None
+        return reasoning, pin
     # Un-probed -> deprecated fallback: a plain effort object iff the registry (via
-    # the single authority) says the model supports reasoning.
+    # the single authority) says the model supports reasoning. No pin (default routing).
     if thinking_effort and model_supports_reasoning(model, capability_records=records):
-        return {"effort": thinking_effort}
-    return None
+        return {"effort": thinking_effort}, None
+    return None, None
 
 
 def reasoning_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> Optional[int]:

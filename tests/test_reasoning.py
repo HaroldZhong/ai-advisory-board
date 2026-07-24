@@ -202,7 +202,7 @@ def test_model_supports_reasoning_runtime_path_uses_cached_sidecar():
     assert openrouter.model_supports_reasoning(model_id) is (entry.get("supports_reasoning") is True)
 
 
-def test_resolve_model_reasoning_payload_uses_probed_surface_not_just_boolean():
+def test_resolve_model_reasoning_uses_probed_surface_and_pins_endpoint():
     from backend import openrouter
     from backend.reasoning_capability import model_fingerprint
     model_id = "openai/gpt-5.3-chat"
@@ -210,35 +210,34 @@ def test_resolve_model_reasoning_payload_uses_probed_surface_not_just_boolean():
     fp = model_fingerprint(entry)
 
     def rec(**kw):
-        base = {"model_id": model_id, "probed": True, "fingerprint": fp, "supports_reasoning": True}
+        base = {"model_id": model_id, "probed": True, "fingerprint": fp,
+                "provider_pinned": "openai", "supports_reasoning": True}
         base.update(kw)
         return {model_id: base}
 
-    # levels -> snapped effort object
-    assert openrouter.resolve_model_reasoning_payload(
-        model_id, "high", capability_records=rec(control_surface="levels", levels=["low", "medium", "high"])
-    ) == {"effort": "high"}
-    # onoff -> enabled toggle (never a raw effort)
-    assert openrouter.resolve_model_reasoning_payload(
-        model_id, "high", capability_records=rec(control_surface="onoff", native_default_on=False)
-    ) == {"enabled": True}
-    # budget -> max_tokens
-    assert openrouter.resolve_model_reasoning_payload(
-        model_id, "high", capability_records=rec(control_surface="budget", budget={"min": 1000, "max": 10000})
-    ) == {"max_tokens": 8000}
-    # none -> omit entirely
-    assert openrouter.resolve_model_reasoning_payload(
-        model_id, "high", capability_records=rec(control_surface="none", supports_reasoning=False)
-    ) is None
+    # each probed surface yields its correct shape AND pins the endpoint it was learned on
+    for surface_kw, expected in (
+        (dict(control_surface="levels", levels=["low", "medium", "high"]), {"effort": "high"}),
+        (dict(control_surface="onoff", native_default_on=False), {"enabled": True}),
+        (dict(control_surface="budget", budget={"min": 1000, "max": 10000}), {"max_tokens": 8000}),
+    ):
+        payload, pin = openrouter.resolve_model_reasoning(model_id, "high", capability_records=rec(**surface_kw))
+        assert payload == expected and pin == "openai"
+    # none -> omit entirely; no shape sent -> no pin needed
+    payload, pin = openrouter.resolve_model_reasoning(
+        model_id, "high", capability_records=rec(control_surface="none", supports_reasoning=False))
+    assert payload is None and pin is None
 
 
-def test_resolve_model_reasoning_payload_unprobed_fallback_is_non_regressing():
+def test_resolve_model_reasoning_unprobed_fallback_is_non_regressing():
     from backend import openrouter
     model_id = "openai/gpt-5.3-chat"
     entry = openrouter._lookup_registry_model(model_id)
     registry_supported = entry.get("supports_reasoning") is True
-    # un-probed + effort -> plain effort object iff registry supports it (today's behavior)
-    result = openrouter.resolve_model_reasoning_payload(model_id, "high", capability_records={})
-    assert result == ({"effort": "high"} if registry_supported else None)
+    # un-probed + effort -> plain effort object iff registry supports it; NO pin (default routing)
+    payload, pin = openrouter.resolve_model_reasoning(model_id, "high", capability_records={})
+    assert payload == ({"effort": "high"} if registry_supported else None)
+    assert pin is None
     # Auto (no effort) + un-probed -> no reasoning object at all
-    assert openrouter.resolve_model_reasoning_payload(model_id, None, capability_records={}) is None
+    payload, pin = openrouter.resolve_model_reasoning(model_id, None, capability_records={})
+    assert payload is None and pin is None
