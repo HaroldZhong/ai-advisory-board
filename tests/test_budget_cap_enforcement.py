@@ -1,4 +1,6 @@
+import ast
 import importlib
+import inspect
 
 import pytest
 
@@ -6,6 +8,39 @@ import pytest
 def import_main(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     return importlib.import_module("backend.main")
+
+
+def _status_expr_is_409(node):
+    """True if an AST expression denotes HTTP 409 -- a literal 409 or any
+    *HTTP_409_CONFLICT constant (e.g. status.HTTP_409_CONFLICT)."""
+    if isinstance(node, ast.Constant):
+        return node.value == 409
+    if isinstance(node, ast.Name):
+        return node.id.endswith("HTTP_409_CONFLICT")
+    if isinstance(node, ast.Attribute):
+        return node.attr.endswith("HTTP_409_CONFLICT")
+    return False
+
+
+def _count_http_exception_409(module) -> int:
+    """Count HTTPException(...) calls in a module whose status is 409, in ANY
+    spelling: ``status_code=409``, ``status_code = 409``, a positional first arg, or
+    an HTTP_409_CONFLICT constant. Syntax-aware (ast) so formatting cannot hide a
+    re-introduced duplicate the way a raw substring count could (Codex #109 R4)."""
+    tree = ast.parse(inspect.getsource(module))
+    count = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        callee = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if callee != "HTTPException":
+            continue
+        if any(kw.arg == "status_code" and _status_expr_is_409(kw.value) for kw in node.keywords):
+            count += 1
+        elif node.args and _status_expr_is_409(node.args[0]):  # positional status_code
+            count += 1
+    return count
 
 
 def create_budgeted_conversation(main, conversation_id, *, allow_overage):
@@ -160,3 +195,59 @@ async def test_default_flip_does_not_migrate_existing_conversations(monkeypatch,
     with pytest.raises(main.HTTPException) as exc:
         main.ensure_budget_allows_new_turn("conv-existing-hardcap")
     assert exc.value.status_code == 409
+
+
+def test_budget_path_single_enforcement_point_respects_allow_overage(monkeypatch, tmp_path):
+    """D3 load-bearing guard (plan §D3 Tests): the budget path must have a SINGLE
+    opt-in 409 enforcement point that honors allow_overage.
+
+    Exercises the real shared pre-flight -- prepare_turn, which BOTH send endpoints
+    call and which invokes ensure_budget_allows_new_turn (main.py:953) -- for an
+    OVER-BUDGET allow_overage=True conversation, and asserts it does NOT 409. A
+    hard-cap branch re-introduced anywhere in the budget path (the helper OR
+    prepare_turn) would block this allow-overage turn; the allow_overage=False reject
+    tests (test_sync_send_rejects_*, test_stream_send_rejects_*) pin the ONE opt-in
+    raise from the other side.
+
+    This proves the flip WORKS (opt-in is respected end-to-end); its companion
+    test_budget_cap_has_a_single_409_enforcement_point proves the SINGLE-point
+    invariant from the source side. Together they cover both properties."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-allow-overage-preflight"
+    create_budgeted_conversation(main, conversation_id, allow_overage=True)  # spent 1.0 / 1.0
+
+    # prepare_turn is the sync pre-flight both endpoints run; over-budget +
+    # allow_overage must reach the end without raising the opt-in 409.
+    _conversation, mode, _zdr, _effort, _is_first = main.prepare_turn(
+        conversation_id,
+        main.SendMessageRequest(content="over budget but allowed", mode="chat"),
+    )
+    assert mode == "chat"
+
+
+def test_budget_cap_has_a_single_409_enforcement_point(monkeypatch):
+    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): backend.main raises an
+    HTTP 409 from exactly ONE place -- the opt-in budget cap is a SINGLE enforcement
+    point.
+
+    Parses the WHOLE module (syntax-aware ast) and counts HTTPException raises whose
+    status is 409 in ANY spelling (status_code=409, spaced, positional, or an
+    HTTP_409_CONFLICT constant). Module-wide, so a duplicate hidden ANYWHERE is
+    caught -- inline in prepare_turn or an endpoint (R2/R3), extracted into a helper
+    those call (R5), or written with equivalent syntax (R4). Today the sole 409 is
+    the budget cap (BUDGET_CAP_REACHED_DETAIL), so exactly one is correct; the
+    allow-overage behavioral test proves that one point honors the opt-in flip.
+
+    NOTE (R1): a future *non-budget* 409 (e.g. an edit-conflict response) will trip
+    this by design -- that is the intended review gate. Whoever adds it must confirm
+    it is not a re-introduced budget enforcement branch and update this count
+    deliberately; a money-safety single-enforcement-point invariant is worth a
+    conscious one-line review."""
+    main = import_main(monkeypatch)
+    total = _count_http_exception_409(main)
+    assert total == 1, (
+        f"expected exactly one HTTPException(409) in backend.main (the opt-in budget "
+        f"cap), found {total} -- a re-introduced enforcement branch would revert the "
+        f"D3 default flip (or a new non-budget 409 needs a deliberate guard update)"
+    )
