@@ -247,3 +247,25 @@ test('unknown event types are a no-op', () => {
   const next = streamReducer(state, event, { availableModels });
   assert.equal(next, state);
 });
+
+test('B5: per-member reasoning_tokens actuals carry through completes without breaking transitions', () => {
+  // stage1: one member spent reasoning tokens, one reports "not available" (null)
+  const s1 = streamReducer(councilState(), {
+    type: 'stage1_complete',
+    data: [
+      { model: 'model-a', response: 'A', reasoning_tokens: 128, usage: { prompt_tokens: 0, completion_tokens: 0 } },
+      { model: 'model-b', response: 'B', reasoning_tokens: null, usage: { prompt_tokens: 0, completion_tokens: 0 } },
+    ],
+  }, { availableModels });
+  const m1 = lastMessage(s1);
+  assert.equal(m1.stage1[0].reasoning_tokens, 128);
+  assert.equal(m1.stage1[1].reasoning_tokens, null);
+  assert.equal(m1.loading.stage1, false);  // existing transition intact
+
+  // stage3: the chairman's actuals carry too
+  const s3 = streamReducer(s1, {
+    type: 'stage3_complete',
+    data: { model: 'model-a', response: 'Final', reasoning_tokens: 64, usage: { prompt_tokens: 0, completion_tokens: 0 } },
+  }, { availableModels });
+  assert.equal(lastMessage(s3).stage3.reasoning_tokens, 64);
+});

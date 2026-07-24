@@ -1,7 +1,7 @@
 """3-stage AI Advisory Board council orchestration."""
 
 from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
-from .openrouter import query_models_parallel, query_models_as_completed, query_model
+from .openrouter import query_models_parallel, query_models_as_completed, query_model, reasoning_tokens_from_usage
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, UTILITY_MODEL
 from .logger import logger
 from .tools.types import EvidencePack, UsageLimits
@@ -36,7 +36,10 @@ def build_stage1_result(model: str, response: Optional[Dict[str, Any]]) -> Optio
     result = {
         "model": model,
         "response": response.get('content', ''),
-        "usage": response.get('usage', {})
+        "usage": response.get('usage', {}),
+        # B5: per-member reasoning actuals, keyed on token count only (None = "not
+        # available"). Additive; Phase E renders it.
+        "reasoning_tokens": reasoning_tokens_from_usage(response.get('usage')),
     }
     if response.get("reasoning_details"):
         result["reasoning"] = response.get("reasoning_details")
@@ -276,7 +279,8 @@ Now provide your evaluation and ranking:"""
             "model": model,
             "ranking": full_text,
             "parsed_ranking": parsed,
-            "usage": response.get('usage', {})
+            "usage": response.get('usage', {}),
+            "reasoning_tokens": reasoning_tokens_from_usage(response.get('usage')),  # B5
         }
         if response.get("reasoning_details"):
             result["reasoning"] = response.get("reasoning_details")
@@ -390,6 +394,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         "model": target_chairman,
         "response": response.get('content', ''),
         "usage": response.get('usage', {}),
+        "reasoning_tokens": reasoning_tokens_from_usage(response.get('usage')),  # B5
         "confidence": confidence_label,
         "avg_consensus": avg_consensus,
         "quality_metrics": quality_metrics,
