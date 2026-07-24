@@ -417,3 +417,303 @@ async def test_failed_reprobe_replaces_stale_row_with_unknown():
     assert merged["a"]["control_surface"] == "unknown"
     assert not merged["a"].get("probed")
     assert merged["b"]["control_surface"] == "levels"
+
+
+# --- per-model spend bounds (resolved from each model's OWN pinned endpoint) --
+#
+# A single uniform --max-cost-per-call must cover the priciest model in the sweep,
+# so one expensive outlier inflates the required ceiling for every other call. These
+# pin the tighter, still-sound alternative: price each call from its own endpoint.
+
+def _endpoints_getter(pricing_by_model):
+    """Fake the PUBLIC /endpoints API. `pricing_by_model` maps model id -> list of
+    (tag, prompt_per_token, completion_per_token)."""
+    def get(url, timeout=None):
+        model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        endpoints = [
+            {"tag": tag, "provider_name": tag, "name": tag, "model_id": model,
+             "pricing": {"prompt": str(p), "completion": str(c)}}
+            for tag, p, c in pricing_by_model.get(model, [])
+        ]
+        return httpx.Response(
+            200, json={"data": {"endpoints": endpoints}},
+            request=httpx.Request("GET", url),
+        )
+    return get
+
+
+def test_probe_call_bound_prices_output_at_the_cap():
+    probe = _probe()
+    # A probe call cannot bill more than PROBE_MAX_TOKENS of output, so pricing the
+    # output at the cap (plus the fixed prompt) bounds the route. With no published
+    # internal_reasoning rate the surcharge is assumed equal to the completion rate,
+    # so the capped output is charged twice.
+    bound = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001}
+    )
+    expected = (
+        2 * 0.000001 * probe.PROBE_MAX_TOKENS
+        + 0.0000005 * probe.PROBE_PROMPT_TOKENS_EST
+    )
+    assert bound == pytest.approx(expected)
+
+
+def test_resolve_probe_call_bounds_prices_each_model_by_its_own_endpoint():
+    probe = _probe()
+    get = _endpoints_getter({
+        "cheap/model": [("cheap", 0.0000001, 0.0000002)],
+        "pricey/model": [("pricey", 0.000002, 0.00018)],
+    })
+    bounds = probe.resolve_probe_call_bounds(
+        [_entry("cheap/model"), _entry("pricey/model")],
+        lambda m: m["id"].split("/", 1)[0],
+        get=get,
+    )
+    # No published internal_reasoning rate -> assumed surcharge == completion rate.
+    assert bounds["cheap/model"] == pytest.approx(
+        2 * 0.0000002 * probe.PROBE_MAX_TOKENS + 0.0000001 * probe.PROBE_PROMPT_TOKENS_EST)
+    assert bounds["pricey/model"] == pytest.approx(
+        2 * 0.00018 * probe.PROBE_MAX_TOKENS + 0.000002 * probe.PROBE_PROMPT_TOKENS_EST)
+    # The whole point: the models do NOT share one bound.
+    assert bounds["pricey/model"] > bounds["cheap/model"] * 100
+
+
+def test_resolve_probe_call_bounds_refuses_an_unresolvable_pin():
+    probe = _probe()
+    # Dropping an unpriceable model from the ceiling math would under-count the spend
+    # it is still about to make, so this refuses loudly and names the model.
+    get = _endpoints_getter({"a/model": [("a", 0.0000001, 0.0000002)]})
+    with pytest.raises(probe.CeilingError, match="a/model"):
+        probe.resolve_probe_call_bounds(
+            [_entry("a/model")], lambda m: "not-a-real-tag", get=get,
+        )
+
+
+def test_estimate_max_probe_cost_per_model_sums_each_models_own_bound():
+    probe = _probe()
+    # (1 baseline + 3 levels) calls against each model's own per-call bound.
+    total = probe.estimate_max_probe_cost_per_model(
+        ["a", "b"], ("low", "medium", "high"), {"a": 0.01, "b": 0.25},
+    )
+    assert total == pytest.approx((0.01 + 0.25) * 4)
+
+
+def test_per_model_ceiling_is_far_tighter_than_a_uniform_bound():
+    probe = _probe()
+    # THE MOTIVATING DEFECT: with one expensive outlier, a uniform bound must be set
+    # to the outlier's per-call cost and applied to EVERY call, so the ceiling the
+    # maintainer must authorize balloons even though the sweep cannot spend it.
+    bounds = {"cheap": 0.008, "outlier": 1.44}
+    levels = ("low", "medium", "high")
+    per_model = probe.estimate_max_probe_cost_per_model(bounds, levels, bounds)
+    uniform = probe.estimate_max_probe_cost(len(bounds), levels, max(bounds.values()))
+    assert per_model < uniform
+    assert uniform > per_model * 1.5
+
+
+@pytest.mark.asyncio
+async def test_sweep_accepts_per_model_bounds_without_a_uniform_bound():
+    probe = _probe()
+    merged = await probe.run_probe_sweep(
+        [_entry("a"), _entry("b")], lambda m: "openai", "k",
+        max_probe_usd=1.0,
+        per_model_bounds={"a": 0.01, "b": 0.02},
+        transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+    )
+    assert merged["a"]["probed"] is True and merged["b"]["probed"] is True
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_when_a_model_it_will_probe_has_no_bound():
+    probe = _probe()
+    # "b" would still be probed, spending against a ceiling computed without it.
+    # match must not be satisfied by every CeilingError this call can raise, so
+    # assert the specific guard AND the named model.
+    with pytest.raises(probe.CeilingError) as excinfo:
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            max_probe_usd=1.0,
+            per_model_bounds={"a": 0.01},
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+    message = str(excinfo.value)
+    assert "no positive, finite per-call bound" in message
+    assert "(b)" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf")])
+async def test_sweep_refuses_a_nonpositive_or_nonfinite_per_model_bound(bad):
+    probe = _probe()
+    with pytest.raises(probe.CeilingError, match="per-call bound"):
+        await probe.run_probe_sweep(
+            [_entry("a")], lambda m: "openai", "k",
+            max_probe_usd=1.0,
+            per_model_bounds={"a": bad},
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_when_per_model_worst_case_exceeds_the_ceiling():
+    probe = _probe()
+    # 2 models x 4 calls x $0.30 = $2.40 > $1.00 authorized.
+    with pytest.raises(probe.CeilingError, match="exceeds the authorized"):
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            max_probe_usd=1.0,
+            per_model_bounds={"a": 0.30, "b": 0.30},
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+def test_bound_includes_the_separate_reasoning_surcharge():
+    probe = _probe()
+    # A non-zero internal_reasoning rate is an EXPLICIT separate charge (the D1
+    # billing rule). The probe deliberately provokes reasoning, so a completion-only
+    # figure would NOT be an upper bound and the ceiling could be breached.
+    without = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001}
+    )
+    with_reasoning = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001,
+         "internal_reasoning_per_token": 0.000004}
+    )
+    assert with_reasoning > without
+    assert with_reasoning == pytest.approx(
+        (0.000001 + 0.000004) * probe.PROBE_MAX_TOKENS
+        + 0.0000005 * probe.PROBE_PROMPT_TOKENS_EST
+    )
+
+
+@pytest.mark.parametrize("rate", [None, 0, "0", ""])
+def test_bound_unchanged_when_reasoning_is_billed_inside_completion(rate):
+    probe = _probe()
+    # No explicit surcharge -> reasoning is inside the completion price; adding
+    # anything here would inflate every ceiling for no reason.
+    base = {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001}
+    assert probe.probe_call_bound_usd({**base, "internal_reasoning_per_token": rate}) == \
+        pytest.approx(probe.probe_call_bound_usd(base))
+
+
+def test_resolve_probe_call_bounds_refuses_off_openrouter(monkeypatch):
+    probe = _probe()
+    # /endpoints, endpoint tags and per-endpoint pricing are OpenRouter concepts.
+    # Pricing a different service would yield a bound that doesn't describe what is
+    # actually billed, so refuse rather than "resolve" a meaningless number.
+    monkeypatch.setattr(probe.config, "provider_is_openrouter", lambda: False)
+    monkeypatch.setattr(probe.config, "PROVIDER_KIND", "openai-compatible", raising=False)
+    with pytest.raises(probe.CeilingError, match="OpenRouter"):
+        probe.resolve_probe_call_bounds(
+            [_entry("a/model")], lambda m: "a",
+            get=_endpoints_getter({"a/model": [("a", 0.0000001, 0.0000002)]}),
+        )
+
+
+def test_bound_includes_flat_per_request_fees():
+    probe = _probe()
+    # Search-native models bill a flat fee per call: perplexity/sonar publishes
+    # web_search 0.005 and searches on EVERY completion, so omitting it under-counts
+    # such a call by more than half.
+    base = {"prompt_per_token": 0.000001, "completion_per_token": 0.000001}
+    assert probe.probe_call_bound_usd({**base, "per_request_usd": 0.005}) == pytest.approx(
+        probe.probe_call_bound_usd(base) + 0.005)
+
+
+def test_bound_prices_prompt_at_the_worse_of_prompt_and_cache_write():
+    probe = _probe()
+    # A provider that auto-caches bills the prompt as a cache WRITE.
+    cheap_prompt = {"prompt_per_token": 0.000001, "completion_per_token": 0.000002,
+                    "input_cache_write_per_token": 0.00001}
+    assert probe.probe_call_bound_usd(cheap_prompt) == pytest.approx(
+        2 * 0.000002 * probe.PROBE_MAX_TOKENS + 0.00001 * probe.PROBE_PROMPT_TOKENS_EST)
+
+
+def test_bound_refuses_unaccounted_nonzero_charges():
+    probe = _probe()
+    # Fail CLOSED: a published charge this bound cannot model must refuse, never be
+    # silently dropped from the ceiling.
+    from backend.endpoint_pricing import EndpointPricingError
+    with pytest.raises(EndpointPricingError, match="mystery_fee"):
+        probe.probe_call_bound_usd({
+            "prompt_per_token": 0.000001, "completion_per_token": 0.000001,
+            "unaccounted_nonzero_price_keys": ["mystery_fee"],
+        })
+
+
+def test_resolver_flags_unknown_nonzero_charges_and_ignores_known_ones():
+    from backend.endpoint_pricing import fetch_endpoint_pricing
+    url = "https://openrouter.ai/api/v1/models/x/y/endpoints"
+
+    def getter(pricing):
+        def get(_url, timeout=None):
+            return httpx.Response(200, json={"data": {"endpoints": [
+                {"tag": "t", "provider_name": "T", "pricing": pricing}]}},
+                request=httpx.Request("GET", url))
+        return get
+
+    known = fetch_endpoint_pricing("x/y", "t", get=getter({
+        "prompt": "0.000001", "completion": "0.000002", "web_search": "0.005",
+        "image": "0.1", "discount": "0.5",  # inapplicable to a text probe / not a charge
+    }))
+    assert known["unaccounted_nonzero_price_keys"] == []
+    assert known["per_request_usd"] == pytest.approx(0.005)
+
+    surprise = fetch_endpoint_pricing("x/y", "t", get=getter({
+        "prompt": "0.000001", "completion": "0.000002", "brand_new_fee": "0.01",
+    }))
+    assert surprise["unaccounted_nonzero_price_keys"] == ["brand_new_fee"]
+    # A zero/absent unknown rate cannot bill, so it must NOT block pricing.
+    zeroed = fetch_endpoint_pricing("x/y", "t", get=getter({
+        "prompt": "0.000001", "completion": "0.000002", "brand_new_fee": "0",
+    }))
+    assert zeroed["unaccounted_nonzero_price_keys"] == []
+
+
+def test_bound_assumes_a_reasoning_surcharge_when_none_is_published():
+    probe = _probe()
+    # An ABSENT internal_reasoning rate is not evidence reasoning is free:
+    # classify_billing detects separate billing on endpoints publishing no such rate,
+    # as a surcharge of reasoning_tokens x completion_rate on TOP of completion. The
+    # ceiling must not assume the favourable regime.
+    bound = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001})
+    assert bound == pytest.approx(
+        (0.000001 + 0.000001) * probe.PROBE_MAX_TOKENS
+        + 0.0000005 * probe.PROBE_PROMPT_TOKENS_EST)
+
+
+def test_published_reasoning_rate_overrides_the_assumed_surcharge():
+    probe = _probe()
+    # An explicit rate is real evidence -- use exactly it, above or below completion.
+    cheap = probe.probe_call_bound_usd({
+        "prompt_per_token": 0.0000005, "completion_per_token": 0.000001,
+        "internal_reasoning_per_token": 0.0000001})
+    assert cheap == pytest.approx(
+        (0.000001 + 0.0000001) * probe.PROBE_MAX_TOKENS
+        + 0.0000005 * probe.PROBE_PROMPT_TOKENS_EST)
+    assumed = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001})
+    assert cheap < assumed
+
+
+def test_cache_write_ttl_variants_are_accounted_not_refused():
+    """Anthropic publishes input_cache_write_1h alongside input_cache_write. A new TTL
+    variant must be priced (at the worst rate in the family), not trip the
+    fail-closed guard -- otherwise every Anthropic model becomes unpriceable."""
+    from backend.endpoint_pricing import fetch_endpoint_pricing
+    url = "https://openrouter.ai/api/v1/models/a/b/endpoints"
+
+    def get(_url, timeout=None):
+        return httpx.Response(200, json={"data": {"endpoints": [{
+            "tag": "anthropic", "provider_name": "Anthropic",
+            "pricing": {"prompt": "0.000003", "completion": "0.000015",
+                        "input_cache_write": "0.00000375",
+                        "input_cache_write_1h": "0.000006",
+                        "input_cache_read": "0.0000003"},
+        }]}}, request=httpx.Request("GET", url))
+
+    price = fetch_endpoint_pricing("a/b", "anthropic", get=get)
+    assert price["unaccounted_nonzero_price_keys"] == []
+    # worst of the cache-write family, not just the plain key
+    assert price["input_cache_write_per_token"] == pytest.approx(0.000006)

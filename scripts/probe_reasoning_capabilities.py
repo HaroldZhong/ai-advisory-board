@@ -7,21 +7,31 @@ worst-case cost against it). Writes the capability sidecar; resumable (fresh row
 are skipped), bounded concurrency, per-model degradation.
 
 Every probe call caps output at PROBE_MAX_TOKENS, so the worst-case per-call cost is
-(pinned endpoint output price x PROBE_MAX_TOKENS + prompt). The maintainer asserts
-that via the REQUIRED --max-cost-per-call, and the ceiling = calls x that bound. We
-do not derive it from the registry's model-wide price, because --provider-tag pins a
-specific endpoint whose price can differ (auto-resolving the exact endpoint price via
-the /endpoints API is a documented follow-up).
+(pinned endpoint output price x PROBE_MAX_TOKENS + prompt). Bound that cost EITHER
+way -- exactly one is required:
+
+  --resolve-endpoint-prices  (PREFERRED) prices every call from its OWN pinned
+      endpoint via the public, keyless, FREE /endpoints API before any paid call.
+      Refuses if any pinned endpoint's price cannot be resolved, since a model with
+      no sound bound would otherwise spend against an under-counted ceiling.
+  --max-cost-per-call        one uniform maintainer-asserted bound. Sound but loose:
+      it must cover the priciest model in the sweep, so a single expensive outlier
+      inflates the required ceiling for every other call (on the current registry
+      that is roughly an order of magnitude of unusable headroom).
+
+Never derive a bound from the registry's model-wide price: --provider-tag pins a
+specific endpoint whose price can differ, so a registry-derived bound could
+UNDER-count and breach the ceiling.
 
 Usage:
   OPENROUTER_API_KEY=... uv run python scripts/probe_reasoning_capabilities.py \
-      --max-probe-usd 5.00 --max-cost-per-call 0.05 [--concurrency 4]
+      --max-probe-usd 15.00 --resolve-endpoint-prices [--concurrency 4]
 
 Provider routing (correction #6): each model is pinned to an exact endpoint tag.
 By default the tag is the model id's provider prefix (e.g. openai/gpt-x -> openai);
 pass --provider-tag to pin one tag for every model, or refine per-model routing by
-extending resolve_provider_tag(). Endpoint-tag resolution via the /endpoints API
-(as in the D1 capture) is the follow-up hardening.
+extending resolve_provider_tag(). --resolve-endpoint-prices validates those pins as
+a side effect: an unknown tag fails price resolution and names the available tags.
 """
 import argparse
 import asyncio
@@ -50,12 +60,30 @@ async def _run(args) -> int:
     existing = reasoning_capability.load_capabilities()
     api_key = os.environ["OPENROUTER_API_KEY"]
 
+    def provider_of(model_entry):
+        return resolve_provider_tag(model_entry, args.provider_tag)
+
+    per_model_bounds = None
+    if args.resolve_endpoint_prices:
+        # Only the models this sweep will actually call. /endpoints is public and
+        # free, so nothing here spends against the ceiling it is computing.
+        needing = reasoning_probe.models_needing_probe(models, existing, provider_of)
+        per_model_bounds = reasoning_probe.resolve_probe_call_bounds(needing, provider_of)
+        worst_case = reasoning_probe.estimate_max_probe_cost_per_model(
+            [m["id"] for m in needing], reasoning_probe.CANDIDATE_LEVELS, per_model_bounds
+        )
+        print(
+            f"resolved per-endpoint prices for {len(needing)} model(s) to probe; "
+            f"worst-case sweep ${worst_case:.4f} vs authorized ${args.max_probe_usd:.4f}"
+        )
+
     merged = await reasoning_probe.run_probe_sweep(
         models,
-        lambda m: resolve_provider_tag(m, args.provider_tag),
+        provider_of,
         api_key,
         max_probe_usd=args.max_probe_usd,
         max_cost_per_call_usd=args.max_cost_per_call,
+        per_model_bounds=per_model_bounds,
         existing=existing,
         concurrency=args.concurrency,
     )
@@ -75,11 +103,18 @@ def main(argv=None) -> int:
     # Required: no ceiling -> no run. This is the CLI-level spend guard.
     parser.add_argument("--max-probe-usd", type=float, required=True,
                         help="Hard maximum authorized spend for this sweep (USD).")
-    parser.add_argument("--max-cost-per-call", type=float, required=True,
-                        help="Worst-case USD cost of ONE probe call. Set to the PINNED "
-                             "endpoint's output price x the probe's max output tokens (+ prompt); "
-                             "the ceiling = calls x this. Required so the bound reflects the "
-                             "endpoint you route to, not the registry's model-wide price.")
+    parser.add_argument("--max-cost-per-call", type=float, default=None,
+                        help="ONE uniform worst-case USD cost for every probe call. Set to the "
+                             "PINNED endpoint's output price x the probe's max output tokens "
+                             "(+ prompt); the ceiling = calls x this. Sound but loose -- it must "
+                             "cover the priciest model in the sweep. Prefer "
+                             "--resolve-endpoint-prices. Exactly one of the two is required.")
+    parser.add_argument("--resolve-endpoint-prices", action="store_true",
+                        help="Price each call from its OWN pinned endpoint via the public, "
+                             "keyless, free /endpoints API before any paid call (PREFERRED). "
+                             "Refuses if any pinned endpoint's price cannot be resolved. "
+                             "OpenRouter only -- a generic openai-compatible relay has no "
+                             "endpoint tags, so use --max-cost-per-call there.")
     parser.add_argument("--concurrency", type=int, default=4,
                         help="Parallel probe calls (>= 1).")
     parser.add_argument("--provider-tag", default=None,
@@ -89,7 +124,17 @@ def main(argv=None) -> int:
     if args.max_probe_usd <= 0:
         print("error: --max-probe-usd must be positive", file=sys.stderr)
         return 2
-    if args.max_cost_per_call <= 0:
+    # Exactly one bounding method: two would be ambiguous about which ceiling the
+    # run actually enforced, and zero leaves the paid sweep unbounded.
+    if args.resolve_endpoint_prices and args.max_cost_per_call is not None:
+        print("error: pass either --resolve-endpoint-prices or --max-cost-per-call, not both",
+              file=sys.stderr)
+        return 2
+    if not args.resolve_endpoint_prices and args.max_cost_per_call is None:
+        print("error: pass --resolve-endpoint-prices (preferred) or --max-cost-per-call "
+              "to bound each probe call", file=sys.stderr)
+        return 2
+    if args.max_cost_per_call is not None and args.max_cost_per_call <= 0:
         print("error: --max-cost-per-call must be positive", file=sys.stderr)
         return 2
     if args.concurrency < 1:

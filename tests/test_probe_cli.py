@@ -7,14 +7,45 @@ def _cli():
     return importlib.import_module("scripts.probe_reasoning_capabilities")
 
 
-@pytest.mark.parametrize("argv", [[], ["--max-probe-usd", "5"], ["--max-cost-per-call", "0.05"]])
-def test_cli_requires_both_spend_guards(argv):
-    """Both --max-probe-usd (total ceiling) and --max-cost-per-call (per-call bound)
-    are required argparse args -- a probe can never run without an explicit ceiling
-    AND an explicit per-call bound."""
+@pytest.mark.parametrize("argv", [[], ["--max-cost-per-call", "0.05"], ["--resolve-endpoint-prices"]])
+def test_cli_always_requires_a_total_ceiling(argv):
+    """--max-probe-usd is a required argparse arg -- no bounding method substitutes
+    for an explicit authorized total, so a probe can never run without one."""
     cli = _cli()
     with pytest.raises(SystemExit):
         cli.main(argv)
+
+
+def _never_reach_the_sweep(cli, monkeypatch):
+    """Prove the CLI itself refused. Without this, both tests below pass even with the
+    validation DELETED, because a downstream guard also returns 2 -- verified by
+    mutation: removing the exactly-one check left the whole CLI suite green."""
+    def explode(*args, **kwargs):
+        raise AssertionError("CLI must refuse before reaching the paid sweep")
+    monkeypatch.setattr(cli.reasoning_probe, "run_probe_sweep", explode)
+    monkeypatch.setattr(cli.reasoning_probe, "resolve_probe_call_bounds", explode)
+
+
+def test_cli_requires_a_per_call_bounding_method(monkeypatch, capsys):
+    """A ceiling alone is not enough: without a per-call bound there is nothing to
+    multiply into a worst case, so the sweep would be effectively unbounded."""
+    cli = _cli()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _never_reach_the_sweep(cli, monkeypatch)
+    assert cli.main(["--max-probe-usd", "5"]) == 2
+    assert "bound each probe call" in capsys.readouterr().err
+
+
+def test_cli_rejects_both_bounding_methods_at_once(monkeypatch, capsys):
+    """Ambiguous which ceiling the run actually enforced -- refuse rather than
+    silently letting one win."""
+    cli = _cli()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _never_reach_the_sweep(cli, monkeypatch)
+    assert cli.main([
+        "--max-probe-usd", "5", "--max-cost-per-call", "0.05", "--resolve-endpoint-prices",
+    ]) == 2
+    assert "not both" in capsys.readouterr().err
 
 
 def test_cli_rejects_nonpositive_ceiling(monkeypatch):

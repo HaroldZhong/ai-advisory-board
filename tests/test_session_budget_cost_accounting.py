@@ -1155,3 +1155,13 @@ def test_captured_rates_match_current_registry_or_report_drift(monkeypatch):
         "rates by design -- re-capture the fixture or refresh the registry, but do NOT "
         "silently reclassify."
     )
+
+
+def test_capture_prices_and_bills_the_same_service():
+    """`price_authority` only proves the billed route if the rate came from the SAME
+    service the paid call went to. With a relay configured, pricing one service while
+    posting to another silently invalidates the fixture's verdict (Codex #111)."""
+    from backend import config
+    capture = _billing_classifier()
+    assert capture.OPENROUTER_API_URL == config.OPENROUTER_API_URL
+    assert capture.OPENROUTER_ENDPOINTS_URL.startswith(config.OPENROUTER_BASE_URL + "/")
