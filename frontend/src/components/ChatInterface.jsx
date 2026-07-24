@@ -18,7 +18,7 @@ import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
-import { getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
+import { buildBudgetPolicyUpdate, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 import { predictNextMessageMode } from '../utils/modePrediction';
 import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
@@ -137,10 +137,11 @@ export default function ChatInterface({
     ? 'Thinking effort update is being saved'
     : null;
 
-  const handleBudgetConfirm = async (budgetUsd) => {
+  const handleBudgetConfirm = async (budgetUsd, allowOverage = true) => {
     try {
       setSendError(null);
-      await onUpdateSessionPolicy?.({ budget_usd: budgetUsd });
+      // v1.3.0 D3: carry the hard-cap opt-in so users can enforce the 409 cap.
+      await onUpdateSessionPolicy?.(buildBudgetPolicyUpdate(budgetUsd, allowOverage));
     } catch (error) {
       alert(`Failed to update session budget: ${error.message || 'Unknown error'}`);
     }
@@ -888,6 +889,7 @@ export default function ChatInterface({
             onClose={() => setShowBudgetSelector(false)}
             onConfirm={handleBudgetConfirm}
             currentBudget={sessionBudget}
+            currentAllowOverage={sessionPolicy.allow_overage ?? true}
           />
           <AdvancedSettingsPanel
             isOpen={showAdvancedSettings}

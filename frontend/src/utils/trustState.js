@@ -104,6 +104,17 @@ export function getBudgetCapBlockState(conversation) {
   };
 }
 
+// v1.3.0 D3: shape the session-policy update from the budget modal, carrying the
+// hard-cap opt-in. A hard cap is meaningless without a limit, so "No Limit"
+// always allows overage; otherwise the user's choice is honored.
+export function buildBudgetPolicyUpdate(budgetUsd, allowOverage = true) {
+  const noLimit = budgetUsd === null || budgetUsd === undefined;
+  return {
+    budget_usd: budgetUsd ?? null,
+    allow_overage: noLimit ? true : Boolean(allowOverage),
+  };
+}
+
 export function resolveEffectiveZdr(conversation, settings = {}, zdrAvailable = true) {
   const metadataZdr = conversation?.metadata?.zdr_enabled;
   // An explicit conversation-level ZDR choice is the privacy promise made at
