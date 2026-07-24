@@ -131,7 +131,10 @@ export default function ChatInterface({
   // would show "ZDR enforced" while the in-flight turn keeps its captured
   // (possibly non-ZDR) routing.
   const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || isEstimating || budgetCapBlock.blocked;
-  const attachDisabled = isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
+  // D3: freeze the composer content (attach + remove) while an estimate is in flight
+  // or a confirm is pending, so what the estimate was computed on is exactly what
+  // gets sent -- no add/remove/edit can slip in between (Codex #110).
+  const attachDisabled = isUploading || isUpdatingPrivacy || isEstimating || showCouncilConfirm || budgetCapBlock.blocked;
   const composerDisabled = sendDisabled;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
     isStreaming: isLoading,
@@ -293,6 +296,9 @@ export default function ChatInterface({
   };
 
   const removeAttachment = async (indexToRemove) => {
+    // D3: don't let a removal race a pending estimate/confirm -- the send is bound to
+    // the attachments the estimate was computed on (Codex #110).
+    if (isEstimating || showCouncilConfirm) return;
     const attachment = attachments[indexToRemove];
     if (!attachment) return;
 
@@ -807,7 +813,9 @@ export default function ChatInterface({
             onOpenBudget={() => setShowBudgetSelector(true)}
             onToggleWebSearch={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
             onToggleWebDepth={() => updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' })}
-            onOpenAdvancedSettings={() => setShowAdvancedSettings(true)}
+            // D3: don't let routing settings change while an estimate/confirm is
+            // pending -- the shown estimate was computed on the current settings (Codex #110).
+            onOpenAdvancedSettings={() => { if (!isEstimating && !showCouncilConfirm) setShowAdvancedSettings(true); }}
             privacyDisabled={Boolean(privacyDisabledReason)}
             privacyDisabledReason={privacyDisabledReason}
             thinkingDisabled={Boolean(thinkingDisabledReason)}
@@ -935,7 +943,10 @@ export default function ChatInterface({
                 onKeyDown={handleKeyDown}
                 placeholder="Ask your question... (Shift+Enter for new line)"
                 className="min-h-[44px] max-h-[min(32vh,200px)] resize-none py-3 pr-10"
-                disabled={composerDisabled}
+                // D3: lock the prompt while a confirm is pending so the sent turn
+                // matches the estimate shown (Codex #110). isEstimating is already in
+                // composerDisabled; showCouncilConfirm covers the confirm window.
+                disabled={composerDisabled || showCouncilConfirm}
                 aria-describedby={sendError ? 'send-error' : undefined}
                 rows={1}
                 style={{ height: 'auto', minHeight: '44px' }}
