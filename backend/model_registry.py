@@ -4,13 +4,14 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+# B1 single source of truth for the effort ladder. Validating preset defaults
+# against this (not a local literal) keeps the registry's accepted levels from
+# drifting from the runtime ladder. thinking_effort imports only stdlib, so this
+# creates no import cycle (the old "kept local to avoid a circular import" copy
+# was unnecessary).
+from .thinking_effort import VALID_THINKING_EFFORTS
 
 REGISTRY_PATH = Path(__file__).with_name("model_registry.json")
-
-# Valid reasoning-effort levels a preset may declare as its default. Kept local to
-# avoid a circular import with backend.main (which imports the registry); the
-# single-source effort ladder is consolidated in B1.
-VALID_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 def load_model_registry(path: Path = REGISTRY_PATH) -> Dict[str, Any]:
@@ -84,10 +85,10 @@ def _validate_presets(registry: Dict[str, Any]) -> None:
         # KeyError; list/dict -> "unhashable type" TypeError on the `in` test).
         if "default_reasoning_effort" in preset:
             default_effort = preset["default_reasoning_effort"]
-            if not isinstance(default_effort, str) or default_effort not in VALID_REASONING_EFFORTS:
+            if not isinstance(default_effort, str) or default_effort not in VALID_THINKING_EFFORTS:
                 raise ValueError(
                     f"Preset {preset_id} default_reasoning_effort {default_effort!r} is not one of "
-                    f"{sorted(VALID_REASONING_EFFORTS)}"
+                    f"{sorted(VALID_THINKING_EFFORTS)}"
                 )
 
     registry["presets"] = sorted(
