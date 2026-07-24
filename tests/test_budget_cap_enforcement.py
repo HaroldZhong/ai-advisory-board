@@ -1,3 +1,4 @@
+import ast
 import importlib
 import inspect
 
@@ -7,6 +8,39 @@ import pytest
 def import_main(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     return importlib.import_module("backend.main")
+
+
+def _status_expr_is_409(node):
+    """True if an AST expression denotes HTTP 409 -- a literal 409 or any
+    *HTTP_409_CONFLICT constant (e.g. status.HTTP_409_CONFLICT)."""
+    if isinstance(node, ast.Constant):
+        return node.value == 409
+    if isinstance(node, ast.Name):
+        return node.id.endswith("HTTP_409_CONFLICT")
+    if isinstance(node, ast.Attribute):
+        return node.attr.endswith("HTTP_409_CONFLICT")
+    return False
+
+
+def _http_exception_409_raises(fn):
+    """Count HTTPException(...) calls in ``fn``'s source whose status is 409, in ANY
+    spelling: ``status_code=409``, ``status_code = 409``, a positional first arg, or
+    an HTTP_409_CONFLICT constant. Syntax-aware (ast) so formatting cannot hide a
+    re-introduced duplicate the way a raw substring count could (Codex #109 R4)."""
+    tree = ast.parse(inspect.getsource(fn))
+    count = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        callee = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        if callee != "HTTPException":
+            continue
+        if any(kw.arg == "status_code" and _status_expr_is_409(kw.value) for kw in node.keywords):
+            count += 1
+        elif node.args and _status_expr_is_409(node.args[0]):  # positional status_code
+            count += 1
+    return count
 
 
 def create_budgeted_conversation(main, conversation_id, *, allow_overage):
@@ -193,22 +227,23 @@ def test_budget_path_single_enforcement_point_respects_allow_overage(monkeypatch
 
 
 def test_budget_cap_has_a_single_409_enforcement_point(monkeypatch):
-    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): exactly one
-    status_code=409 across the send budget path -- the opt-in cap is a SINGLE
-    enforcement point.
+    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): exactly one HTTPException
+    409 raise across the send budget path -- the opt-in cap is a SINGLE enforcement
+    point.
 
-    Scans the functions that make up the budget path: ensure_budget_allows_new_turn
-    (raises the cap), prepare_turn (the shared pre-flight that calls it), and both
-    send endpoints (send_message / send_message_stream). A re-introduced hard-cap
-    branch in ANY of them -- even a `not allow_overage` opt-in duplicate that the
-    allow-overage behavioral test can't see (Codex #109 R3) -- adds a second 409 and
-    trips this. Scoping to the budget path (not the whole module) means an unrelated
-    non-budget 409 on some OTHER endpoint never false-trips it (Codex #109 R1), which
-    a naive whole-module count would; scoping to the full path (not just the helper)
-    catches a duplicate in prepare_turn or the endpoints (Codex #109 R2)."""
+    Parses (syntax-aware, Codex #109 R4) each budget-path function --
+    ensure_budget_allows_new_turn (raises the cap), prepare_turn (the shared
+    pre-flight that calls it), and both send endpoints -- and counts HTTPException
+    raises whose status is 409 in ANY spelling (status_code=409, spaced, positional,
+    or an HTTP_409_CONFLICT constant), so formatting cannot hide a duplicate. A
+    re-introduced hard-cap branch anywhere in the path -- even a `not allow_overage`
+    opt-in duplicate the allow-overage behavioral test can't see (R3) -- adds a
+    second 409 and trips this. Scoped to the budget path so an unrelated non-budget
+    409 on another endpoint never false-trips it (R1); spanning prepare_turn + the
+    endpoints, not just the helper (R2)."""
     main = import_main(monkeypatch)
-    budget_path_source = "".join(
-        inspect.getsource(fn)
+    total = sum(
+        _http_exception_409_raises(fn)
         for fn in (
             main.ensure_budget_allows_new_turn,
             main.prepare_turn,
@@ -216,10 +251,9 @@ def test_budget_cap_has_a_single_409_enforcement_point(monkeypatch):
             main.send_message_stream,
         )
     )
-    count = budget_path_source.count("status_code=409")
-    assert count == 1, (
-        f"expected exactly one status_code=409 across the send budget path "
+    assert total == 1, (
+        f"expected exactly one HTTPException(409) across the send budget path "
         f"(ensure_budget_allows_new_turn / prepare_turn / send_message / "
-        f"send_message_stream), found {count} -- a re-introduced enforcement branch "
+        f"send_message_stream), found {total} -- a re-introduced enforcement branch "
         f"would revert the D3 default flip"
     )
