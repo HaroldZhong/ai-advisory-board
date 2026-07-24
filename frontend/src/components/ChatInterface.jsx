@@ -827,8 +827,10 @@ export default function ChatInterface({
             attachmentCount={attachments.length}
             budgetWarning={budgetWarning}
             onOpenBudget={() => setShowBudgetSelector(true)}
-            onToggleWebSearch={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
-            onToggleWebDepth={() => updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' })}
+            // D3: web search affects the estimate, so freeze its toggles while an
+            // estimate/confirm is pending -- the shown estimate must match what's sent (Codex #110).
+            onToggleWebSearch={() => { if (!isEstimating && !showCouncilConfirm) updateSettings({ webSearchEnabled: !settings.webSearchEnabled }); }}
+            onToggleWebDepth={() => { if (!isEstimating && !showCouncilConfirm) updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' }); }}
             // D3: don't let routing settings change while an estimate/confirm is
             // pending -- the shown estimate was computed on the current settings (Codex #110).
             onOpenAdvancedSettings={() => { if (!isEstimating && !showCouncilConfirm) setShowAdvancedSettings(true); }}
