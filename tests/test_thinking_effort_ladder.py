@@ -31,6 +31,20 @@ def test_main_uses_the_single_source_ladder(monkeypatch):
     assert not hasattr(council, "THINKING_EFFORT_ORDER")
 
 
+def test_model_registry_uses_the_single_source_ladder():
+    """model_registry validates preset default_reasoning_effort against the ONE
+    ladder source, not a divergent local literal (B1 'exactly one definition').
+
+    A second copy would let the registry's accepted levels drift from the runtime
+    ladder -- add a level in thinking_effort.py and a preset using it, and registry
+    load would reject it against the stale local set. Load-bearing: guards against a
+    resurrected VALID_REASONING_EFFORTS literal."""
+    te = _te()
+    registry = importlib.import_module("backend.model_registry")
+    assert registry.VALID_THINKING_EFFORTS is te.VALID_THINKING_EFFORTS
+    assert not hasattr(registry, "VALID_REASONING_EFFORTS")
+
+
 def test_to_reasoning_effort_maps_levels_and_omits_auto():
     te = _te()
     # explicit level -> normalized reasoning object (correction #1)
