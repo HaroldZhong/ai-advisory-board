@@ -3,6 +3,7 @@
 from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
 from .openrouter import query_models_parallel, query_models_as_completed, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, UTILITY_MODEL
+from .thinking_effort import THINKING_EFFORT_ORDER
 from .logger import logger
 from .tools.types import EvidencePack, UsageLimits
 from .tools.registry import ToolRegistry
@@ -12,7 +13,6 @@ import uuid
 import json
 
 
-THINKING_EFFORT_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
 STAGE3_THINKING_EFFORT_MAX_BY_MODEL = {
     # Release smoke showed high-effort Stage 3 synthesis can exceed the practical
     # streaming window for the lightweight Budget chairman, while medium completes.
