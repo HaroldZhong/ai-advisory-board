@@ -84,6 +84,10 @@ export default function ChatInterface({
   // handleSubmit awaits getTurnEstimate before clearing the input / setting any
   // disabled state, so without this a double-click could start two sends (Codex #110).
   const estimatingRef = useRef(false);
+  // D3: the conversation id at the time an estimate is requested, so a result that
+  // resolves after a conversation switch can be discarded rather than shown over the
+  // new conversation (Codex #110). Kept current by the reset effect below.
+  const conversationIdRef = useRef(conversation?.id);
 
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -175,6 +179,7 @@ export default function ChatInterface({
   // per-conversation cost estimate -- would render over conversation B and dispatch
   // to B while showing A's number (Codex #110 audit P3).
   useEffect(() => {
+    conversationIdRef.current = conversation?.id;
     setAskCouncil(false);
     setShowCouncilConfirm(false);
     setTurnEstimate(null);
@@ -250,7 +255,9 @@ export default function ChatInterface({
   const handleFileUpload = async (e) => {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
-    if (isUpdatingPrivacy) {
+    // D3: same freeze as drag-drop -- no attachment changes once the estimate is
+    // computed (the attach button is disabled too, but guard the handler as well).
+    if (isEstimating || showCouncilConfirm || isUpdatingPrivacy) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -339,16 +346,17 @@ export default function ChatInterface({
     // override. Resolve the actual next mode: armed -> council; else the auto
     // prediction (council on a council-default first turn, otherwise chat).
     const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
+    const estimateConversationId = conversation?.id;
     if (!showCouncilConfirm) {
       // Fetch the estimate for the mode that will actually run. Never blocks: a
       // failed estimate resolves to null and the send proceeds. estimatingRef guards
       // re-entry synchronously; isEstimating disables the composer so edits can't be lost.
       let estimate = null;
-      if (conversation?.id) {
+      if (estimateConversationId) {
         estimatingRef.current = true;
         setIsEstimating(true);
         try {
-          estimate = await api.getTurnEstimate(conversation.id, {
+          estimate = await api.getTurnEstimate(estimateConversationId, {
             content: submittedInput,
             hasAttachments: submittedAttachments.length > 0,
             mode: resolvedSendMode,
@@ -363,6 +371,9 @@ export default function ChatInterface({
           setIsEstimating(false);
         }
       }
+      // The user switched conversations while the estimate was in flight -- discard it
+      // rather than show A's confirm over B or send B's turn on A's estimate (Codex #110).
+      if (conversationIdRef.current !== estimateConversationId) return;
       // Confirm before an explicitly armed council send (P3-T4) or any LARGE predicted
       // turn (D3). A turn whose estimate is known and not large dispatches uninterrupted.
       if (askCouncil || estimate?.is_large) {
@@ -435,6 +446,9 @@ export default function ChatInterface({
     const droppedFiles = Array.from(e.dataTransfer.files || []);
     if (droppedFiles.length === 0) return;
     if (isUpdatingPrivacy) return;
+    // D3: don't let a drop append attachments after the estimate was computed -- the
+    // send is bound to the attachments the estimate/confirm reflects (Codex #110).
+    if (isEstimating || showCouncilConfirm) return;
 
     const MAX_FILE_SIZE = 50 * 1024 * 1024;
     const MAX_FILES = 10;
