@@ -354,6 +354,7 @@ export default function ChatInterface({
     // override. Resolve the actual next mode: armed -> council; else the auto
     // prediction (council on a council-default first turn, otherwise chat).
     const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
+    const resolvedEffort = resolveEffectiveThinkingEffort(conversation);
     const estimateConversationId = conversation?.id;
     if (!showCouncilConfirm) {
       // Fetch the estimate for the mode that will actually run. Never blocks: a
@@ -373,7 +374,7 @@ export default function ChatInterface({
             modelTier: settings.modelTier,
             webSearchEnabled: settings.webSearchEnabled,
             webSearchDepth: settings.webSearchDepth,
-            thinkingEffort: resolveEffectiveThinkingEffort(conversation),
+            thinkingEffort: resolvedEffort,
           });
         } catch {
           estimate = null;
@@ -385,9 +386,13 @@ export default function ChatInterface({
       // The user switched conversations while the estimate was in flight -- discard it
       // rather than show A's confirm over B or send B's turn on A's estimate (Codex #110).
       if (conversationIdRef.current !== estimateConversationId) return;
-      // Confirm before an explicitly armed council send (P3-T4) or any LARGE predicted
-      // turn (D3). A turn whose estimate is known and not large dispatches uninterrupted.
-      if (askCouncil || estimate?.is_large) {
+      // Confirm before an explicitly armed council send (P3-T4), any LARGE predicted
+      // turn, OR a HIGH-effort full-council turn -- the D3 contract (§5.1) names
+      // "high effort x full council" as its own warn case, so cheap Budget-council
+      // models running high/x-high effort still warn even below the dollar threshold
+      // (Codex #110). A turn that is none of these dispatches uninterrupted.
+      const highEffortCouncil = resolvedSendMode === 'council' && (resolvedEffort === 'high' || resolvedEffort === 'xhigh');
+      if (askCouncil || estimate?.is_large || highEffortCouncil) {
         setTurnEstimate(estimate);
         setShowCouncilConfirm(true);
         return;
