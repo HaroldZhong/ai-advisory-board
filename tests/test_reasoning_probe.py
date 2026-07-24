@@ -120,6 +120,15 @@ def test_classify_honors_only_the_probed_levels():
     assert two["levels"] == ["low", "medium"]
 
 
+def test_classify_excludes_zero_signal_levels_from_the_ladder():
+    probe = _probe()
+    # low produced NO reasoning; only medium/high did -> low must not be advertised
+    # as a supported level (else snap could route users to a no-reasoning setting).
+    rec = probe.classify_capability("m/1", "fp", "openai", 0, {"low": 0, "medium": 20, "high": 30})
+    assert rec["control_surface"] == "levels"
+    assert rec["levels"] == ["medium", "high"]
+
+
 def test_plain_reflects_baseline_only_not_effort_reasoning():
     probe = _probe()
     # baseline (no-effort) did NOT reason but an effort level did -> plain='none'

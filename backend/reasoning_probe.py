@@ -136,7 +136,10 @@ def classify_capability(
 
     if differentiates:
         rec["control_surface"] = "levels"
-        rec["levels"] = list(probed_levels)   # only the levels actually probed
+        # Only advertise levels that ACTUALLY produced reasoning: a zero-signal
+        # effort was proven ineffective, so recording it would let snap/selection
+        # route users to a no-reasoning setting instead of the nearest verified one.
+        rec["levels"] = [lvl for lvl, sig in zip(probed_levels, ordered) if sig > 0]
     else:
         # Reasons but the level does not move effort -> only on/off is real.
         rec["control_surface"] = "onoff"
