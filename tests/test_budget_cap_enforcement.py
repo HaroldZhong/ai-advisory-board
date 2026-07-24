@@ -165,16 +165,19 @@ async def test_default_flip_does_not_migrate_existing_conversations(monkeypatch,
 
 def test_budget_path_raises_409_exactly_once_in_source(monkeypatch):
     """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): after the overage
-    default flip, the hard 409 cap must remain a SINGLE opt-in enforcement point.
+    default flip, the hard budget cap must remain a SINGLE opt-in 409 enforcement
+    point in the budget path.
 
     Behavioral tests all exercise the ONE current raise site, so a re-introduced
-    second enforcement branch (a new `raise HTTPException(status_code=409, ...)`)
-    would silently pass them. A source-level count catches that regression: at HEAD
-    the only 409 in backend/main.py is the budget cap (BUDGET_CAP_REACHED_DETAIL)."""
+    second enforcement branch would silently pass them. Scoped to
+    ensure_budget_allows_new_turn (the budget-enforcement function that raises the
+    409) so an unrelated non-budget 409 elsewhere in main.py does not false-trip the
+    guard; matched on the bare '409' token so a symbolic re-introduction
+    (status.HTTP_409_CONFLICT) is caught too, not just the literal status_code=409."""
     main = import_main(monkeypatch)
-    source = inspect.getsource(main)
-    count = source.count("status_code=409")
+    source = inspect.getsource(main.ensure_budget_allows_new_turn)
+    count = source.count("409")
     assert count == 1, (
-        f"expected exactly one status_code=409 (the opt-in budget cap) in backend/main.py, "
+        f"expected exactly one 409 (the opt-in budget cap) in ensure_budget_allows_new_turn, "
         f"found {count} -- a re-introduced enforcement branch would revert the D3 default flip"
     )
