@@ -207,7 +207,7 @@ test('legacy conversation without ZDR metadata falls back to current settings', 
   assert.equal(state.privacy.effectiveZdr, true);
   assert.equal(state.privacy.label, 'ZDR enforced');
   assert.equal(state.thinking.label, 'High');
-  assert.equal(state.thinking.detail, '~1.6x reasoning tokens');
+  assert.equal(state.thinking.detail, 'Higher reasoning cost');
   assert.equal(state.thinking.tone, 'warn');
 });
 

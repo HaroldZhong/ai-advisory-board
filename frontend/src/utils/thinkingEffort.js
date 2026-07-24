@@ -1,34 +1,38 @@
 export const THINKING_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 
+// v1.3.0 B1 (§3.4): costHint is a clearly-labeled-rough DIRECTIONAL signal, never a
+// fabricated measured ratio. The old '~1.6x reasoning tokens' precision was invented
+// (no measurement backed it); real spend is shown by the D2 cost meter (billed
+// usage.cost) and B5's post-turn per-member reasoning-token actuals.
 const THINKING_EFFORT_OPTIONS = {
   minimal: {
     label: 'Minimal',
     description: 'Fastest responses with the least hidden reasoning.',
-    costHint: '~0.2x reasoning tokens',
+    costHint: 'Lowest reasoning cost',
     tone: 'neutral',
   },
   low: {
     label: 'Low',
     description: 'Lighter reasoning for simple follow-ups.',
-    costHint: '~0.4x reasoning tokens',
+    costHint: 'Lower reasoning cost',
     tone: 'neutral',
   },
   medium: {
     label: 'Medium',
     description: 'Balanced reasoning depth for everyday work.',
-    costHint: 'Default reasoning token budget',
+    costHint: 'Default reasoning cost',
     tone: 'neutral',
   },
   high: {
     label: 'High',
     description: 'Deeper reasoning for harder analysis and trade-offs.',
-    costHint: '~1.6x reasoning tokens',
+    costHint: 'Higher reasoning cost',
     tone: 'warn',
   },
   xhigh: {
     label: 'X-High',
     description: 'Maximum reasoning for the hardest questions.',
-    costHint: '~1.9x reasoning tokens',
+    costHint: 'Highest reasoning cost',
     tone: 'danger',
   },
 };
