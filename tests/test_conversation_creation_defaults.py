@@ -28,6 +28,9 @@ async def test_create_conversation_persists_preset_zdr_and_budget(monkeypatch, t
     conversation = await main.create_conversation(request)
 
     assert conversation["metadata"]["preset_id"] == "private"
+    # E3: the served preset LABEL is single-sourced at creation (retires the
+    # frontend PRESET_LABELS hardcode).
+    assert conversation["metadata"]["preset_label"] == private_preset["label"]
     assert conversation["metadata"]["zdr_enabled"] is True
     assert conversation["metadata"]["chairman_model"] == private_preset["chairman_model"]
     assert conversation["metadata"]["council_models"] == private_preset["council_models"]
