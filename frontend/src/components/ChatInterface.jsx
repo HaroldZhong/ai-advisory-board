@@ -18,7 +18,7 @@ import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
-import { buildBudgetPolicyUpdate, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
+import { buildBudgetPolicyUpdate, formatCurrency, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 import { predictNextMessageMode } from '../utils/modePrediction';
 import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
@@ -80,6 +80,14 @@ export default function ChatInterface({
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
+  // D3: guards against a double-dispatch while the pre-send estimate is in flight.
+  // handleSubmit awaits getTurnEstimate before clearing the input / setting any
+  // disabled state, so without this a double-click could start two sends (Codex #110).
+  const estimatingRef = useRef(false);
+  // D3: the conversation id at the time an estimate is requested, so a result that
+  // resolves after a conversation switch can be discarded rather than shown over the
+  // new conversation (Codex #110). Kept current by the reset effect below.
+  const conversationIdRef = useRef(conversation?.id);
 
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -91,6 +99,11 @@ export default function ChatInterface({
   const [editingAttachmentMetadata, setEditingAttachmentMetadata] = useState([]);
   const [askCouncil, setAskCouncil] = useState(false);
   const [showCouncilConfirm, setShowCouncilConfirm] = useState(false);
+  // v1.3.0 D3: approximate pre-send cost estimate shown in the council confirm.
+  const [turnEstimate, setTurnEstimate] = useState(null);
+  // v1.3.0 D3: true while the pre-send estimate is in flight -- disables the composer
+  // so edits can't be lost when a slow estimate resolves (Codex #110).
+  const [isEstimating, setIsEstimating] = useState(false);
   const { settings, updateSettings } = useSettings();
 
   const sessionPolicy = conversation?.session_policy || {};
@@ -121,8 +134,11 @@ export default function ChatInterface({
   // resolves zdr_enabled once per turn, so flipping the toggle mid-stream
   // would show "ZDR enforced" while the in-flight turn keeps its captured
   // (possibly non-ZDR) routing.
-  const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
-  const attachDisabled = isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
+  const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || isEstimating || budgetCapBlock.blocked;
+  // D3: freeze the composer content (attach + remove) while an estimate is in flight
+  // or a confirm is pending, so what the estimate was computed on is exactly what
+  // gets sent -- no add/remove/edit can slip in between (Codex #110).
+  const attachDisabled = isUploading || isUpdatingPrivacy || isEstimating || showCouncilConfirm || budgetCapBlock.blocked;
   const composerDisabled = sendDisabled;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
     isStreaming: isLoading,
@@ -133,9 +149,13 @@ export default function ChatInterface({
     // disable-able so the user can consciously turn it off.
     isEnablingUnavailable: !zdrAvailable && !effectiveZdr,
   });
+  // D3: thinking effort now affects the estimate, so freeze it while an estimate/confirm
+  // is pending -- the shown estimate must match the effort the turn is sent at (Codex #110).
   const thinkingDisabledReason = isUpdatingThinkingEffort
     ? 'Thinking effort update is being saved'
-    : null;
+    : (isEstimating || showCouncilConfirm)
+      ? 'Finish the pending turn first'
+      : null;
 
   const handleBudgetConfirm = async (budgetUsd, allowOverage = true) => {
     try {
@@ -156,6 +176,18 @@ export default function ChatInterface({
   useEffect(() => {
     isRecentUpdate.current = Date.now();
   }, [conversation?.messages?.length, conversation?.id]);
+
+  // ChatInterface is not remounted on a conversation switch (App renders it without
+  // a key), so its composer state survives. Reset the council-confirm state when the
+  // conversation changes, or a stale confirm from conversation A -- including its
+  // per-conversation cost estimate -- would render over conversation B and dispatch
+  // to B while showing A's number (Codex #110 audit P3).
+  useEffect(() => {
+    conversationIdRef.current = conversation?.id;
+    setAskCouncil(false);
+    setShowCouncilConfirm(false);
+    setTurnEstimate(null);
+  }, [conversation?.id]);
 
   // Track user scroll intent
   const handleScroll = (event) => {
@@ -227,7 +259,9 @@ export default function ChatInterface({
   const handleFileUpload = async (e) => {
     const selectedFiles = Array.from(e.target.files || []);
     if (selectedFiles.length === 0) return;
-    if (isUpdatingPrivacy) {
+    // D3: same freeze as drag-drop -- no attachment changes once the estimate is
+    // computed (the attach button is disabled too, but guard the handler as well).
+    if (isEstimating || showCouncilConfirm || isUpdatingPrivacy) {
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -273,6 +307,9 @@ export default function ChatInterface({
   };
 
   const removeAttachment = async (indexToRemove) => {
+    // D3: don't let a removal race a pending estimate/confirm -- the send is bound to
+    // the attachments the estimate was computed on (Codex #110).
+    if (isEstimating || showCouncilConfirm) return;
     const attachment = attachments[indexToRemove];
     if (!attachment) return;
 
@@ -296,18 +333,72 @@ export default function ChatInterface({
       return;
     }
     if (composerDisabled) return;
+    // No loaded conversation (e.g. mid conversation-switch, before the new one loads) --
+    // don't submit against a null/stale conversation and skip the estimate (Codex #110).
+    if (!conversation?.id) return;
+    // A pre-send estimate is already in flight for this composer -- ignore the repeat
+    // click/Enter so a double-tap during the await can't start two paid sends (Codex #110).
+    if (estimatingRef.current) return;
 
-    // Armed "Ask the council" send: require an explicit confirm first
-    // (P3-T4 — a council run costs more and takes longer than chat).
-    if (askCouncil && !showCouncilConfirm) {
-      setShowCouncilConfirm(true);
-      return;
-    }
-
-    // Collect attachment IDs to send with the message
-    const attachmentIds = attachments.map(a => a.attachment_id);
+    // Snapshot the composer BEFORE any await so a slow estimate can't send stale content
+    // or let the later setInput('') wipe edits made during the await (Codex #110).
     const submittedInput = input;
     const submittedAttachments = attachments;
+    const attachmentIds = attachments.map(a => a.attachment_id);
+
+    // D3 (§5.1) soft seatbelt: warn with an APPROXIMATE pre-send estimate before a
+    // LARGE predicted turn -- ANY mode -- and before an explicitly armed council send
+    // (P3-T4). Covers auto council-first sends (Codex #110) and large chat turns with
+    // an expensive chairman (Codex #110 R2), not only the manual "Ask the council"
+    // override. Resolve the actual next mode: armed -> council; else the auto
+    // prediction (council on a council-default first turn, otherwise chat).
+    const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
+    const estimateConversationId = conversation?.id;
+    if (!showCouncilConfirm) {
+      // Fetch the estimate for the mode that will actually run. Never blocks: a
+      // failed estimate resolves to null and the send proceeds. estimatingRef guards
+      // re-entry synchronously; isEstimating disables the composer so edits can't be lost.
+      let estimate = null;
+      if (estimateConversationId) {
+        estimatingRef.current = true;
+        setIsEstimating(true);
+        try {
+          estimate = await api.getTurnEstimate(estimateConversationId, {
+            content: submittedInput,
+            hasAttachments: submittedAttachments.length > 0,
+            mode: resolvedSendMode,
+            executionMode: settings.executionMode,
+            ragPreset: settings.ragPreset,
+            modelTier: settings.modelTier,
+            webSearchEnabled: settings.webSearchEnabled,
+            webSearchDepth: settings.webSearchDepth,
+            // Pass only the STORED effort (or nothing) -- the backend resolves the
+            // preset default for legacy conversations the same way the send path does
+            // (don't force the FE 'medium' fallback) (Codex #110).
+            thinkingEffort: conversation?.metadata?.thinking_effort,
+          });
+        } catch {
+          estimate = null;
+        } finally {
+          estimatingRef.current = false;
+          setIsEstimating(false);
+        }
+      }
+      // The user switched conversations while the estimate was in flight -- discard it
+      // rather than show A's confirm over B or send B's turn on A's estimate (Codex #110).
+      if (conversationIdRef.current !== estimateConversationId) return;
+      // Confirm before an explicitly armed council send (P3-T4) or any turn the backend
+      // flags as large -- is_large now encodes BOTH D3 §5.1 warn cases (large predicted
+      // spend AND high-effort full-council), decided with the send path's own effort
+      // resolution so legacy preset conversations are correct (Codex #110). A turn that
+      // is neither dispatches uninterrupted.
+      if (askCouncil || estimate?.is_large) {
+        setTurnEstimate(estimate);
+        setShowCouncilConfirm(true);
+        return;
+      }
+    }
+
     const sendOptions = askCouncil ? { mode: 'council' } : {};
 
     // Send message with attachment IDs (context built server-side)
@@ -316,6 +407,7 @@ export default function ChatInterface({
     setSendError(null);
     setAskCouncil(false);
     setShowCouncilConfirm(false);
+    setTurnEstimate(null);
 
     try {
       await onSendMessage(submittedInput, attachmentIds, submittedAttachments, -1, sendOptions);
@@ -337,6 +429,7 @@ export default function ChatInterface({
   const handleCouncilConfirmCancel = () => {
     setShowCouncilConfirm(false);
     setAskCouncil(false);
+    setTurnEstimate(null);
   };
 
   const handleKeyDown = (e) => {
@@ -369,6 +462,9 @@ export default function ChatInterface({
     const droppedFiles = Array.from(e.dataTransfer.files || []);
     if (droppedFiles.length === 0) return;
     if (isUpdatingPrivacy) return;
+    // D3: don't let a drop append attachments after the estimate was computed -- the
+    // send is bound to the attachments the estimate/confirm reflects (Codex #110).
+    if (isEstimating || showCouncilConfirm) return;
 
     const MAX_FILE_SIZE = 50 * 1024 * 1024;
     const MAX_FILES = 10;
@@ -428,6 +524,12 @@ export default function ChatInterface({
       setShowBudgetSelector(true);
       return;
     }
+    // ponytail: the D3 pre-send estimate/confirm (§5.1) covers the primary compose->send
+    // path (handleSubmit). Editing/regenerating the FIRST message re-runs council but
+    // dispatches here without the estimate confirm -- an accepted residual (Codex #110
+    // audit P3): the edit flow carries its own saved-edit state and routing the shared
+    // confirm dialog through it is disproportionate for this rare edge case. Add a
+    // shared confirm gate here if edit-of-first-message warnings are later required.
 
     const submittedContent = editingContent;
     const submittedIndex = editingIndex;
@@ -739,9 +841,13 @@ export default function ChatInterface({
             attachmentCount={attachments.length}
             budgetWarning={budgetWarning}
             onOpenBudget={() => setShowBudgetSelector(true)}
-            onToggleWebSearch={() => updateSettings({ webSearchEnabled: !settings.webSearchEnabled })}
-            onToggleWebDepth={() => updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' })}
-            onOpenAdvancedSettings={() => setShowAdvancedSettings(true)}
+            // D3: web search affects the estimate, so freeze its toggles while an
+            // estimate/confirm is pending -- the shown estimate must match what's sent (Codex #110).
+            onToggleWebSearch={() => { if (!isEstimating && !showCouncilConfirm) updateSettings({ webSearchEnabled: !settings.webSearchEnabled }); }}
+            onToggleWebDepth={() => { if (!isEstimating && !showCouncilConfirm) updateSettings({ webSearchDepth: settings.webSearchDepth === 'fast' ? 'deep' : 'fast' }); }}
+            // D3: don't let routing settings change while an estimate/confirm is
+            // pending -- the shown estimate was computed on the current settings (Codex #110).
+            onOpenAdvancedSettings={() => { if (!isEstimating && !showCouncilConfirm) setShowAdvancedSettings(true); }}
             privacyDisabled={Boolean(privacyDisabledReason)}
             privacyDisabledReason={privacyDisabledReason}
             thinkingDisabled={Boolean(thinkingDisabledReason)}
@@ -822,7 +928,14 @@ export default function ChatInterface({
               role="alert"
               className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
             >
-              <span>Council run uses every council model — costs more and takes 2–5 min.</span>
+              <span>
+                {(askCouncil || nextMessageMode === 'council')
+                  ? 'Council run uses every council model — costs more and takes 2–5 min.'
+                  : 'This looks like a larger-than-usual turn.'}
+                {turnEstimate?.predicted_cost > 0 && (
+                  <> Est. ~{formatCurrency(turnEstimate.predicted_cost)} (approximate).</>
+                )}
+              </span>
               <div className="flex gap-2">
                 <Button type="button" variant="ghost" size="sm" onClick={handleCouncilConfirmCancel}>
                   Cancel
@@ -862,7 +975,10 @@ export default function ChatInterface({
                 onKeyDown={handleKeyDown}
                 placeholder="Ask your question... (Shift+Enter for new line)"
                 className="min-h-[44px] max-h-[min(32vh,200px)] resize-none py-3 pr-10"
-                disabled={composerDisabled}
+                // D3: lock the prompt while a confirm is pending so the sent turn
+                // matches the estimate shown (Codex #110). isEstimating is already in
+                // composerDisabled; showCouncilConfirm covers the confirm window.
+                disabled={composerDisabled || showCouncilConfirm}
                 aria-describedby={sendError ? 'send-error' : undefined}
                 rows={1}
                 style={{ height: 'auto', minHeight: '44px' }}

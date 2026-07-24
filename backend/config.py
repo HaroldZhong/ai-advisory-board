@@ -178,6 +178,13 @@ SESSION_POLICY_DEFAULTS = {
     "allow_overage": True,
 }
 
+# v1.3.0 D3 (§5.1) soft seatbelt: a pre-send turn estimate at or above this USD figure
+# is "large" and prompts a warn/confirm (never a block) before dispatch. The estimate
+# is APPROXIMATE (see budget_router.estimate_turn_cost); the honest billed total comes
+# from usage.cost. ponytail: this is the calibration knob -- raise it if council turns
+# confirm too often, lower it to warn on smaller turns.
+LARGE_TURN_ESTIMATE_USD = 0.15
+
 # Budget policy. v1.3.0 D4 (§5.1): the spend-percentage `thresholds` are ADVISORY
 # suggestions only -- the budget router no longer forces a mode/rag downgrade the
 # user did not choose (it routes by task signal and merely annotates the crossed

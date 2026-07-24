@@ -94,6 +94,37 @@ export const api = {
   },
 
   /**
+   * v1.3.0 D3 soft seatbelt: an APPROXIMATE pre-send cost estimate for the next
+   * turn. Returns { predicted_cost, approximate, threshold, is_large }. POSTs the
+   * pending message + routing so the backend runs the SAME task-signal routing as
+   * the send path (a long/file/research turn on auto mode is not under-estimated).
+   */
+  async getTurnEstimate(conversationId, { content = '', hasAttachments = false, mode = 'council', executionMode, ragPreset, modelTier, webSearchEnabled = false, webSearchDepth = 'fast', thinkingEffort } = {}) {
+    const response = await fetch(
+      `${API_BASE}/api/conversations/${conversationId}/estimate`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content,
+          has_attachments: hasAttachments,
+          mode,
+          execution_mode: executionMode || 'auto',
+          rag_preset: ragPreset || 'auto',
+          model_tier: modelTier || 'auto',
+          web_search_enabled: webSearchEnabled,
+          web_search_depth: webSearchDepth || 'fast',
+          thinking_effort: thinkingEffort || null,
+        }),
+      }
+    );
+    if (!response.ok) {
+      throw new Error('Failed to get turn estimate');
+    }
+    return response.json();
+  },
+
+  /**
    * Update session budget policy for a conversation.
    */
   async updateSessionPolicy(conversationId, policy) {

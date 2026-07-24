@@ -107,6 +107,7 @@ function createConversation(body) {
       thinking_effort: 'medium',
       chairman_model: MODEL_CLAUDE,
       council_models: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
+      default_mode: body.default_mode ?? undefined,
     },
     session_policy: {
       budget_usd: body.budget_usd,
@@ -180,6 +181,18 @@ async function installMockApi(page) {
     }
 
     await route.fulfill(json({ detail: 'Unsupported conversation method' }, 405));
+  });
+
+  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
+    // v1.3.0 D3 soft seatbelt: an approximate pre-send estimate (POST), mode-aware
+    // like the real endpoint -- a full council turn is "large" (warn), an ordinary
+    // chat turn is not (dispatches uninterrupted). Mode is in the POST body.
+    const isCouncil = (route.request().postDataJSON?.()?.mode ?? 'council') === 'council';
+    await route.fulfill(json(
+      isCouncil
+        ? { predicted_cost: 0.2038, approximate: true, threshold: 0.15, is_large: true }
+        : { predicted_cost: 0.045, approximate: true, threshold: 0.15, is_large: false },
+    ));
   });
 
   await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}$`), async (route) => {
@@ -432,6 +445,12 @@ test('first-run setup creates a private preset conversation and renders streamed
   await page.getByRole('textbox', { name: /Ask your question/ }).fill('What is 8 minus 3?');
   await page.getByRole('button', { name: 'Send message' }).click();
 
+  // v1.3.0 D3 (§5.1): the automatic first council turn now warns with an approximate
+  // pre-send estimate (the main council-default path, not just manual "Ask the
+  // council"). Confirm to dispatch.
+  await expect(page.getByRole('alert')).toContainText('Est. ~$0.20 (approximate)');
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+
   await expect(page.getByText('Final Council Answer')).toBeVisible();
   // B5/E3 §3d: the chairman's honest post-turn reasoning actuals render from the count
   await expect(page.getByText('reasoning: 1.2k tokens')).toBeVisible();
@@ -488,6 +507,50 @@ test('editing the key mid-probe discards the stale connection result', async ({ 
   await expect(page.getByText('Connected to OpenRouter.')).not.toBeVisible();
 });
 
+test('D3 soft seatbelt: the council confirm surfaces an approximate cost and is dismissible', async ({ page }) => {
+  // v1.3.0 D3 (§5.1): before an expensive (council) send, warn with an APPROXIMATE
+  // pre-send estimate -- never block. Dismissible so the user can proceed.
+  await completeSetupToNewConversation(page);
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+
+  // A chat-default conversation offers "Ask the council" on the first turn.
+  await page.getByRole('button', { name: 'Ask the council' }).click();
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Weigh the trade-offs.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  // The confirm appears with the approximate estimate (mocked is_large council turn).
+  const confirm = page.getByRole('alert');
+  await expect(confirm).toContainText('Est. ~$0.20 (approximate)');
+  await expect(confirm).toContainText('costs more');
+
+  // Dismissible: Cancel closes the confirm and no turn is dispatched.
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('D3 soft seatbelt: a large predicted CHAT turn also warns, not only council', async ({ page }) => {
+  // v1.3.0 D3 (§5.1): "large predicted spend" is mode-agnostic -- an expensive chat
+  // turn (pricey chairman) must warn too, not only a council fan-out (Codex #110 R2).
+  await completeSetupToNewConversation(page);
+  // Override the estimate so a plain chat turn reads as large.
+  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
+    await route.fulfill(json({ predicted_cost: 0.3, approximate: true, threshold: 0.15, is_large: true }));
+  });
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+
+  // Plain chat send (council NOT armed) whose estimate is large must still warn.
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('A large chat turn.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  const confirm = page.getByRole('alert');
+  await expect(confirm).toContainText('larger-than-usual turn');
+  await expect(confirm).toContainText('Est. ~$0.30 (approximate)');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('reopening the budget dialog re-seeds the hard-cap toggle from the saved policy', async ({ page }) => {
   // v1.3.0 D3 regression guard: the budget dialog stays mounted across opens, so a
   // stale/cancelled local toggle must never survive to overwrite the saved policy.
@@ -513,7 +576,7 @@ test('reopening the budget dialog re-seeds the hard-cap toggle from the saved po
 
   // Toggle the hard cap ON, then CANCEL without saving.
   await hardCap.check();
-  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
   // Reopening must reflect the PERSISTED policy again, not the cancelled toggle.
   // Pre-fix the dialog kept allowOverage=false (checkbox stayed checked) and a later

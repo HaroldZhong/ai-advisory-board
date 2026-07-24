@@ -825,6 +825,110 @@ async def get_session_policy_endpoint(conversation_id: str):
     return build_session_budget_state(conversation_id)
 
 
+class TurnEstimateRequest(BaseModel):
+    """Pre-send estimate context (D3). Carries the pending message so the estimate
+    can run the SAME task-signal routing as the real send path."""
+    content: str = ""
+    has_attachments: bool = False
+    mode: str = "council"  # UI mode: "chat" | "council"
+    execution_mode: str = "auto"
+    rag_preset: str = "auto"
+    model_tier: str = "auto"
+    web_search_enabled: bool = False
+    web_search_depth: str = "fast"
+    thinking_effort: Optional[str] = None  # resolved effort; falls back to the conversation's
+
+
+@app.post("/api/conversations/{conversation_id}/estimate")
+async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequest):
+    """v1.3.0 D3 soft seatbelt (§5.1): an APPROXIMATE pre-send cost estimate for the
+    next turn, computed through the SAME run planner the send path uses
+    (``create_run_plan(query=content, has_files=...)``) -- so task-signal, execution
+    mode, RAG preset, and model-tier routing match the real turn and a large auto
+    research/file/keyword turn is not silently under-estimated (Codex #110). For
+    council the chairman-only planner cost is replaced by the full fan-out estimate.
+    Never blocks -- the client uses ``is_large`` to warn/confirm. The honest billed
+    total still comes from usage.cost.
+    """
+    from .budget_router import create_run_plan, estimate_reasoning_cost, estimate_turn_cost, estimate_web_search_cost
+
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    metadata = conversation.get("metadata", {})
+    # Resolve the chairman the way the send path does -- a plain conversation stores no
+    # chairman_model but runs on config.CHAIRMAN_MODEL, so pricing must use it (not the
+    # $1/$5 fallback that create_run_plan applies for a None model).
+    chairman_model = metadata.get("chairman_model") or config.CHAIRMAN_MODEL
+
+    # Council rejects the chat-only routing controls (validate_advanced_settings_for_mode),
+    # so a council estimate must ignore execution_mode/rag_preset -- otherwise it would
+    # price RAG/research cost the confirmed council turn will never incur (Codex #110).
+    execution_mode = request.execution_mode
+    rag_preset = request.rag_preset
+    if request.mode == "council":
+        execution_mode = "auto"
+        rag_preset = "auto"
+
+    run_plan = create_run_plan(
+        query=request.content,
+        conversation_id=conversation_id,
+        has_files=request.has_attachments,
+        chairman_model=chairman_model,
+        execution_mode=execution_mode,
+        rag_preset=rag_preset,
+        model_tier=request.model_tier,
+    )
+
+    # Resolve the effort the turn will actually run at with the SAME resolver the send
+    # path uses (request override > stored metadata > preset default > medium), so a
+    # legacy preset conversation with no stored effort is priced at its preset default
+    # (e.g. Research -> high), not a forced medium (Codex #110). resolve_effective_
+    # thinking_effort only reads `.thinking_effort` off the request, which the estimate
+    # request carries.
+    thinking_effort = resolve_effective_thinking_effort(conversation, request)
+
+    if request.mode == "council":
+        # Council fan-out on the tier-resolved chairman, at the turn's effort. The
+        # council path does NOT run the chat RAG retrieval (turn_pipeline retrieves only
+        # in the chat branch), so the planner's rag_max_tokens must not be added here --
+        # doing so inflated every member's prompt by 8k-16k phantom tokens (Codex #110).
+        predicted = estimate_turn_cost(
+            "council",
+            council_models=metadata.get("council_models"),
+            chairman_model=run_plan.chairman_model,
+            rag_tokens=0,
+            thinking_effort=thinking_effort,
+        )
+    else:
+        # Chat: the planner's own predicted cost (mirrors the send path's task-signal
+        # routing exactly) plus the chairman's reasoning at the turn's effort.
+        predicted = run_plan.predicted_cost + estimate_reasoning_cost(
+            run_plan.chairman_model, thinking_effort
+        )
+
+    # Web search adds a Stage 0 Perplexity grounding call before either path (Codex #110).
+    if request.web_search_enabled:
+        predicted += estimate_web_search_cost(request.web_search_depth)
+
+    predicted = round(predicted, 6)
+    # "Large" = the D3 contract's two warn cases (§5.1): a large predicted spend, OR a
+    # high-effort full-council turn (cheap council models can stay under the dollar
+    # threshold while running high/x-high effort). Deciding it here -- with the send
+    # path's own effort resolution -- keeps a legacy preset conversation correct even
+    # though the client can't resolve the preset default (Codex #110).
+    is_large = predicted >= config.LARGE_TURN_ESTIMATE_USD or (
+        request.mode == "council" and thinking_effort in ("high", "xhigh")
+    )
+    return {
+        "predicted_cost": predicted,
+        "approximate": True,
+        "threshold": config.LARGE_TURN_ESTIMATE_USD,
+        "is_large": is_large,
+    }
+
+
 @app.put("/api/conversations/{conversation_id}/session-policy")
 async def update_session_policy_endpoint(conversation_id: str, update: SessionPolicyUpdate):
     """Persist a conversation's session budget policy."""
