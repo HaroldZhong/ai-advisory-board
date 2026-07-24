@@ -12,8 +12,18 @@ import {
     getResponsiveModalBodyClass,
     getResponsiveModalContentClass,
 } from '@/utils/responsiveModalLayout';
-import { DEFAULT_NOTIFY_THRESHOLDS } from '@/utils/trustState';
+import { DEFAULT_NOTIFY_THRESHOLDS, getBudgetTone } from '@/utils/trustState';
 import { DollarSign, Zap, Sparkles } from 'lucide-react';
+
+// Single-source the tier→style mapping off getBudgetTone (which ties "danger" to
+// the real 1.0 cap, not a notify tier).
+const TONE_DOT = { neutral: 'bg-green-500', caution: 'bg-yellow-500', warn: 'bg-orange-500', danger: 'bg-red-500' };
+const TONE_BANNER = {
+    neutral: 'bg-yellow-500/10 border-yellow-500/20 text-yellow-700 dark:text-yellow-400',
+    caution: 'bg-yellow-500/10 border-yellow-500/20 text-yellow-700 dark:text-yellow-400',
+    warn: 'bg-orange-500/10 border-orange-500/20 text-orange-700 dark:text-orange-400',
+    danger: 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400',
+};
 
 // D2: render the served notify tiers ("75%, 85%, and 100%") from the policy, not a
 // hardcoded string, so the alert copy always matches the thresholds the backend uses.
@@ -199,20 +209,11 @@ export function BudgetIndicator({ budgetUsd, spentUsd, spentPct, className, thre
         return null;  // No budget set
     }
 
-    const [caution, warn, danger] = thresholds;
-    const getStatusColor = () => {
-        if (spentPct === null) return 'bg-green-500';
-        if (spentPct >= danger) return 'bg-red-500';
-        if (spentPct >= warn) return 'bg-orange-500';
-        if (spentPct >= caution) return 'bg-yellow-500';
-        return 'bg-green-500';
-    };
-
     const pctDisplay = spentPct !== null ? Math.round(spentPct * 100) : 0;
 
     return (
         <div className={cn("flex items-center gap-2 text-xs", className)}>
-            <div className={cn("w-2 h-2 rounded-full", getStatusColor())} />
+            <div className={cn("w-2 h-2 rounded-full", TONE_DOT[getBudgetTone(spentPct, thresholds)])} />
             <span className="text-muted-foreground">
                 ${spentUsd?.toFixed(2) || '0.00'} / ${budgetUsd.toFixed(2)}
             </span>
@@ -225,9 +226,9 @@ export function BudgetIndicator({ budgetUsd, spentUsd, spentPct, className, thre
 
 // Budget warning banner for inline display
 export function BudgetWarningBanner({ threshold, onDismiss, thresholds = DEFAULT_NOTIFY_THRESHOLDS }) {
-    const [, warn, danger] = thresholds;
+    const tone = getBudgetTone(threshold, thresholds);
     const getMessage = () => {
-        if (threshold >= danger) {
+        if (tone === 'danger') {
             // Meter, not cap (D2/§5.2): a reached budget warns; it does not block or
             // silently downgrade (D3 made the hard cap opt-in).
             return "You've reached your session budget. New turns continue unless you set a hard cap.";
@@ -235,14 +236,8 @@ export function BudgetWarningBanner({ threshold, onDismiss, thresholds = DEFAULT
         return `You're at ${Math.round(threshold * 100)}% of your session budget.`;
     };
 
-    const getColor = () => {
-        if (threshold >= danger) return 'bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400';
-        if (threshold >= warn) return 'bg-orange-500/10 border-orange-500/20 text-orange-700 dark:text-orange-400';
-        return 'bg-yellow-500/10 border-yellow-500/20 text-yellow-700 dark:text-yellow-400';
-    };
-
     return (
-        <div className={cn("p-3 rounded-lg border mb-3", getColor())}>
+        <div className={cn("p-3 rounded-lg border mb-3", TONE_BANNER[tone])}>
             <div className="flex items-center justify-between">
                 <span className="text-sm">{getMessage()}</span>
                 <button
