@@ -141,19 +141,26 @@ def test_plain_reflects_baseline_only_not_effort_reasoning():
 
 # --- probe_model: end-to-end through an injected MockTransport ---------------
 
-def _mock_transport(signals_by_effort, served_provider=None):
+def _mock_transport(signals_by_effort, served_provider=None, expected_pin=None):
     """Return httpx.MockTransport that scripts reasoning_tokens by the request's
     reasoning.effort (None = the baseline call). Optionally reports which provider
     served, the way router metadata does."""
     def handler(request):
         body = json.loads(request.content.decode("utf-8"))
-        # The sweep probes UNPINNED so the capability is learned on the endpoint
-        # OpenRouter actually routes to. A pin here would send `allow_fallbacks:
-        # false` with a tag nobody verified -- which meant NO ROUTE for 17 of 33
-        # registry models under the old id-prefix guess.
-        assert "provider" not in body, f"probe must not pin a provider: {body.get('provider')!r}"
         assert body["max_tokens"] == 8000
         effort = (body.get("reasoning") or {}).get("effort")
+        if effort is None:
+            # The BASELINE must go out unpinned, so OpenRouter picks the endpoint it
+            # would pick for real traffic. A pin here would send
+            # `allow_fallbacks: false` with a tag nobody verified -- which meant NO
+            # ROUTE for 17 of 33 registry models under the old id-prefix guess.
+            assert "provider" not in body, \
+                f"baseline must not pin a provider: {body.get('provider')!r}"
+        elif "provider" in body:
+            # Level calls MAY pin -- but only to the endpoint the baseline was
+            # OBSERVED to land on, so every level is measured where it is recorded.
+            assert body["provider"]["allow_fallbacks"] is False
+            assert body["provider"]["order"] == [expected_pin]
         rt = signals_by_effort.get(effort, 0)
         payload = {
             "choices": [{"message": {"content": "The ball costs $0.05."}}],
@@ -174,7 +181,7 @@ async def test_probe_model_classifies_levels_via_mock_transport():
     probe = _probe()
     entry = {"id": "openai/gpt-x", "supports_reasoning": True, "reasoning_extraction": "field"}
     tx = _mock_transport({None: 0, "low": 10, "medium": 25, "high": 40},
-                         served_provider="OpenAI")
+                         served_provider="OpenAI", expected_pin="openai")
     rec = await probe.probe_model(
         entry, "test-key", transport=tx,
         get=_endpoints_getter({"openai/gpt-x": [("openai", 0.000001, 0.000002)]}),
@@ -818,3 +825,95 @@ def test_bounds_cover_the_priciest_endpoint_since_the_probe_is_unpinned():
     bounds = probe.resolve_probe_call_bounds([_entry("m/x")], get=get)
     assert bounds["m/x"] == pytest.approx(
         2 * 0.00001 * probe.PROBE_MAX_TOKENS + 0.000002 * probe.PROBE_PROMPT_TOKENS_EST)
+
+
+@pytest.mark.asyncio
+async def test_levels_are_measured_on_the_endpoint_that_is_recorded():
+    probe = _probe()
+    # The baseline goes out unpinned; once its endpoint is known, the level calls are
+    # pinned to it. Otherwise reasoning seen on provider B could be recorded against
+    # provider A, and runtime would send A a shape never verified there.
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content.decode("utf-8"))
+        seen.append(body.get("provider"))
+        effort = (body.get("reasoning") or {}).get("effort")
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 20, "completion_tokens_details": {
+                "reasoning_tokens": {None: 0, "low": 10, "medium": 20, "high": 30}.get(effort, 0)}},
+            "openrouter_metadata": {"endpoints": {"available": [
+                {"provider": "OpenAI", "selected": True}]}},
+        })
+
+    rec = await probe.probe_model(
+        _entry("openai/gpt-x"), "k", transport=httpx.MockTransport(handler),
+        get=_endpoints_getter({"openai/gpt-x": [("openai", 0.000001, 0.000002)]}),
+    )
+    assert rec["provider_pinned"] == "openai"
+    assert seen[0] is None, "baseline must be unpinned"
+    assert all(p == {"order": ["openai"], "allow_fallbacks": False} for p in seen[1:]), seen
+
+
+@pytest.mark.asyncio
+async def test_no_capability_is_published_when_the_router_moved_mid_sweep():
+    probe = _probe()
+    # Unpinnable (ambiguous provider name) AND the router served different endpoints
+    # across calls -> the signals cannot be attributed to one endpoint, so publishing
+    # any surface would fabricate an attribution.
+    calls = {"n": 0}
+
+    def handler(request):
+        body = json.loads(request.content.decode("utf-8"))
+        effort = (body.get("reasoning") or {}).get("effort")
+        calls["n"] += 1
+        provider = "Google Vertex" if calls["n"] == 1 else "Google AI Studio"
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 20, "completion_tokens_details": {
+                "reasoning_tokens": {None: 0, "low": 10, "medium": 20, "high": 30}.get(effort, 0)}},
+            "openrouter_metadata": {"endpoints": {"available": [
+                {"provider": provider, "selected": True}]}},
+        })
+
+    rec = await probe.probe_model(
+        _entry("g/m"), "k", transport=httpx.MockTransport(handler),
+        get=_named_endpoints_getter({"g/m": [("google-vertex", "Google Vertex"),
+                                             ("google-vertex/eu", "Google Vertex")]}),
+    )
+    assert rec["control_surface"] == "unknown"
+    assert not rec.get("probed"), "left un-probed so a later sweep can retry"
+    assert not rec.get("supports_reasoning")
+
+
+@pytest.mark.asyncio
+async def test_malformed_endpoints_response_keeps_the_paid_result():
+    probe = _probe()
+    # The paid calls already succeeded. A malformed /endpoints body (valid HTTP, junk
+    # JSON) must cost only the PIN, never the observed capability.
+    def bad_get(url, timeout=None):
+        class R:
+            def raise_for_status(self): return None
+            def json(self): raise ValueError("not json")
+        return R()
+
+    rec = await probe.probe_model(
+        _entry("g/m"), "k",
+        transport=_mock_transport({None: 0, "low": 10, "medium": 20, "high": 30},
+                                  served_provider="OpenAI"),
+        get=bad_get,
+    )
+    assert rec["probed"] is True
+    assert rec["control_surface"] == "levels"
+    assert rec["provider_pinned"] is None
+
+
+def test_missing_metadata_on_one_call_is_not_read_as_a_router_move():
+    probe = _probe()
+    # Metadata can be absent per call; unknown must not be mistaken for "different",
+    # or a transient omission would discard a whole model's capability.
+    assert probe._differs(None, "OpenAI") is False
+    assert probe._differs("OpenAI", None) is False
+    assert probe._differs("openai", "OpenAI") is False   # normalised
+    assert probe._differs("Together", "OpenAI") is True

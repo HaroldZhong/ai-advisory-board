@@ -36,6 +36,7 @@ from . import config
 from .endpoint_pricing import (
     EndpointPricingError,
     fetch_endpoints,
+    normalize_provider_name,
     price_endpoint,
     resolve_served_endpoint_tag,
 )
@@ -182,6 +183,15 @@ async def _post(model_id, provider_tag, api_key, effort, transport):
         return resp.json()
 
 
+def _differs(observed: Optional[str], expected: Optional[str]) -> bool:
+    """True only when BOTH names are known and they name different providers. An
+    absent name is 'unknown', not 'different' -- metadata can be missing per call and
+    that must not be misread as the router moving."""
+    if not observed or not expected:
+        return False
+    return normalize_provider_name(observed) != normalize_provider_name(expected)
+
+
 def served_provider_name(response: Dict[str, Any]) -> Optional[str]:
     """DISPLAY NAME of the endpoint that actually served this response, from the
     router metadata the probe opts into (`X-OpenRouter-Metadata: enabled`).
@@ -229,22 +239,42 @@ async def probe_model(
     levels = tuple(levels)
     extraction = model_entry.get("reasoning_extraction")
 
+    # 1) Baseline goes out UNPINNED so OpenRouter picks the endpoint it would pick
+    #    for real traffic.
     baseline_response = await _post(model_id, None, api_key, None, tx)
     baseline = reasoning_signal(baseline_response, extraction)
-    level_signals: Dict[str, int] = {}
-    for level in levels:
-        level_signals[level] = reasoning_signal(
-            await _post(model_id, None, api_key, level, tx), extraction
-        )
-
     served = served_provider_name(baseline_response)
+
+    # 2) Resolve that endpoint EXACTLY and pin the remaining calls to it. Every level
+    #    must be measured on the SAME endpoint as the one we are about to record: a
+    #    capability observed on provider B but recorded against provider A would make
+    #    runtime send A a reasoning shape that was never verified there. This pin is
+    #    an OBSERVED tag (it just served), not a guess -- the failure mode that made
+    #    the old up-front pin unusable does not apply.
     try:
         kwargs = {} if get is None else {"get": get}
         provider_tag = resolve_served_endpoint_tag(model_id, served, **kwargs)
-    except (EndpointPricingError, httpx.HTTPError):
-        # Capability was still observed; only the pin is unknown. Record it unpinned
-        # rather than discarding a valid probe result.
+    except Exception:
+        # Best-effort enrichment only. The paid calls have already succeeded, so no
+        # lookup failure -- HTTP, malformed JSON, unexpected shape -- may discard an
+        # observed capability. Degrade to no pin.
         provider_tag = None
+
+    level_signals: Dict[str, int] = {}
+    mixed_endpoints = False
+    for level in levels:
+        response = await _post(model_id, provider_tag, api_key, level, tx)
+        if provider_tag is None and _differs(served_provider_name(response), served):
+            # Unpinnable AND the router moved between calls: these signals cannot be
+            # attributed to one endpoint.
+            mixed_endpoints = True
+        level_signals[level] = reasoning_signal(response, extraction)
+
+    if mixed_endpoints:
+        # Publishing a surface here would claim a capability for endpoints that were
+        # never measured together. Record UNKNOWN and leave it un-probed so a later
+        # sweep can retry, rather than fabricating an attribution.
+        return unknown_record(model_id, model_fingerprint(model_entry))
 
     probed_at = (now or datetime.now(timezone.utc)).isoformat()
     return classify_capability(
