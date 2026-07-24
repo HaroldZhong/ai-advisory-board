@@ -57,6 +57,7 @@ jobs:
           tests/test_reasoning_stream_integration.py
           tests/test_auto_routing_heuristics.py
           tests/test_thinking_effort_backend.py
+          tests/test_thinking_effort_ladder.py
           tests/test_build_exe.py
           tests/test_desktop_app_route.py
           tests/test_conversation_export.py

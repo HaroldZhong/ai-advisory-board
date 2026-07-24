@@ -12,6 +12,7 @@ import json
 import asyncio
 
 from . import app_paths, config, storage
+from .thinking_effort import THINKING_EFFORT_ORDER, VALID_THINKING_EFFORTS
 from .council import generate_conversation_title, stage1_collect_responses, stage1_collect_responses_progressive, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, chat_with_chairman, run_tool_steward_phase
 from .turn_pipeline import run_turn
 from .conversation_export import (
@@ -326,8 +327,6 @@ class SendMessageRequest(BaseModel):
 VALID_EXECUTION_MODES = {"auto", "quick", "standard", "research"}
 VALID_RAG_PRESETS = {"auto", "low", "medium", "high", "max"}
 VALID_MODEL_TIERS = {"auto", "budget", "mid", "premium"}
-VALID_THINKING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
-THINKING_EFFORT_ORDER = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
 THINKING_EFFORT_MAX_BY_PRESET = {"budget": "medium"}
 
 
