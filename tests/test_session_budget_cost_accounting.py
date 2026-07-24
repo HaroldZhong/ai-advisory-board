@@ -480,6 +480,12 @@ async def test_budget_warning_survives_a_billed_delta_after_the_base_crossing(mo
 
 
 # --- D1 reasoning-token accounting gate (v1.3.0 plan Phase D) ------------------
+# NOTE (correction #4): the authoritative TURN TOTAL is usage.cost (see the
+# "usage.cost is the authoritative turn total" tests above). The inside-vs-separate
+# classification below is REGRESSION + DISPLAY evidence -- "how much of the billed
+# cost was reasoning" -- NOT a recompute of the billed total. It never overrides
+# usage.cost.
+#
 # The load-bearing gate is test_reasoning_usage_fixture_billing_relationship: it
 # decides inside-vs-separate billing from a REAL captured usage payload, using
 # OpenRouter's billed `cost` as the authority (token containment can't tell them
@@ -538,6 +544,117 @@ def test_turn_cost_ignores_reasoning_token_field_today(monkeypatch):
         stage3_result={"model": "openai/gpt-4o-mini", "usage": usage_with_reasoning},
     )
     assert with_reasoning == pytest.approx(without)
+
+
+# --- D1: usage.cost is the authoritative turn total (correction #4) ------------
+# OpenRouter returns the billed per-request cost in usage.cost on every response.
+# calculate_cost prefers it, so the turn total is the amount actually charged;
+# registry token pricing is used ONLY when usage.cost is absent.
+
+
+def test_calculate_cost_prefers_billed_usage_cost(monkeypatch):
+    """When usage.cost is present it is authoritative -- NOT recomputed from
+    registry token pricing, even if the two disagree."""
+    main = import_main(monkeypatch)
+    # Registry would price this at 0.15 + 0.6 = 0.75; the billed cost differs.
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000, "cost": 0.884}
+    assert main.calculate_cost(usage, "openai/gpt-4o-mini") == pytest.approx(0.884)
+
+
+def test_calculate_cost_falls_back_to_registry_without_billed_cost(monkeypatch):
+    """No usage.cost -> registry token pricing (unchanged legacy behaviour)."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    assert main.calculate_cost(usage, "openai/gpt-4o-mini") == pytest.approx(0.15 + 0.6)
+
+
+def test_calculate_cost_billed_authoritative_without_registry_model(monkeypatch):
+    """usage.cost stands on its own -- a model absent from the registry (no
+    pricing) still yields the billed cost, not 0."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 10, "completion_tokens": 10, "cost": 0.0123}
+    assert main.calculate_cost(usage, "provider/not-in-registry") == pytest.approx(0.0123)
+
+
+def test_calculate_cost_zero_billed_cost_is_authoritative(monkeypatch):
+    """A genuinely free call reports cost 0.0; that is authoritative, not a
+    trigger to fall back to registry pricing."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000, "cost": 0.0}
+    assert main.calculate_cost(usage, "openai/gpt-4o-mini") == pytest.approx(0.0)
+
+
+def test_calculate_cost_ignores_anomalous_billed_cost(monkeypatch):
+    """A non-numeric or negative cost is anomalous, not a valid billed total, so
+    it falls back to registry pricing rather than corrupting the meter."""
+    main = import_main(monkeypatch)
+    base = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    for bad in (-1.0, "0.5", None, True):
+        assert main.calculate_cost({**base, "cost": bad}, "openai/gpt-4o-mini") == pytest.approx(0.75)
+
+
+def test_turn_cost_sums_authoritative_billed_costs(monkeypatch):
+    """A council turn whose every call reports usage.cost totals the sum of those
+    billed costs -- the authoritative turn total -- not the registry recompute."""
+    main = import_main(monkeypatch)
+    total = main.calculate_turn_cost(
+        mode="council",
+        stage1_results=[{"model": "openai/gpt-4o-mini",
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.10}}],
+        stage2_results=[{"model": "openai/gpt-4o-mini",
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.20}}],
+        stage3_result={"model": "openai/gpt-4o-mini",
+                       "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.30}},
+        extra_usage_records=[{"model": "perplexity/sonar",
+                              "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.05}}],
+    )
+    assert total == pytest.approx(0.10 + 0.20 + 0.30 + 0.05)
+
+
+def test_turn_cost_mixes_billed_and_registry_fallback(monkeypatch):
+    """Per-record: authoritative where usage.cost is present, registry fallback
+    where it is absent, summed into one turn total."""
+    main = import_main(monkeypatch)
+    total = main.calculate_turn_cost(
+        mode="council",
+        stage1_results=[{"model": "openai/gpt-4o-mini",
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.40}}],
+        # no usage.cost -> registry: 1M/1M @ gpt-4o-mini = 0.75
+        stage3_result={"model": "openai/gpt-4o-mini",
+                       "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}},
+    )
+    assert total == pytest.approx(0.40 + 0.75)
+
+
+def test_sum_usage_preserves_billed_cost_through_merge(monkeypatch):
+    """Codex PR#90 P2: when one index call triggers both compaction tiers, the two
+    utility usage records are merged via rag._sum_usage before a single
+    calculate_cost. Both legs carry OpenRouter's billed usage.cost, so the merged
+    record must keep the SUMMED billed cost -- otherwise the already-billed calls
+    fall back to registry pricing and diverge from real charges."""
+    main = import_main(monkeypatch)
+    from backend.rag import _sum_usage
+
+    a = {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.011}
+    b = {"prompt_tokens": 20, "completion_tokens": 8, "cost": 0.022}
+    merged = _sum_usage(a, b)
+    assert merged["prompt_tokens"] == 30 and merged["completion_tokens"] == 13
+    assert merged["cost"] == pytest.approx(0.033)
+    # The billed total survives the single calculate_cost the caller makes.
+    assert main.calculate_cost(merged, "google/gemini-2.5-flash") == pytest.approx(0.033)
+
+
+def test_sum_usage_omits_cost_when_a_leg_is_unbilled(monkeypatch):
+    """If a leg lacks a billed cost, the merge omits cost so calculate_cost
+    registry-prices the summed tokens rather than under-counting the billed leg."""
+    from backend.rag import _sum_usage
+
+    merged = _sum_usage(
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.011},
+        {"prompt_tokens": 20, "completion_tokens": 8},  # no billed cost
+    )
+    assert "cost" not in merged
+    assert merged["prompt_tokens"] == 30 and merged["completion_tokens"] == 13
 
 
 def _billing_classifier():

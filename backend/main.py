@@ -34,11 +34,28 @@ from .reasoning_stream import ReasoningStreamState
 # Initialize RAG system
 rag_system = CouncilRAG()
 
-def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
-    """Calculate cost based on usage and model pricing."""
-    if not usage or not model_id:
+def calculate_cost(usage: Dict[str, Any], model_id: str) -> float:
+    """Cost for one usage record.
+
+    OpenRouter reports the AUTHORITATIVE per-request charge in `usage.cost`
+    (always returned now that `usage:{include:true}` is deprecated). Prefer it, so
+    the turn total is the amount actually billed whenever OpenRouter provides it;
+    fall back to registry token pricing only when the billed cost is absent. This
+    also means endpoint-price capture (the D1 fixture) is regression/display
+    evidence, never the path that recomputes the billed total.
+    """
+    if not usage:
         return 0.0
-    
+
+    # Authoritative billed cost when present (0.0 for a genuinely free call is a
+    # valid authoritative value; a non-numeric/negative anomaly falls through).
+    billed = usage.get('cost')
+    if isinstance(billed, (int, float)) and not isinstance(billed, bool) and billed >= 0:
+        return float(billed)
+
+    if not model_id:
+        return 0.0
+
     from .config import AVAILABLE_MODELS
     model_config = next((m for m in AVAILABLE_MODELS if m['id'] == model_id), None)
     pricing = model_config.get('pricing', {}) if model_config else None
@@ -47,10 +64,10 @@ def calculate_cost(usage: Dict[str, int], model_id: str) -> float:
 
     input_price = pricing.get('input', 0.0)
     output_price = pricing.get('output', 0.0)
-    
+
     prompt_tokens = usage.get('prompt_tokens', 0)
     completion_tokens = usage.get('completion_tokens', 0)
-    
+
     cost = (prompt_tokens / 1_000_000) * input_price + (completion_tokens / 1_000_000) * output_price
     return cost
 
