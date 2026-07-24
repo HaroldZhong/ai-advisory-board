@@ -7,6 +7,11 @@ from typing import Any, Dict
 
 REGISTRY_PATH = Path(__file__).with_name("model_registry.json")
 
+# Valid reasoning-effort levels a preset may declare as its default. Kept local to
+# avoid a circular import with backend.main (which imports the registry); the
+# single-source effort ladder is consolidated in B1.
+VALID_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+
 
 def load_model_registry(path: Path = REGISTRY_PATH) -> Dict[str, Any]:
     """Load the curated model registry from JSON."""
@@ -69,6 +74,21 @@ def _validate_presets(registry: Dict[str, Any]) -> None:
             for model_id in council_models:
                 if models_by_id[model_id].get("supports_zdr") is not True:
                     raise ValueError(f"Preset {preset_id} council model does not support ZDR: {model_id}")
+
+        # v1.3.0 A1: an out-of-range default_reasoning_effort previously slipped
+        # through and silently fell back to "medium" at runtime (audit gap). Fail
+        # load with a clear message instead. An ABSENT key is fine (runtime defaults
+        # to "medium"); a PRESENT value must be a valid effort string. Check the type
+        # before the set membership test so a null/list/dict fails with this clear
+        # ValueError rather than crashing (None -> runtime THINKING_EFFORT_ORDER[None]
+        # KeyError; list/dict -> "unhashable type" TypeError on the `in` test).
+        if "default_reasoning_effort" in preset:
+            default_effort = preset["default_reasoning_effort"]
+            if not isinstance(default_effort, str) or default_effort not in VALID_REASONING_EFFORTS:
+                raise ValueError(
+                    f"Preset {preset_id} default_reasoning_effort {default_effort!r} is not one of "
+                    f"{sorted(VALID_REASONING_EFFORTS)}"
+                )
 
     registry["presets"] = sorted(
         registry.get("presets", []),
