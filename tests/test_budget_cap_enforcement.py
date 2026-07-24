@@ -1,5 +1,4 @@
 import importlib
-import inspect
 
 import pytest
 
@@ -163,21 +162,32 @@ async def test_default_flip_does_not_migrate_existing_conversations(monkeypatch,
     assert exc.value.status_code == 409
 
 
-def test_budget_path_raises_409_exactly_once_in_source(monkeypatch):
-    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): after the overage
-    default flip, the hard budget cap must remain a SINGLE opt-in 409 enforcement
-    point in the budget path.
+def test_budget_path_single_enforcement_point_respects_allow_overage(monkeypatch, tmp_path):
+    """D3 load-bearing guard (plan §D3 Tests): the budget path must have a SINGLE
+    opt-in 409 enforcement point that honors allow_overage.
 
-    Behavioral tests all exercise the ONE current raise site, so a re-introduced
-    second enforcement branch would silently pass them. Scoped to
-    ensure_budget_allows_new_turn (the budget-enforcement function that raises the
-    409) so an unrelated non-budget 409 elsewhere in main.py does not false-trip the
-    guard; matched on the bare '409' token so a symbolic re-introduction
-    (status.HTTP_409_CONFLICT) is caught too, not just the literal status_code=409."""
+    Exercises the real shared pre-flight -- prepare_turn, which BOTH send endpoints
+    call and which invokes ensure_budget_allows_new_turn (main.py:953) -- for an
+    OVER-BUDGET allow_overage=True conversation, and asserts it does NOT 409. A
+    hard-cap branch re-introduced anywhere in the budget path (the helper OR
+    prepare_turn) would block this allow-overage turn; the allow_overage=False reject
+    tests (test_sync_send_rejects_*, test_stream_send_rejects_*) pin the ONE opt-in
+    raise from the other side.
+
+    Chosen over a source-text 409 count because that cannot be both precise AND
+    complete: scoped to ensure_budget_allows_new_turn it misses a duplicate branch in
+    prepare_turn/the endpoints (Codex #109 R2); scoped to the whole module it
+    false-trips on any unrelated non-budget 409 (Codex #109 R1). This behavioral guard
+    has neither flaw."""
     main = import_main(monkeypatch)
-    source = inspect.getsource(main.ensure_budget_allows_new_turn)
-    count = source.count("409")
-    assert count == 1, (
-        f"expected exactly one 409 (the opt-in budget cap) in ensure_budget_allows_new_turn, "
-        f"found {count} -- a re-introduced enforcement branch would revert the D3 default flip"
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conversation_id = "conv-allow-overage-preflight"
+    create_budgeted_conversation(main, conversation_id, allow_overage=True)  # spent 1.0 / 1.0
+
+    # prepare_turn is the sync pre-flight both endpoints run; over-budget +
+    # allow_overage must reach the end without raising the opt-in 409.
+    _conversation, mode, _zdr, _effort, _is_first = main.prepare_turn(
+        conversation_id,
+        main.SendMessageRequest(content="over budget but allowed", mode="chat"),
     )
+    assert mode == "chat"
