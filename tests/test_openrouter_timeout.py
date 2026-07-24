@@ -249,9 +249,10 @@ async def test_stage3_high_effort_reaches_flash_lite_uncapped_after_b3(monkeypat
     symbol-name check can't catch an inline or renamed re-cap, so this exercises
     stage3_synthesize_final with the incident chairman (google/gemini-2.5-flash-lite)
     at HIGH effort and asserts the chairman's query_model call receives 'high'
-    UNCAPPED. Today the cap downgrades it to 'medium', so this SKIPS; once B3
-    removes the cap it becomes a hard assertion, so no inline/renamed downgrade
-    can silently pass. Green here is a prerequisite for the B3 merge (plan: B3
+    UNCAPPED. With B3 landed the legacy cap/floor symbols are gone, so this
+    hard-asserts (the structural skip below is a historical fallback that no longer
+    fires); an inline or renamed re-cap after B3 fails the assertion rather than
+    silently passing. Green here was a prerequisite for the B3 merge (plan: B3
     gated on C1)."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
