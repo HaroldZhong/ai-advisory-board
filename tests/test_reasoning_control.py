@@ -22,12 +22,13 @@ def test_levels_full_support_passes_through(level, expected):
     assert d == {"kind": "effort", "effort": expected}
 
 
-def test_levels_snaps_missing_medium_to_nearest():
+def test_levels_snaps_missing_medium_to_lower_rung_on_tie():
     rc = _rc()
-    # supported {low, high}; medium (rank 2) is equidistant -> nearest picks low (rank 1)
-    d = rc.translate_reasoning_control(_cap("levels", levels=["low", "high"]), "medium")
-    assert d["kind"] == "effort" and d["effort"] in {"low", "high"}
-    # high snaps to high, low to low
+    # supported {low, high}; medium is equidistant -> ties resolve to the LOWER rung
+    assert rc.translate_reasoning_control(_cap("levels", levels=["low", "high"]), "medium")["effort"] == "low"
+    # order-independent: a descending capability list must NOT flip the tie to high
+    assert rc.translate_reasoning_control(_cap("levels", levels=["high", "low"]), "medium")["effort"] == "low"
+    # an exact-member level passes straight through
     assert rc.translate_reasoning_control(_cap("levels", levels=["low", "high"]), "high")["effort"] == "high"
 
 
@@ -54,6 +55,15 @@ def test_budget_maps_level_to_clamped_tokens():
     # clamp: a tiny max floors at min
     small = _cap("budget", budget={"min": 500, "max": 500})
     assert rc.translate_reasoning_control(small, "low")["max_tokens"] == 500
+
+
+def test_budget_without_max_drops_instead_of_null_tokens():
+    rc = _rc()
+    # no budget.max -> no valid token budget -> drop, never {"max_tokens": None}
+    d = rc.translate_reasoning_control(_cap("budget", budget={"min": 1000}), "high")
+    assert d["kind"] == "drop" and "max token cap" in d["reason"]
+    # whole budget block absent -> same drop
+    assert rc.translate_reasoning_control(_cap("budget"), "high")["kind"] == "drop"
 
 
 # --- rung b: onoff -> explicit=on, Auto=native default -------------------------

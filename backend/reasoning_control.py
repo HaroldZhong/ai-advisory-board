@@ -25,11 +25,17 @@ _EFFORT_RATIO = {"minimal": 0.1, "low": 0.2, "medium": 0.5, "high": 0.8, "xhigh"
 
 
 def _snap_to_supported(level: str, supported):
-    """Nearest supported level to `level` by ordinal distance (rung d)."""
+    """Nearest supported level to `level` by ordinal distance (rung d). A distance
+    tie resolves to the LOWER rung (cheaper / less latency), independent of the
+    order the capability lists its supported levels in."""
     if level in supported:
         return level
     target = THINKING_EFFORT_ORDER.get(level, THINKING_EFFORT_ORDER["medium"])
-    return min(supported, key=lambda s: abs(THINKING_EFFORT_ORDER.get(s, 99) - target))
+
+    def _rank(s):
+        return THINKING_EFFORT_ORDER.get(s, 99)
+
+    return min(supported, key=lambda s: (abs(_rank(s) - target), _rank(s)))
 
 
 def _level_to_budget(level: str, budget: Dict[str, Any]) -> Optional[int]:
@@ -66,7 +72,12 @@ def translate_reasoning_control(
     if surface == "none":
         return {"kind": "drop", "reason": "no reasoning control"}
     if surface == "budget":
-        return {"kind": "budget", "max_tokens": _level_to_budget(level, (capability or {}).get("budget") or {})}
+        max_tokens = _level_to_budget(level, (capability or {}).get("budget") or {})
+        if max_tokens is None:
+            # A budget model with no known max cap can't yield a valid token budget;
+            # drop rather than emit an out-of-contract {"max_tokens": None} decision.
+            return {"kind": "drop", "reason": "budget model without a known max token cap"}
+        return {"kind": "budget", "max_tokens": max_tokens}
     if surface == "levels":
         supported = (capability or {}).get("levels") or list(THINKING_EFFORT_LEVELS)
         return {"kind": "effort", "effort": _snap_to_supported(level, supported)}
