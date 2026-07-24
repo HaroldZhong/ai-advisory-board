@@ -21,12 +21,19 @@ Classification (brainstorm §2.4 steps 3–4):
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import httpx
 
 from .reasoning_capability import model_fingerprint, unknown_record
+
+
+class CeilingError(RuntimeError):
+    """Refuse to probe: the authorized spend ceiling is unset or cannot be
+    guaranteed for the requested sweep. This is the code embodiment of the
+    PAID PROBE AUTHORIZATION -- no paid call happens past this guard."""
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 CANDIDATE_LEVELS = ("low", "medium", "high")
@@ -154,3 +161,87 @@ async def probe_model(
         model_id, model_fingerprint(model_entry), provider_tag,
         baseline, level_signals, probed_at=probed_at,
     )
+
+
+# --- A4: populate & cache the matrix (resumable, ceiling-guarded) -------------
+
+def models_needing_probe(
+    registry_models: Iterable[Dict[str, Any]],
+    existing: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Resumable set: skip models already probed whose stored fingerprint still
+    matches the registry entry (fresh); return the rest (unprobed or stale)."""
+    needing: List[Dict[str, Any]] = []
+    for m in registry_models:
+        mid = m.get("id")
+        if not mid:
+            continue
+        rec = existing.get(mid)
+        if rec and rec.get("probed") and rec.get("fingerprint") == model_fingerprint(m):
+            continue
+        needing.append(m)
+    return needing
+
+
+def estimate_max_probe_cost(num_models: int, levels: Iterable[str], max_cost_per_call_usd: float) -> float:
+    """Upper bound on sweep spend: each model makes 1 baseline + one call per level,
+    each capped at `max_cost_per_call_usd`."""
+    calls_per_model = 1 + len(tuple(levels))
+    return num_models * calls_per_model * max_cost_per_call_usd
+
+
+async def run_probe_sweep(
+    registry_models: List[Dict[str, Any]],
+    provider_of: Callable[[Dict[str, Any]], str],
+    api_key: str,
+    *,
+    max_probe_usd: Optional[float],
+    max_cost_per_call_usd: float,
+    existing: Optional[Dict[str, Dict[str, Any]]] = None,
+    levels: Iterable[str] = CANDIDATE_LEVELS,
+    transport=None,
+    concurrency: int = 4,
+    now: Optional[datetime] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Probe every model that needs it, resumably, and return the merged records.
+
+    SPEND-CEILING GUARD (PAID PROBE AUTHORIZATION): before any paid call, refuse
+    if the authorized ceiling is unset, or if the worst-case sweep cost cannot be
+    guaranteed under it. One model erroring degrades to a skipped row (its record
+    stays unknown) rather than aborting the sweep. Bounded concurrency; the caller
+    persists the result via reasoning_capability.save_capabilities.
+    """
+    levels = tuple(levels)
+    merged = dict(existing or {})
+    needing = models_needing_probe(registry_models, merged)
+
+    if max_probe_usd is None:
+        raise CeilingError(
+            "no authorized probe spend ceiling (<MAX_PROBE_USD> is unset) -- refusing to probe"
+        )
+    worst_case = estimate_max_probe_cost(len(needing), levels, max_cost_per_call_usd)
+    if worst_case > max_probe_usd:
+        raise CeilingError(
+            f"worst-case probe spend ${worst_case:.4f} ({len(needing)} models x "
+            f"{1 + len(levels)} calls x ${max_cost_per_call_usd}/call) exceeds the authorized "
+            f"ceiling ${max_probe_usd:.4f} -- refusing to probe"
+        )
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(model_entry: Dict[str, Any]):
+        async with sem:
+            try:
+                rec = await probe_model(
+                    model_entry, provider_of(model_entry), api_key,
+                    levels=levels, transport=transport, now=now,
+                )
+                return model_entry["id"], rec
+            except Exception:
+                # Degrade per-model: a single failure must not abort the matrix.
+                return model_entry["id"], None
+
+    for mid, rec in await asyncio.gather(*[_one(m) for m in needing]):
+        if rec is not None:
+            merged[mid] = rec
+    return merged

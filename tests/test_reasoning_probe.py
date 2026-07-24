@@ -134,3 +134,104 @@ async def test_probe_model_never_hits_network_without_transport(monkeypatch):
     tx = _mock_transport({None: 5, "low": 5, "medium": 5, "high": 5})
     rec = await probe.probe_model(entry, "openai", "k", transport=tx)
     assert rec["native_default_on"] is True and rec["control_surface"] == "onoff"
+
+
+# --- A4: sweep orchestration (resumable, ceiling-guarded) --------------------
+
+def _entry(mid, extraction="field"):
+    return {"id": mid, "supports_reasoning": True, "reasoning_extraction": extraction}
+
+
+def test_models_needing_probe_skips_fresh_includes_stale_and_unprobed():
+    probe = _probe()
+    a, b, c = _entry("a"), _entry("b"), _entry("c")
+    existing = {
+        "a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a)},   # fresh
+        "b": {"model_id": "b", "probed": True, "fingerprint": "STALE"},                        # stale
+        # c absent -> unprobed
+    }
+    needing = {m["id"] for m in probe.models_needing_probe([a, b, c], existing)}
+    assert needing == {"b", "c"}
+
+
+def test_estimate_max_probe_cost():
+    probe = _probe()
+    # 2 models x (1 baseline + 3 levels) x $0.01 = $0.08
+    assert probe.estimate_max_probe_cost(2, ("low", "medium", "high"), 0.01) == pytest.approx(0.08)
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_without_a_ceiling():
+    probe = _probe()
+    with pytest.raises(probe.CeilingError, match="unset"):
+        await probe.run_probe_sweep(
+            [_entry("a")], lambda m: "openai", "k",
+            max_probe_usd=None, max_cost_per_call_usd=0.01,
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_when_worst_case_exceeds_ceiling():
+    probe = _probe()
+    with pytest.raises(probe.CeilingError, match="exceeds the authorized ceiling"):
+        # 3 models x 4 calls x $0.10 = $1.20 worst case, ceiling $0.50
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b"), _entry("c")], lambda m: "openai", "k",
+            max_probe_usd=0.50, max_cost_per_call_usd=0.10,
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_probes_within_ceiling_and_merges():
+    probe = _probe()
+    tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
+    merged = await probe.run_probe_sweep(
+        [_entry("a"), _entry("b")], lambda m: "openai", "k",
+        max_probe_usd=1.00, max_cost_per_call_usd=0.01, transport=tx,
+    )
+    assert merged["a"]["control_surface"] == "levels"
+    assert merged["b"]["control_surface"] == "levels"
+
+
+@pytest.mark.asyncio
+async def test_sweep_is_resumable_skips_fresh_rows():
+    probe = _probe()
+    a, b = _entry("a"), _entry("b")
+    existing = {"a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a),
+                      "control_surface": "onoff"}}
+    tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
+    merged = await probe.run_probe_sweep(
+        [a, b], lambda m: "openai", "k",
+        max_probe_usd=1.00, max_cost_per_call_usd=0.01, existing=existing, transport=tx,
+    )
+    # a is fresh -> untouched; b is newly probed
+    assert merged["a"]["control_surface"] == "onoff"
+    assert merged["b"]["control_surface"] == "levels"
+
+
+@pytest.mark.asyncio
+async def test_sweep_degrades_per_model_on_error():
+    probe = _probe()
+
+    def flaky_transport(request):
+        import json as _json
+        body = _json.loads(request.content.decode("utf-8"))
+        if body["model"] == "bad":
+            return httpx.Response(500, json={"error": "boom"})
+        effort = (body.get("reasoning") or {}).get("effort")
+        rt = {None: 0, "low": 10, "medium": 20, "high": 30}.get(effort, 0)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}},
+        })
+
+    merged = await probe.run_probe_sweep(
+        [_entry("bad"), _entry("good")], lambda m: "openai", "k",
+        max_probe_usd=1.00, max_cost_per_call_usd=0.01,
+        transport=httpx.MockTransport(flaky_transport),
+    )
+    # one failing model does not abort the sweep; the good one still lands
+    assert "bad" not in merged
+    assert merged["good"]["control_surface"] == "levels"
