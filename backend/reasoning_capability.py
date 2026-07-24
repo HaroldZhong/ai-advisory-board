@@ -127,11 +127,14 @@ def stale_by_age(
 
 def save_capabilities(records: Iterable[Dict[str, Any]], path: Path = SIDECAR_PATH) -> None:
     """Write records to the checked-in sidecar. A2 owns writing real values; this
-    is the persistence seam (do not hand-edit capability values)."""
+    is the persistence seam (do not hand-edit capability values). Accepts either a
+    list of records OR the model_id->record map that load_capabilities() returns,
+    so A2's load -> mutate -> save round-trips without a shape mismatch."""
+    values = records.values() if isinstance(records, dict) else records
     payload = {
         "_doc": "Probe-written reasoning-capability sidecar (v1.3.0 A1/A2). Do not "
                 "hand-edit values; A2's active-probe writes them.",
         "written_at": datetime.now(timezone.utc).isoformat(),
-        "capabilities": {rec["model_id"]: rec for rec in records},
+        "capabilities": {rec["model_id"]: rec for rec in values},
     }
     Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
