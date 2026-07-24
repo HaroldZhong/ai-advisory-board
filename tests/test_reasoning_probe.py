@@ -26,11 +26,17 @@ def test_signal_falls_back_to_reasoning_text():
     assert probe.reasoning_signal(resp) >= 1
 
 
-def test_signal_detects_billed_vs_visible_gap():
+def test_signal_ignores_billed_vs_visible_gap():
     probe = _probe()
-    resp = {"choices": [{"message": {"content": "five"}}],  # 1 visible token
-            "usage": {"completion_tokens": 400}}            # huge hidden gap
-    assert probe.reasoning_signal(resp) > 0
+    # Honesty guard: a large billed-vs-visible token gap, with NO reasoning_tokens
+    # and NO message.reasoning, is NOT treated as reasoning. Comparing billed tokens
+    # to visible words has no reliable unit, so verbose ordinary output must not be
+    # misread as hidden reasoning.
+    terse = {"choices": [{"message": {"content": "five"}}], "usage": {"completion_tokens": 400}}
+    verbose = {"choices": [{"message": {"content": " ".join(["word"] * 200)}}],
+               "usage": {"completion_tokens": 260}}  # 260 tokens vs 200 words -> old false positive
+    assert probe.reasoning_signal(terse) == 0
+    assert probe.reasoning_signal(verbose) == 0
 
 
 def test_signal_zero_when_no_reasoning():
@@ -169,6 +175,38 @@ async def test_sweep_refuses_without_a_ceiling():
             max_probe_usd=None, max_cost_per_call_usd=0.01,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_cost", [0, -0.01])
+async def test_sweep_refuses_when_per_call_cost_not_positive(bad_cost):
+    probe = _probe()
+    # A non-positive per-call cost zeroes the worst-case estimate; without this
+    # guard `0 > max_probe_usd` is False and the full paid sweep would fire.
+    with pytest.raises(probe.CeilingError, match="max_cost_per_call_usd"):
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            max_probe_usd=5.0, max_cost_per_call_usd=bad_cost,
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_probe_sends_bounded_max_tokens():
+    probe = _probe()
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content.decode("utf-8"))
+        seen.append(body.get("max_tokens"))
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 5, "completion_tokens_details": {"reasoning_tokens": 3}},
+        })
+
+    await probe.probe_model(_entry("m/x"), "openai", "k", transport=httpx.MockTransport(handler))
+    # every probe call (baseline + each level) bounds output so per-call cost is finite
+    assert seen and all(mt == probe.PROBE_MAX_TOKENS for mt in seen)
 
 
 @pytest.mark.asyncio

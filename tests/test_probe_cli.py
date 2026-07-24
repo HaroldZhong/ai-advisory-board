@@ -21,6 +21,15 @@ def test_cli_rejects_nonpositive_ceiling(monkeypatch):
     assert cli.main(["--max-probe-usd", "0"]) == 2
 
 
+@pytest.mark.parametrize("bad", ["0", "-0.01"])
+def test_cli_rejects_nonpositive_per_call_cost(monkeypatch, bad):
+    """A non-positive --max-cost-per-call zeroes the worst-case estimate and would
+    slip past the ceiling; the CLI must reject it before any paid call."""
+    cli = _cli()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    assert cli.main(["--max-probe-usd", "5", "--max-cost-per-call", bad]) == 2
+
+
 def test_cli_refuses_without_api_key(monkeypatch):
     cli = _cli()
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

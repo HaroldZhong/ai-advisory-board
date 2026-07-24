@@ -73,6 +73,11 @@ def main(argv=None) -> int:
     if args.max_probe_usd <= 0:
         print("error: --max-probe-usd must be positive", file=sys.stderr)
         return 2
+    if args.max_cost_per_call <= 0:
+        # A non-positive per-call cost zeroes the worst-case estimate and would
+        # defeat the ceiling; run_probe_sweep also re-checks this.
+        print("error: --max-cost-per-call must be positive", file=sys.stderr)
+        return 2
     if not os.environ.get("OPENROUTER_API_KEY"):
         print("error: OPENROUTER_API_KEY not set", file=sys.stderr)
         return 1

@@ -13,7 +13,10 @@ No paid call happens on import or in tests.
 
 Classification (brainstorm §2.4 steps 3–4):
   * reasoning signal, in reliability order: usage.reasoning_tokens > 0 (strongest);
-    else message.reasoning/reasoning_details present; else billed-vs-visible gap.
+    else message.reasoning/reasoning_details present; else no observed reasoning.
+    (We do NOT infer reasoning from a billed-vs-visible token gap: without a real
+    tokenizer, comparing billed tokens to visible words misreads verbose ordinary
+    output as hidden reasoning -- a false positive the honesty guard must avoid.)
   * baseline (no effort) reasoning => native_default_on (for onoff models).
   * signal rising low->med->high => `levels` (varies_effort); flat & non-zero =>
     `onoff`; no signal anywhere => `none`. Honesty guard: a "supported" surface is
@@ -41,9 +44,10 @@ PROBE_PROMPT = (
     "Reason step by step, then answer: a bat and ball cost $1.10; the bat costs "
     "$1.00 more than the ball. How much is the ball?"
 )
-# A billed-vs-visible gap only counts as hidden reasoning past this many tokens,
-# so ordinary output-length noise is not mistaken for reasoning.
-_GAP_THRESHOLD = 50
+# Hard per-call output bound so a paid probe call's cost is finite and the spend
+# ceiling is enforceable (not just an assumption). High enough that low/med/high
+# effort still differentiate by reasoning-token count for `levels` models.
+PROBE_MAX_TOKENS = 8000
 
 _probe_transport = None  # httpx.MockTransport injection point for tests; None = real net.
 
@@ -62,12 +66,10 @@ def reasoning_signal(response: Dict[str, Any]) -> int:
         # Text present but no token count -> reasoning happened, magnitude unknown.
         return 1
 
-    # Billed-vs-visible gap (Horvat): completion tokens far beyond visible content.
-    completion = usage.get("completion_tokens")
-    content = message.get("content") or ""
-    visible = len(content.split())
-    if isinstance(completion, (int, float)) and (completion - visible) > _GAP_THRESHOLD:
-        return int(completion - visible)
+    # No reliable reasoning signal. We deliberately do NOT infer reasoning from a
+    # billed-vs-visible token gap: visible content would have to be tokenized to
+    # compare, and any word/char estimate misclassifies verbose ordinary output as
+    # hidden reasoning. The honest reading is "did not observe reasoning".
     return 0
 
 
@@ -117,6 +119,9 @@ async def _post(model_id, provider_tag, api_key, effort, transport):
         "messages": [{"role": "user", "content": PROBE_PROMPT}],
         # Pin the exact endpoint tag; billing + support are provider-specific (#6).
         "provider": {"order": [provider_tag], "allow_fallbacks": False},
+        # Bound completion (incl. reasoning) tokens so per-call cost is finite and
+        # the sweep's spend ceiling is enforceable rather than assumed.
+        "max_tokens": PROBE_MAX_TOKENS,
     }
     if effort is not None:
         # OpenRouter's normalized reasoning interface (correction #1).
@@ -184,8 +189,11 @@ def models_needing_probe(
 
 
 def estimate_max_probe_cost(num_models: int, levels: Iterable[str], max_cost_per_call_usd: float) -> float:
-    """Upper bound on sweep spend: each model makes 1 baseline + one call per level,
-    each capped at `max_cost_per_call_usd`."""
+    """Upper bound on sweep spend: each model makes 1 baseline + one call per level.
+    `max_cost_per_call_usd` is the worst-case dollar cost of a single call; each
+    probe call bounds its output at PROBE_MAX_TOKENS, so the maintainer sets this to
+    (worst endpoint output price) x PROBE_MAX_TOKENS (+ the small prompt) and the
+    bound holds -- it is not an unenforced assumption about unbounded output."""
     calls_per_model = 1 + len(tuple(levels))
     return num_models * calls_per_model * max_cost_per_call_usd
 
@@ -218,6 +226,17 @@ async def run_probe_sweep(
     if max_probe_usd is None:
         raise CeilingError(
             "no authorized probe spend ceiling (<MAX_PROBE_USD> is unset) -- refusing to probe"
+        )
+    if max_probe_usd <= 0:
+        raise CeilingError(
+            f"authorized probe ceiling ${max_probe_usd} must be positive -- refusing to probe"
+        )
+    if max_cost_per_call_usd <= 0:
+        # A non-positive per-call cost makes the worst-case estimate <= 0, which
+        # would slip past the ceiling check below and fire the full paid sweep.
+        raise CeilingError(
+            f"max_cost_per_call_usd ${max_cost_per_call_usd} must be positive so the "
+            f"worst-case estimate can bound spend -- refusing to probe"
         )
     worst_case = estimate_max_probe_cost(len(needing), levels, max_cost_per_call_usd)
     if worst_case > max_probe_usd:
