@@ -269,6 +269,7 @@ Now provide your evaluation and ranking:"""
                 "ranking": f"{model} did not return a Stage 2 evaluation.",
                 "parsed_ranking": [],
                 "usage": {},
+                "reasoning_tokens": None,  # B5: unavailable member reports "not available"
                 "status": "unavailable",
             })
             continue
@@ -382,6 +383,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
             "model": "error",
             "response": "Unable to generate final synthesis. Please try again.",
             "usage": {},
+            "reasoning_tokens": None,  # B5: unavailable chairman reports "not available"
             "confidence": "UNKNOWN",
             "avg_consensus": 0.0,
             "quality_metrics": quality_metrics,
