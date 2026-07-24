@@ -112,7 +112,9 @@ def main(argv=None) -> int:
     parser.add_argument("--resolve-endpoint-prices", action="store_true",
                         help="Price each call from its OWN pinned endpoint via the public, "
                              "keyless, free /endpoints API before any paid call (PREFERRED). "
-                             "Refuses if any pinned endpoint's price cannot be resolved.")
+                             "Refuses if any pinned endpoint's price cannot be resolved. "
+                             "OpenRouter only -- a generic openai-compatible relay has no "
+                             "endpoint tags, so use --max-cost-per-call there.")
     parser.add_argument("--concurrency", type=int, default=4,
                         help="Parallel probe calls (>= 1).")
     parser.add_argument("--provider-tag", default=None,

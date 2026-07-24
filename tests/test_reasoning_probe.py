@@ -554,3 +554,46 @@ async def test_sweep_refuses_when_per_model_worst_case_exceeds_the_ceiling():
             per_model_bounds={"a": 0.30, "b": 0.30},
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
+
+
+def test_bound_includes_the_separate_reasoning_surcharge():
+    probe = _probe()
+    # A non-zero internal_reasoning rate is an EXPLICIT separate charge (the D1
+    # billing rule). The probe deliberately provokes reasoning, so a completion-only
+    # figure would NOT be an upper bound and the ceiling could be breached.
+    without = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001}
+    )
+    with_reasoning = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001,
+         "internal_reasoning_per_token": 0.000004}
+    )
+    assert with_reasoning > without
+    assert with_reasoning == pytest.approx(
+        (0.000001 + 0.000004) * probe.PROBE_MAX_TOKENS
+        + 0.0000005 * probe.PROBE_PROMPT_TOKENS_EST
+    )
+
+
+@pytest.mark.parametrize("rate", [None, 0, "0", ""])
+def test_bound_unchanged_when_reasoning_is_billed_inside_completion(rate):
+    probe = _probe()
+    # No explicit surcharge -> reasoning is inside the completion price; adding
+    # anything here would inflate every ceiling for no reason.
+    base = {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001}
+    assert probe.probe_call_bound_usd({**base, "internal_reasoning_per_token": rate}) == \
+        pytest.approx(probe.probe_call_bound_usd(base))
+
+
+def test_resolve_probe_call_bounds_refuses_off_openrouter(monkeypatch):
+    probe = _probe()
+    # /endpoints, endpoint tags and per-endpoint pricing are OpenRouter concepts.
+    # Pricing a different service would yield a bound that doesn't describe what is
+    # actually billed, so refuse rather than "resolve" a meaningless number.
+    monkeypatch.setattr(probe.config, "provider_is_openrouter", lambda: False)
+    monkeypatch.setattr(probe.config, "PROVIDER_KIND", "openai-compatible", raising=False)
+    with pytest.raises(probe.CeilingError, match="OpenRouter"):
+        probe.resolve_probe_call_bounds(
+            [_entry("a/model")], lambda m: "a",
+            get=_endpoints_getter({"a/model": [("a", 0.0000001, 0.0000002)]}),
+        )

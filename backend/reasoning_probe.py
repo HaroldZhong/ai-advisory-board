@@ -256,11 +256,22 @@ def estimate_max_probe_cost(num_models: int, levels: Iterable[str], max_cost_per
 def probe_call_bound_usd(pricing: Dict[str, Any]) -> float:
     """Worst-case USD cost of ONE probe call on the endpoint `pricing` describes.
 
-    Every probe call caps output at PROBE_MAX_TOKENS, so this is a true upper bound
-    for that route: output priced at the cap (the call cannot bill more) plus the
-    fixed probe prompt. Rates are USD PER TOKEN, as `/endpoints` publishes them."""
+    Every probe call caps output at PROBE_MAX_TOKENS, so the cap bounds the billable
+    output. Rates are USD PER TOKEN, as `/endpoints` publishes them.
+
+    A non-zero `internal_reasoning` rate is an EXPLICIT SEPARATE charge for reasoning
+    tokens -- that is the D1 billing rule (see classify_billing: an explicit
+    internal_reasoning price short-circuits straight to "separate"). The probe
+    deliberately provokes reasoning, so on such an endpoint the completion-only
+    figure is NOT an upper bound and the ceiling could be breached.
+
+    The worst case charges the capped tokens at BOTH rates: every token billed as
+    completion and surcharged as reasoning. That is deliberately conservative -- it
+    stays a true upper bound whether the provider counts reasoning inside the
+    completion cap or bills it on top."""
+    reasoning_rate = pricing.get("internal_reasoning_per_token") or 0.0
     return (
-        float(pricing["completion_per_token"]) * PROBE_MAX_TOKENS
+        (float(pricing["completion_per_token"]) + float(reasoning_rate)) * PROBE_MAX_TOKENS
         + float(pricing["prompt_per_token"]) * PROBE_PROMPT_TOKENS_EST
     )
 
@@ -281,7 +292,21 @@ def resolve_probe_call_bounds(
     Refuses loudly rather than guessing: a model whose pinned endpoint price cannot
     be resolved has NO sound bound, and silently dropping it from the ceiling math
     would under-count the authorized spend. The error names every unresolved model
-    so the maintainer can fix the tag (or pin one with --provider-tag)."""
+    so the maintainer can fix the tag (or pin one with --provider-tag).
+
+    OpenRouter-only: `/endpoints`, endpoint tags and per-endpoint pricing are
+    OpenRouter concepts. Against a generic openai-compatible relay there is nothing
+    to resolve, and pricing the wrong service would produce a bound that does not
+    describe what is actually billed -- so refuse and let the caller assert a
+    uniform bound instead."""
+    if not config.provider_is_openrouter():
+        raise CeilingError(
+            "per-endpoint price resolution needs OpenRouter (LLM_PROVIDER_KIND="
+            f"{config.PROVIDER_KIND!r}): /endpoints, endpoint tags and per-endpoint "
+            "pricing do not exist on a generic openai-compatible relay, and prices "
+            "fetched elsewhere would not describe what this provider bills. Assert a "
+            "uniform per-call bound instead -- refusing to probe"
+        )
     kwargs = {} if get is None else {"get": get}
     bounds: Dict[str, float] = {}
     unresolved: List[str] = []

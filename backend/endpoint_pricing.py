@@ -27,7 +27,14 @@ from datetime import datetime, timezone
 
 import httpx
 
-OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{model}/endpoints"
+from . import config
+
+# Built from the CONFIGURED base URL, exactly like config.OPENROUTER_API_URL and
+# openrouter_client's URLs: paid calls and the prices that bound them must come from
+# the SAME service. Hard-coding openrouter.ai would price a different service than
+# the one being billed whenever a relay/proxy is configured, and would be
+# unreachable at all where openrouter.ai is blocked (audit §4.3).
+OPENROUTER_ENDPOINTS_URL = f"{config.OPENROUTER_BASE_URL}/models/{{model}}/endpoints"
 
 
 class EndpointPricingError(RuntimeError):
