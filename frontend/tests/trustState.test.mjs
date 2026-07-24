@@ -68,6 +68,21 @@ test('D2: "budget reached" (danger) stays tied to the 1.0 cap, not the top notif
   assert.equal(getBudgetWarningText(0.72, served).label, '70% used');
 });
 
+test('E3: preset label is single-sourced from served metadata, with a derived fallback', () => {
+  // the served preset_label (captured at creation) wins -- no frontend hardcode
+  const served = formatTrustRowState({
+    conversation: { metadata: { preset_id: 'balanced', preset_label: 'Balanced Panel', council_models: ['a', 'b', 'c'] } },
+    settings: {}, attachmentCount: 0, zdrAvailable: true,
+  });
+  assert.equal(served.council.label, 'Balanced Panel');
+  // pre-label conversation -> label derived from the id (title-cased), still no hardcode
+  const derived = formatTrustRowState({
+    conversation: { metadata: { preset_id: 'deep-research', council_models: ['a', 'b', 'c'] } },
+    settings: {}, attachmentCount: 0, zdrAvailable: true,
+  });
+  assert.equal(derived.council.label, 'Deep Research');
+});
+
 test('D2: formatTrustRowState exposes and uses the served notify thresholds', () => {
   const conversation = {
     session_policy: { budget_usd: 10, notify_thresholds: [0.5, 0.7, 0.9] },

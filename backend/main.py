@@ -203,6 +203,9 @@ async def create_conversation(request: CreateConversationRequest):
         if preset.get("requires_zdr") and request.zdr_enabled is False:
             raise HTTPException(status_code=400, detail=f"Preset {request.preset_id} requires ZDR")
         metadata["preset_id"] = request.preset_id
+        # E3: capture the served preset LABEL at creation so the trust row single-
+        # sources it (retires the frontend PRESET_LABELS hardcode).
+        metadata["preset_label"] = preset["label"]
 
     council_members = request.council_members or None
     if council_members is None and preset is not None:

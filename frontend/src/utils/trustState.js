@@ -3,13 +3,6 @@ import {
   resolveEffectiveThinkingEffort,
 } from './thinkingEffort.js';
 
-const PRESET_LABELS = {
-  balanced: 'Balanced',
-  research: 'Research',
-  budget: 'Budget',
-  private: 'Private',
-};
-
 export function formatCurrency(value) {
   const amount = Number(value || 0);
   if (amount > 0 && amount < 0.01) return `$${amount.toFixed(4)}`;
@@ -203,9 +196,13 @@ export function getPrivacyToggleDisabledReason({
   return null;
 }
 
-function formatPresetLabel(presetId) {
+// E3: the preset label is single-sourced from the served preset (stored in the
+// conversation metadata at creation), not a frontend hardcode. Pre-label
+// conversations fall back to a label derived from the id.
+function formatPresetLabel(presetId, presetLabel) {
+  if (presetLabel) return presetLabel;
   if (!presetId) return 'Custom';
-  return PRESET_LABELS[presetId] || presetId.replace(/[-_]/g, ' ');
+  return presetId.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function getSpentPct(conversation, policy, usage) {
@@ -248,7 +245,7 @@ export function formatTrustRowState({
         presetId: null,
       }
       : {
-        label: formatPresetLabel(metadata.preset_id),
+        label: formatPresetLabel(metadata.preset_id, metadata.preset_label),
         detail: `${council.length || 0} council + 1 chair`,
         count: council.length || 0,
         presetId: metadata.preset_id || null,
