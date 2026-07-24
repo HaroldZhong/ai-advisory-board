@@ -93,16 +93,21 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
-    reasoning_payload, endpoint_pin = resolve_model_reasoning(model, thinking_effort)
+    reasoning_payload, endpoint_pin = resolve_model_reasoning(
+        model, thinking_effort, zdr_enabled=zdr_enabled
+    )
     provider = {}
     if zdr_enabled:
-        provider["zdr"] = True  # HARD: never weakened; a non-ZDR pin below yields no route, not a downgrade
+        provider["zdr"] = True  # HARD: never weakened
     if endpoint_pin and provider_is_openrouter():
         # Capabilities are provider-specific: route to the endpoint the shape was
         # learned on (probe pins the same way), so a probed reasoning object can't be
         # mis-applied on a different endpoint. `provider.order`/`allow_fallbacks` are
         # OpenRouter-only -- an openai-compatible relay rejects `provider` (400), and
         # the probe's endpoint tags don't apply there, so the pin is skipped off-OR.
+        #
+        # ZDR turns never reach here: resolve_model_reasoning returns no pin (and no
+        # endpoint-specific shape) for them -- see its docstring.
         provider["order"] = [endpoint_pin]
         provider["allow_fallbacks"] = False
     if provider:
@@ -208,20 +213,32 @@ def reset_reasoning_capability_cache() -> None:
     _reasoning_capabilities_cache = None
 
 
-def model_supports_reasoning(model: str, capability_records: Optional[Dict[str, Any]] = None) -> bool:
+def model_supports_reasoning(
+    model: str,
+    capability_records: Optional[Dict[str, Any]] = None,
+    *,
+    zdr_enabled: bool = False,
+) -> bool:
     """Whether this model accepts reasoning controls, from the SINGLE capability
     authority (v1.3.0 correction #2). The probe-backed sidecar is authoritative once
     a model is probed; the registry's `supports_reasoning` is a DEPRECATED fallback
     used ONLY while the sidecar has no verified record for the model (it is removed
     outright once the probe covers every model). `capability_records` is injectable
-    for tests; runtime uses the cached sidecar load."""
+    for tests; runtime uses the cached sidecar load.
+
+    `zdr_enabled` bypasses the probe row for the same reason resolve_model_reasoning
+    does: the row describes whichever endpoint ORDINARY routing selected and says
+    nothing about the ZDR endpoint this request will reach. Consulting it would let a
+    `none` row silently suppress reasoning on a distinct ZDR route, and a positive row
+    enable it on an unverified one."""
     from .reasoning_capability import get_capability
 
     registry_model = _lookup_registry_model(model)
     # Probe rows are OpenRouter-endpoint-specific: only consult them when routing to
     # OpenRouter. Off-OpenRouter (a relay) the probed capability doesn't apply, so use
-    # the deprecated registry fallback (correction #2).
-    if provider_is_openrouter():
+    # the deprecated registry fallback (correction #2). A ZDR turn is the same case:
+    # the probed endpoint is not the endpoint this request reaches.
+    if provider_is_openrouter() and not zdr_enabled:
         records = capability_records if capability_records is not None else _reasoning_capability_records()
         cap = get_capability(records, model, registry_model)
         if cap.get("control_surface") != "unknown":
@@ -235,6 +252,8 @@ def resolve_model_reasoning(
     model: str,
     thinking_effort: Optional[str],
     capability_records: Optional[Dict[str, Any]] = None,
+    *,
+    zdr_enabled: bool = False,
 ) -> tuple:
     """Return `(reasoning_object, endpoint_pin)` for this model from the single
     capability authority (correction #2 + the B4 wire boundary).
@@ -248,7 +267,17 @@ def resolve_model_reasoning(
     dropped/mis-applied on a different one. An UN-PROBED model falls back to a plain
     {"effort": ...} object iff the DEPRECATED registry supports_reasoning says so
     (today's behavior, until the probe runs), with no pin.
-    `reasoning_object` is None to send no reasoning object."""
+    `reasoning_object` is None to send no reasoning object.
+
+    ZDR (`zdr_enabled`) BYPASSES the probed record entirely -- neither the pin nor
+    the endpoint-specific shape is used. The probe observes whichever endpoint
+    ORDINARY (non-ZDR) routing selects, and /endpoints publishes no per-endpoint ZDR
+    field, so a probed row says nothing about the endpoint a ZDR turn will reach.
+    Pinning it would intersect with `zdr: true` under `allow_fallbacks: false` and
+    yield NO ROUTE; sending its native shape ({"enabled":...}, {"max_tokens":...}) to
+    a DIFFERENT, unverified ZDR endpoint would be exactly the mis-application the pin
+    exists to prevent. Falls back to the normalized `reasoning.effort` interface,
+    which is provider-agnostic (preflight rule 1)."""
     from .reasoning_capability import get_capability
     from .reasoning_control import resolve_reasoning_payload
 
@@ -256,7 +285,9 @@ def resolve_model_reasoning(
     # Probe rows are OpenRouter-endpoint-specific: only apply them when routing to
     # OpenRouter. Off-OpenRouter (a relay) a probed row must not suppress/reshape
     # reasoning -- fall through to the deprecated registry fallback below.
-    if provider_is_openrouter():
+    # A ZDR turn is treated the same way: the probed endpoint is not the endpoint
+    # this request will reach, so neither its shape nor its pin may be applied.
+    if provider_is_openrouter() and not zdr_enabled:
         records = capability_records if capability_records is not None else _reasoning_capability_records()
         cap = get_capability(records, model, registry_model)
         if cap.get("control_surface") != "unknown":
@@ -273,7 +304,9 @@ def resolve_model_reasoning(
             return reasoning, pin
     # Un-probed OR off-OpenRouter -> deprecated fallback: a plain effort object iff the
     # registry (via the single authority) says the model supports reasoning. No pin.
-    if thinking_effort and model_supports_reasoning(model, capability_records=capability_records):
+    if thinking_effort and model_supports_reasoning(
+        model, capability_records=capability_records, zdr_enabled=zdr_enabled
+    ):
         return {"effort": thinking_effort}, None
     return None, None
 

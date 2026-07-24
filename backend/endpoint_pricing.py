@@ -23,6 +23,7 @@ Deriving a bound from the registry's model-wide `pricing` would be unsound: a
 pinned endpoint's price can exceed the curated model-wide value, so a
 registry-derived bound could UNDER-count and breach the authorized ceiling.
 """
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -80,36 +81,27 @@ class EndpointPricingError(RuntimeError):
     invalidate whatever guarantee (billing evidence, spend ceiling) depends on it."""
 
 
-def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
-    """Resolve the EXACT pinned endpoint and return its own pricing + provenance.
+def normalize_provider_name(name):
+    """Provider identifiers arrive in two spellings: endpoint tags are slugs
+    ('google-vertex'), while router metadata reports display names ('Google Vertex').
+    Compare on a case/punctuation-insensitive basis."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
-    The tag must match exactly -- no prefix or provider-name fallback -- and an
-    absent or ambiguous match raises rather than guessing a rate.
 
-    Rates are USD PER TOKEN (strings upstream); the curated registry is per MILLION.
-    """
+def fetch_endpoints(model, *, get=httpx.get):
+    """Every published endpoint for a model, with the URL they came from.
+
+    PUBLIC and keyless -- metadata, not inference, so this cannot spend."""
     url = OPENROUTER_ENDPOINTS_URL.format(model=model)
     resp = get(url, timeout=30.0)
     resp.raise_for_status()
     body = resp.json()
     data = body.get("data") if isinstance(body.get("data"), dict) else body
-    endpoints = (data or {}).get("endpoints") or []
+    return url, ((data or {}).get("endpoints") or [])
 
-    matches = [e for e in endpoints if e.get("tag") == provider_tag]
-    if not matches:
-        raise EndpointPricingError(
-            f"no endpoint on {model} has tag == {provider_tag!r}. Available tags: "
-            f"{sorted(str(e.get('tag')) for e in endpoints)}. Pricing is per endpoint, so the "
-            "pin must name an exact tag -- variant tags (e.g. 'azure/swedencentral') price "
-            "differently from their base tag."
-        )
-    if len(matches) > 1:
-        raise EndpointPricingError(
-            f"tag {provider_tag!r} matched {len(matches)} endpoints on {model} -- ambiguous, "
-            "so no single rate can be attributed to this capture"
-        )
 
-    endpoint = matches[0]
+def price_endpoint(url, endpoint):
+    """Pricing + provenance for ONE endpoint object. Rates are USD PER TOKEN."""
     pricing = endpoint.get("pricing") or {}
 
     def rate(key):
@@ -120,8 +112,8 @@ def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
     completion_rate = rate("completion")
     if prompt_rate is None or completion_rate is None:
         raise EndpointPricingError(
-            f"endpoint {provider_tag!r} on {model} publishes no prompt/completion pricing; "
-            "cannot price this capture"
+            f"endpoint {endpoint.get('tag')!r} publishes no prompt/completion pricing; "
+            "cannot price this route"
         )
 
     # Endpoints bill more than the two token rates. Surface every component a caller
@@ -168,3 +160,51 @@ def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
         "unaccounted_nonzero_price_keys": unaccounted,
         "pricing_raw": pricing,
     }
+
+
+def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
+    """Resolve the EXACT pinned endpoint and return its own pricing + provenance.
+
+    The tag must match exactly -- no prefix or provider-name fallback -- and an
+    absent or ambiguous match raises rather than guessing a rate.
+    """
+    url, endpoints = fetch_endpoints(model, get=get)
+    matches = [e for e in endpoints if e.get("tag") == provider_tag]
+    if not matches:
+        raise EndpointPricingError(
+            f"no endpoint on {model} has tag == {provider_tag!r}. Available tags: "
+            f"{sorted(str(e.get('tag')) for e in endpoints)}. Pricing is per endpoint, so the "
+            "pin must name an exact tag -- variant tags (e.g. 'azure/swedencentral') price "
+            "differently from their base tag."
+        )
+    if len(matches) > 1:
+        raise EndpointPricingError(
+            f"tag {provider_tag!r} matched {len(matches)} endpoints on {model} -- ambiguous, "
+            "so no single rate can be attributed to this capture"
+        )
+    return price_endpoint(url, matches[0])
+
+
+def resolve_served_endpoint_tag(model, served_provider_name, *, get=httpx.get):
+    """The EXACT endpoint tag for the provider that actually served a request, or
+    None when it cannot be determined exactly.
+
+    Router metadata names the provider by DISPLAY NAME only -- it never returns an
+    endpoint tag (openrouter_metadata.endpoints.available[] carries provider/model/
+    selected). One display name can cover several tags that price differently
+    ('azure' vs 'azure/swedencentral'), so a name maps to an exact tag only when the
+    model publishes exactly ONE endpoint for it.
+
+    Returns None (never a guess, never a broadened base slug) when the name matches
+    zero or several tags: recording an inexact pin would route real traffic somewhere
+    nobody chose, and the authorization requires exact endpoint tags.
+    """
+    if not served_provider_name:
+        return None
+    _url, endpoints = fetch_endpoints(model, get=get)
+    wanted = normalize_provider_name(served_provider_name)
+    matches = [
+        e.get("tag") for e in endpoints
+        if normalize_provider_name(e.get("provider_name")) == wanted and e.get("tag")
+    ]
+    return matches[0] if len(matches) == 1 else None
