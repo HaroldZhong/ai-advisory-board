@@ -444,6 +444,12 @@ test('first-run setup creates a private preset conversation and renders streamed
   await page.getByRole('textbox', { name: /Ask your question/ }).fill('What is 8 minus 3?');
   await page.getByRole('button', { name: 'Send message' }).click();
 
+  // v1.3.0 D3 (§5.1): the automatic first council turn now warns with an approximate
+  // pre-send estimate (the main council-default path, not just manual "Ask the
+  // council"). Confirm to dispatch.
+  await expect(page.getByRole('alert')).toContainText('Est. ~$0.20 (approximate)');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+
   await expect(page.getByText('Final Council Answer')).toBeVisible();
   // B5/E3 §3d: the chairman's honest post-turn reasoning actuals render from the count
   await expect(page.getByText('reasoning: 1.2k tokens')).toBeVisible();

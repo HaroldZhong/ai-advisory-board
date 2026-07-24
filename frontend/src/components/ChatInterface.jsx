@@ -299,20 +299,30 @@ export default function ChatInterface({
     }
     if (composerDisabled) return;
 
-    // Armed "Ask the council" send: require an explicit confirm first
-    // (P3-T4 — a council run costs more and takes longer than chat). D3 (§5.1):
-    // fetch an APPROXIMATE pre-send cost estimate to show in that confirm (warn,
-    // never block). A failed/omitted estimate must not block the send.
-    if (askCouncil && !showCouncilConfirm) {
+    // The next send runs council if the user armed "Ask the council" (P3-T4) OR the
+    // auto-resolved next mode is council — the first turn of a council-default/legacy
+    // conversation, which dispatches council automatically (Codex #110). Both are the
+    // expensive path D3 (§5.1) warns before.
+    const nextIsCouncil = askCouncil || nextMessageMode === 'council';
+    if (nextIsCouncil && !showCouncilConfirm) {
+      // Fetch an APPROXIMATE pre-send estimate (warn, never block; a failed estimate
+      // must not block the send).
+      let estimate = null;
       if (conversation?.id) {
         try {
-          setTurnEstimate(await api.getTurnEstimate(conversation.id, 'council'));
+          estimate = await api.getTurnEstimate(conversation.id, 'council');
         } catch {
-          setTurnEstimate(null);
+          estimate = null;
         }
       }
-      setShowCouncilConfirm(true);
-      return;
+      // Confirm before an explicitly armed council send (P3-T4) or a LARGE predicted
+      // council turn (D3). A small auto council turn (estimate known and not large)
+      // dispatches without interruption.
+      if (askCouncil || estimate?.is_large) {
+        setTurnEstimate(estimate);
+        setShowCouncilConfirm(true);
+        return;
+      }
     }
 
     // Collect attachment IDs to send with the message
