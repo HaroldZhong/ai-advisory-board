@@ -9,6 +9,20 @@ def _probe():
     return importlib.import_module("backend.reasoning_probe")
 
 
+@pytest.fixture(autouse=True)
+def _no_network_endpoints_lookup(monkeypatch):
+    """No test may reach the real /endpoints API. Mirrors the _probe_transport
+    discipline: a test that needs tag resolution injects an explicit `get=`; any
+    other test that reaches the network fails loudly here instead of silently
+    making a live request (slow, offline-hostile, and flaky in CI)."""
+    probe = importlib.import_module("backend.reasoning_probe")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("test reached the live /endpoints API; inject get=")
+
+    monkeypatch.setattr(probe, "_endpoints_get", forbidden)
+
+
 # --- reasoning_signal: reliability-ordered detection -------------------------
 
 def test_signal_prefers_reasoning_tokens():
@@ -141,7 +155,17 @@ def test_plain_reflects_baseline_only_not_effort_reasoning():
 
 # --- probe_model: end-to-end through an injected MockTransport ---------------
 
-def _mock_transport(signals_by_effort, served_provider=None, expected_pin=None):
+def _any_openai_get(url, timeout=None):
+    """/endpoints stub: every model publishes one endpoint served by "OpenAI", so a
+    sweep resolves a pin deterministically without touching the network."""
+    model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+    return httpx.Response(200, json={"data": {"endpoints": [
+        {"tag": "openai", "provider_name": "OpenAI", "model_id": model,
+         "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]}},
+        request=httpx.Request("GET", url))
+
+
+def _mock_transport(signals_by_effort, served_provider="OpenAI", expected_pin=None):
     """Return httpx.MockTransport that scripts reasoning_tokens by the request's
     reasoning.effort (None = the baseline call). Optionally reports which provider
     served, the way router metadata does."""
@@ -393,12 +417,14 @@ async def test_sweep_degrades_per_model_on_error():
         return httpx.Response(200, json={
             "choices": [{"message": {"content": "ok"}}],
             "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}},
+            "openrouter_metadata": {"endpoints": {"available": [
+                {"provider": "OpenAI", "selected": True}]}},
         })
 
     merged = await probe.run_probe_sweep(
         [_entry("bad"), _entry("good")], "k",
         max_probe_usd=1.00, max_cost_per_call_usd=0.01,
-        transport=httpx.MockTransport(flaky_transport),
+        transport=httpx.MockTransport(flaky_transport), get=_any_openai_get,
     )
     # one failing model does not abort the sweep; the good one still lands
     assert "bad" not in merged
@@ -421,12 +447,15 @@ async def test_failed_reprobe_replaces_stale_row_with_unknown():
         if body["model"] == "a":
             return httpx.Response(500, json={"error": "boom"})
         rt = {None: 0, "low": 10, "medium": 20, "high": 30}.get((body.get("reasoning") or {}).get("effort"), 0)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
-                                         "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}}})
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}},
+            "openrouter_metadata": {"endpoints": {"available": [
+                {"provider": "OpenAI", "selected": True}]}}})
 
     merged = await probe.run_probe_sweep(
         [a, b], "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, existing=existing,
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(handler), get=_any_openai_get,
     )
     # the stale openai-measured row must NOT survive as authoritative -> unknown
     assert merged["a"]["control_surface"] == "unknown"
@@ -917,3 +946,60 @@ def test_missing_metadata_on_one_call_is_not_read_as_a_router_move():
     assert probe._differs("OpenAI", None) is False
     assert probe._differs("openai", "OpenAI") is False   # normalised
     assert probe._differs("Together", "OpenAI") is True
+
+
+@pytest.mark.asyncio
+async def test_no_capability_without_baseline_routing_metadata():
+    probe = _probe()
+    # Without a baseline provider there is no anchor: nothing can be pinned AND the
+    # mixed-endpoint check is blind (an unknown name is deliberately not "different"),
+    # so publishing probed=True would assert a capability for whichever endpoint
+    # happens to serve later.
+    rec = await probe.probe_model(
+        _entry("g/m"), "k",
+        transport=_mock_transport({None: 0, "low": 10, "medium": 20, "high": 30},
+                                  served_provider=None),
+    )
+    assert rec["control_surface"] == "unknown"
+    assert not rec.get("probed"), "left un-probed so a later sweep can retry"
+    assert not rec.get("supports_reasoning")
+
+
+def test_zdr_requests_are_never_constrained_by_a_probe_pin(monkeypatch):
+    """A recorded pin's ZDR status is UNKNOWABLE -- the probe observes ordinary
+    (non-ZDR) routing and /endpoints publishes no per-endpoint ZDR field. Combining
+    zdr:true with a non-ZDR pin under allow_fallbacks:false yields NO ROUTE, breaking
+    a model that legitimately supports ZDR elsewhere."""
+    import backend.openrouter as orouter
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+        def raise_for_status(self): return None
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, headers=None, json=None, **kw):
+            sent.clear(); sent.update(json or {})
+            return _Resp()
+
+    monkeypatch.setattr(orouter.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(orouter, "resolve_model_reasoning",
+                        lambda *a, **k: ({"effort": "high"}, "openai/priority"))
+    monkeypatch.setattr(orouter, "provider_is_openrouter", lambda: True)
+    monkeypatch.setattr(orouter, "get_openrouter_api_key", lambda: "k")
+
+    import asyncio
+    # ZDR ON -> the ZDR constraint stands alone; no pin may narrow it to one endpoint
+    asyncio.run(orouter.query_model("m/x", [{"role": "user", "content": "hi"}],
+                                    thinking_effort="high", zdr_enabled=True))
+    assert sent["provider"] == {"zdr": True}, sent["provider"]
+
+    # ZDR OFF -> the pin still applies, so capability fidelity is unaffected
+    asyncio.run(orouter.query_model("m/x", [{"role": "user", "content": "hi"}],
+                                    thinking_effort="high", zdr_enabled=False))
+    assert sent["provider"] == {"order": ["openai/priority"], "allow_fallbacks": False}

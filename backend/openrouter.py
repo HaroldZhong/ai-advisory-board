@@ -96,13 +96,23 @@ async def query_model(
     reasoning_payload, endpoint_pin = resolve_model_reasoning(model, thinking_effort)
     provider = {}
     if zdr_enabled:
-        provider["zdr"] = True  # HARD: never weakened; a non-ZDR pin below yields no route, not a downgrade
-    if endpoint_pin and provider_is_openrouter():
+        provider["zdr"] = True  # HARD: never weakened
+    if endpoint_pin and not zdr_enabled and provider_is_openrouter():
         # Capabilities are provider-specific: route to the endpoint the shape was
         # learned on (probe pins the same way), so a probed reasoning object can't be
         # mis-applied on a different endpoint. `provider.order`/`allow_fallbacks` are
         # OpenRouter-only -- an openai-compatible relay rejects `provider` (400), and
         # the probe's endpoint tags don't apply there, so the pin is skipped off-OR.
+        #
+        # NEVER pin a ZDR request. The probe observes whichever endpoint ORDINARY
+        # (non-ZDR) routing selects, and /endpoints publishes no per-endpoint ZDR
+        # field, so a recorded pin's ZDR status is UNKNOWABLE. Combining `zdr: true`
+        # with a non-ZDR pin under `allow_fallbacks: false` yields NO ROUTE -- it
+        # breaks a model that legitimately supports ZDR on another endpoint. Dropping
+        # the pin keeps the ZDR constraint absolute (never traded away) and lets the
+        # router pick a compliant endpoint; if that one rejects the reasoning shape,
+        # the existing 400-retry-without-reasoning path strips it and B5 still
+        # reports actuals honestly.
         provider["order"] = [endpoint_pin]
         provider["allow_fallbacks"] = False
     if provider:

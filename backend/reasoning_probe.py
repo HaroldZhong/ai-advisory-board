@@ -70,6 +70,7 @@ PROBE_PROMPT_TOKENS_EST = 64
 _THINK_TAG_RE = re.compile(r"<(think|thinking)>([\s\S]*?)</\1>")
 
 _probe_transport = None  # httpx.MockTransport injection point for tests; None = real net.
+_endpoints_get = None    # /endpoints fetcher injection point for tests; None = real net.
 
 
 def reasoning_signal(response: Dict[str, Any], extraction_mode: Optional[str] = None) -> int:
@@ -244,6 +245,14 @@ async def probe_model(
     baseline_response = await _post(model_id, None, api_key, None, tx)
     baseline = reasoning_signal(baseline_response, extraction)
     served = served_provider_name(baseline_response)
+    if not served:
+        # No baseline provider -> no anchor to attribute ANY of this sweep to. Without
+        # it nothing can be pinned, and the mixed-endpoint check below is blind too
+        # (an unknown name is deliberately not "different"), so a `probed: true`
+        # record here would assert a capability for whichever endpoint happens to
+        # serve later. Refuse instead; a later sweep can retry once router metadata
+        # is available.
+        return unknown_record(model_id, model_fingerprint(model_entry))
 
     # 2) Resolve that endpoint EXACTLY and pin the remaining calls to it. Every level
     #    must be measured on the SAME endpoint as the one we are about to record: a
@@ -252,7 +261,8 @@ async def probe_model(
     #    an OBSERVED tag (it just served), not a guess -- the failure mode that made
     #    the old up-front pin unusable does not apply.
     try:
-        kwargs = {} if get is None else {"get": get}
+        getter = get if get is not None else _endpoints_get
+        kwargs = {} if getter is None else {"get": getter}
         provider_tag = resolve_served_endpoint_tag(model_id, served, **kwargs)
     except Exception:
         # Best-effort enrichment only. The paid calls have already succeeded, so no
@@ -480,6 +490,7 @@ async def run_probe_sweep(
     transport=None,
     concurrency: int = 4,
     now: Optional[datetime] = None,
+    get=None,
 ) -> Dict[str, Dict[str, Any]]:
     """Probe every model that needs it, resumably, and return the merged records.
 
@@ -560,7 +571,7 @@ async def run_probe_sweep(
             try:
                 rec = await probe_model(
                     model_entry, api_key,
-                    levels=levels, transport=transport, now=now,
+                    levels=levels, transport=transport, now=now, get=get,
                 )
                 return model_entry["id"], rec
             except Exception:
