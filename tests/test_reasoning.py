@@ -200,3 +200,45 @@ def test_model_supports_reasoning_runtime_path_uses_cached_sidecar():
     model_id = "openai/gpt-5.3-chat"
     entry = openrouter._lookup_registry_model(model_id)
     assert openrouter.model_supports_reasoning(model_id) is (entry.get("supports_reasoning") is True)
+
+
+def test_resolve_model_reasoning_payload_uses_probed_surface_not_just_boolean():
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+    model_id = "openai/gpt-5.3-chat"
+    entry = openrouter._lookup_registry_model(model_id)
+    fp = model_fingerprint(entry)
+
+    def rec(**kw):
+        base = {"model_id": model_id, "probed": True, "fingerprint": fp, "supports_reasoning": True}
+        base.update(kw)
+        return {model_id: base}
+
+    # levels -> snapped effort object
+    assert openrouter.resolve_model_reasoning_payload(
+        model_id, "high", capability_records=rec(control_surface="levels", levels=["low", "medium", "high"])
+    ) == {"effort": "high"}
+    # onoff -> enabled toggle (never a raw effort)
+    assert openrouter.resolve_model_reasoning_payload(
+        model_id, "high", capability_records=rec(control_surface="onoff", native_default_on=False)
+    ) == {"enabled": True}
+    # budget -> max_tokens
+    assert openrouter.resolve_model_reasoning_payload(
+        model_id, "high", capability_records=rec(control_surface="budget", budget={"min": 1000, "max": 10000})
+    ) == {"max_tokens": 8000}
+    # none -> omit entirely
+    assert openrouter.resolve_model_reasoning_payload(
+        model_id, "high", capability_records=rec(control_surface="none", supports_reasoning=False)
+    ) is None
+
+
+def test_resolve_model_reasoning_payload_unprobed_fallback_is_non_regressing():
+    from backend import openrouter
+    model_id = "openai/gpt-5.3-chat"
+    entry = openrouter._lookup_registry_model(model_id)
+    registry_supported = entry.get("supports_reasoning") is True
+    # un-probed + effort -> plain effort object iff registry supports it (today's behavior)
+    result = openrouter.resolve_model_reasoning_payload(model_id, "high", capability_records={})
+    assert result == ({"effort": "high"} if registry_supported else None)
+    # Auto (no effort) + un-probed -> no reasoning object at all
+    assert openrouter.resolve_model_reasoning_payload(model_id, None, capability_records={}) is None

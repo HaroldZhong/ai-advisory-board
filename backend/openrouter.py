@@ -95,8 +95,9 @@ async def query_model(
     }
     if zdr_enabled:
         payload["provider"] = {"zdr": True}
-    if thinking_effort and model_supports_reasoning(model):
-        payload["reasoning"] = {"effort": thinking_effort}
+    reasoning_payload = resolve_model_reasoning_payload(model, thinking_effort)
+    if reasoning_payload:
+        payload["reasoning"] = reasoning_payload
 
     try:
         async with httpx.AsyncClient(
@@ -213,6 +214,35 @@ def model_supports_reasoning(model: str, capability_records: Optional[Dict[str, 
         return bool(cap.get("supports_reasoning"))
     # Un-probed / unverifiable -> DEPRECATED registry fallback (correction #2).
     return registry_model is not None and registry_model.get("supports_reasoning") is True
+
+
+def resolve_model_reasoning_payload(
+    model: str,
+    thinking_effort: Optional[str],
+    capability_records: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """The OpenRouter `reasoning` object to send for this model, from the single
+    capability authority (correction #2 + the B4 wire boundary). A PROBED model uses
+    the B2/B4 per-surface translation -- `levels` snaps to the nearest supported
+    effort, `onoff` -> {"enabled": ...}, `budget` -> {"max_tokens": ...}, `none`/Auto
+    -> omit -- so a probed model never receives an unsupported or wrong-shape payload.
+    An UN-PROBED model falls back to a plain {"effort": ...} object iff the DEPRECATED
+    registry supports_reasoning says so (today's behavior, until the probe runs).
+    Returns None to send no reasoning object."""
+    from .reasoning_capability import get_capability
+    from .reasoning_control import resolve_reasoning_payload
+
+    registry_model = _lookup_registry_model(model)
+    records = capability_records if capability_records is not None else _reasoning_capability_records()
+    cap = get_capability(records, model, registry_model)
+    if cap.get("control_surface") != "unknown":
+        # Probed -> verified per-surface translation (B2 -> B4).
+        return resolve_reasoning_payload(cap, thinking_effort)
+    # Un-probed -> deprecated fallback: a plain effort object iff the registry (via
+    # the single authority) says the model supports reasoning.
+    if thinking_effort and model_supports_reasoning(model, capability_records=records):
+        return {"effort": thinking_effort}
+    return None
 
 
 def reasoning_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> Optional[int]:
