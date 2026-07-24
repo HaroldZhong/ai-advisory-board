@@ -22,12 +22,12 @@ def _status_expr_is_409(node):
     return False
 
 
-def _http_exception_409_raises(fn):
-    """Count HTTPException(...) calls in ``fn``'s source whose status is 409, in ANY
+def _count_http_exception_409(module) -> int:
+    """Count HTTPException(...) calls in a module whose status is 409, in ANY
     spelling: ``status_code=409``, ``status_code = 409``, a positional first arg, or
     an HTTP_409_CONFLICT constant. Syntax-aware (ast) so formatting cannot hide a
     re-introduced duplicate the way a raw substring count could (Codex #109 R4)."""
-    tree = ast.parse(inspect.getsource(fn))
+    tree = ast.parse(inspect.getsource(module))
     count = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -227,33 +227,27 @@ def test_budget_path_single_enforcement_point_respects_allow_overage(monkeypatch
 
 
 def test_budget_cap_has_a_single_409_enforcement_point(monkeypatch):
-    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): exactly one HTTPException
-    409 raise across the send budget path -- the opt-in cap is a SINGLE enforcement
+    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): backend.main raises an
+    HTTP 409 from exactly ONE place -- the opt-in budget cap is a SINGLE enforcement
     point.
 
-    Parses (syntax-aware, Codex #109 R4) each budget-path function --
-    ensure_budget_allows_new_turn (raises the cap), prepare_turn (the shared
-    pre-flight that calls it), and both send endpoints -- and counts HTTPException
-    raises whose status is 409 in ANY spelling (status_code=409, spaced, positional,
-    or an HTTP_409_CONFLICT constant), so formatting cannot hide a duplicate. A
-    re-introduced hard-cap branch anywhere in the path -- even a `not allow_overage`
-    opt-in duplicate the allow-overage behavioral test can't see (R3) -- adds a
-    second 409 and trips this. Scoped to the budget path so an unrelated non-budget
-    409 on another endpoint never false-trips it (R1); spanning prepare_turn + the
-    endpoints, not just the helper (R2)."""
+    Parses the WHOLE module (syntax-aware ast) and counts HTTPException raises whose
+    status is 409 in ANY spelling (status_code=409, spaced, positional, or an
+    HTTP_409_CONFLICT constant). Module-wide, so a duplicate hidden ANYWHERE is
+    caught -- inline in prepare_turn or an endpoint (R2/R3), extracted into a helper
+    those call (R5), or written with equivalent syntax (R4). Today the sole 409 is
+    the budget cap (BUDGET_CAP_REACHED_DETAIL), so exactly one is correct; the
+    allow-overage behavioral test proves that one point honors the opt-in flip.
+
+    NOTE (R1): a future *non-budget* 409 (e.g. an edit-conflict response) will trip
+    this by design -- that is the intended review gate. Whoever adds it must confirm
+    it is not a re-introduced budget enforcement branch and update this count
+    deliberately; a money-safety single-enforcement-point invariant is worth a
+    conscious one-line review."""
     main = import_main(monkeypatch)
-    total = sum(
-        _http_exception_409_raises(fn)
-        for fn in (
-            main.ensure_budget_allows_new_turn,
-            main.prepare_turn,
-            main.send_message,
-            main.send_message_stream,
-        )
-    )
+    total = _count_http_exception_409(main)
     assert total == 1, (
-        f"expected exactly one HTTPException(409) across the send budget path "
-        f"(ensure_budget_allows_new_turn / prepare_turn / send_message / "
-        f"send_message_stream), found {total} -- a re-introduced enforcement branch "
-        f"would revert the D3 default flip"
+        f"expected exactly one HTTPException(409) in backend.main (the opt-in budget "
+        f"cap), found {total} -- a re-introduced enforcement branch would revert the "
+        f"D3 default flip (or a new non-budget 409 needs a deliberate guard update)"
     )
