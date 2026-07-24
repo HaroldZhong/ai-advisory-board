@@ -417,3 +417,140 @@ async def test_failed_reprobe_replaces_stale_row_with_unknown():
     assert merged["a"]["control_surface"] == "unknown"
     assert not merged["a"].get("probed")
     assert merged["b"]["control_surface"] == "levels"
+
+
+# --- per-model spend bounds (resolved from each model's OWN pinned endpoint) --
+#
+# A single uniform --max-cost-per-call must cover the priciest model in the sweep,
+# so one expensive outlier inflates the required ceiling for every other call. These
+# pin the tighter, still-sound alternative: price each call from its own endpoint.
+
+def _endpoints_getter(pricing_by_model):
+    """Fake the PUBLIC /endpoints API. `pricing_by_model` maps model id -> list of
+    (tag, prompt_per_token, completion_per_token)."""
+    def get(url, timeout=None):
+        model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        endpoints = [
+            {"tag": tag, "provider_name": tag, "name": tag, "model_id": model,
+             "pricing": {"prompt": str(p), "completion": str(c)}}
+            for tag, p, c in pricing_by_model.get(model, [])
+        ]
+        return httpx.Response(
+            200, json={"data": {"endpoints": endpoints}},
+            request=httpx.Request("GET", url),
+        )
+    return get
+
+
+def test_probe_call_bound_prices_output_at_the_cap():
+    probe = _probe()
+    # A probe call cannot bill more than PROBE_MAX_TOKENS of output, so pricing the
+    # output at the cap (plus the fixed prompt) is a true upper bound for the route.
+    bound = probe.probe_call_bound_usd(
+        {"prompt_per_token": 0.0000005, "completion_per_token": 0.000001}
+    )
+    expected = 0.000001 * probe.PROBE_MAX_TOKENS + 0.0000005 * probe.PROBE_PROMPT_TOKENS_EST
+    assert bound == pytest.approx(expected)
+
+
+def test_resolve_probe_call_bounds_prices_each_model_by_its_own_endpoint():
+    probe = _probe()
+    get = _endpoints_getter({
+        "cheap/model": [("cheap", 0.0000001, 0.0000002)],
+        "pricey/model": [("pricey", 0.000002, 0.00018)],
+    })
+    bounds = probe.resolve_probe_call_bounds(
+        [_entry("cheap/model"), _entry("pricey/model")],
+        lambda m: m["id"].split("/", 1)[0],
+        get=get,
+    )
+    assert bounds["cheap/model"] == pytest.approx(
+        0.0000002 * probe.PROBE_MAX_TOKENS + 0.0000001 * probe.PROBE_PROMPT_TOKENS_EST)
+    assert bounds["pricey/model"] == pytest.approx(
+        0.00018 * probe.PROBE_MAX_TOKENS + 0.000002 * probe.PROBE_PROMPT_TOKENS_EST)
+    # The whole point: the models do NOT share one bound.
+    assert bounds["pricey/model"] > bounds["cheap/model"] * 100
+
+
+def test_resolve_probe_call_bounds_refuses_an_unresolvable_pin():
+    probe = _probe()
+    # Dropping an unpriceable model from the ceiling math would under-count the spend
+    # it is still about to make, so this refuses loudly and names the model.
+    get = _endpoints_getter({"a/model": [("a", 0.0000001, 0.0000002)]})
+    with pytest.raises(probe.CeilingError, match="a/model"):
+        probe.resolve_probe_call_bounds(
+            [_entry("a/model")], lambda m: "not-a-real-tag", get=get,
+        )
+
+
+def test_estimate_max_probe_cost_per_model_sums_each_models_own_bound():
+    probe = _probe()
+    # (1 baseline + 3 levels) calls against each model's own per-call bound.
+    total = probe.estimate_max_probe_cost_per_model(
+        ["a", "b"], ("low", "medium", "high"), {"a": 0.01, "b": 0.25},
+    )
+    assert total == pytest.approx((0.01 + 0.25) * 4)
+
+
+def test_per_model_ceiling_is_far_tighter_than_a_uniform_bound():
+    probe = _probe()
+    # THE MOTIVATING DEFECT: with one expensive outlier, a uniform bound must be set
+    # to the outlier's per-call cost and applied to EVERY call, so the ceiling the
+    # maintainer must authorize balloons even though the sweep cannot spend it.
+    bounds = {"cheap": 0.008, "outlier": 1.44}
+    levels = ("low", "medium", "high")
+    per_model = probe.estimate_max_probe_cost_per_model(bounds, levels, bounds)
+    uniform = probe.estimate_max_probe_cost(len(bounds), levels, max(bounds.values()))
+    assert per_model < uniform
+    assert uniform > per_model * 1.5
+
+
+@pytest.mark.asyncio
+async def test_sweep_accepts_per_model_bounds_without_a_uniform_bound():
+    probe = _probe()
+    merged = await probe.run_probe_sweep(
+        [_entry("a"), _entry("b")], lambda m: "openai", "k",
+        max_probe_usd=1.0,
+        per_model_bounds={"a": 0.01, "b": 0.02},
+        transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+    )
+    assert merged["a"]["probed"] is True and merged["b"]["probed"] is True
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_when_a_model_it_will_probe_has_no_bound():
+    probe = _probe()
+    # "b" would still be probed, spending against a ceiling computed without it.
+    with pytest.raises(probe.CeilingError, match="b"):
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            max_probe_usd=1.0,
+            per_model_bounds={"a": 0.01},
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf")])
+async def test_sweep_refuses_a_nonpositive_or_nonfinite_per_model_bound(bad):
+    probe = _probe()
+    with pytest.raises(probe.CeilingError, match="per-call bound"):
+        await probe.run_probe_sweep(
+            [_entry("a")], lambda m: "openai", "k",
+            max_probe_usd=1.0,
+            per_model_bounds={"a": bad},
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_when_per_model_worst_case_exceeds_the_ceiling():
+    probe = _probe()
+    # 2 models x 4 calls x $0.30 = $2.40 > $1.00 authorized.
+    with pytest.raises(probe.CeilingError, match="exceeds the authorized"):
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            max_probe_usd=1.0,
+            per_model_bounds={"a": 0.30, "b": 0.30},
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )

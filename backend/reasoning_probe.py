@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 import httpx
 
 from . import config
+from .endpoint_pricing import EndpointPricingError, fetch_endpoint_pricing
 from .reasoning_capability import model_fingerprint, unknown_record
 
 
@@ -233,17 +234,87 @@ def models_needing_probe(
 
 
 def estimate_max_probe_cost(num_models: int, levels: Iterable[str], max_cost_per_call_usd: float) -> float:
-    """Upper bound on sweep spend: num_models x (1 baseline + one call per level) x
-    the maintainer-asserted worst-case per-call cost. Because every probe call caps
-    output at PROBE_MAX_TOKENS, the maintainer sets max_cost_per_call_usd to (the
-    PINNED endpoint's output price x PROBE_MAX_TOKENS + prompt) and this is a real
-    upper bound. We deliberately do NOT derive it from the registry's model-wide
-    `pricing`: --provider-tag pins a specific endpoint whose price can differ from
-    the curated model-wide value, so a registry-derived bound could under-count and
-    break the ceiling (exact per-endpoint price auto-resolution via /endpoints is a
-    documented follow-up)."""
+    """Upper bound on sweep spend using ONE uniform per-call bound: num_models x
+    (1 baseline + one call per level) x the maintainer-asserted worst-case per-call
+    cost. Because every probe call caps output at PROBE_MAX_TOKENS, the maintainer
+    sets max_cost_per_call_usd to (the PINNED endpoint's output price x
+    PROBE_MAX_TOKENS + prompt) and this is a real upper bound.
+
+    This bound is SOUND but LOOSE: one uniform figure must cover the priciest model
+    in the sweep, so a single expensive outlier inflates the ceiling for every other
+    call. Prefer `estimate_max_probe_cost_per_model` with bounds resolved by
+    `resolve_probe_call_bounds`, which prices each call from its OWN pinned endpoint.
+
+    Never derive the uniform bound from the registry's model-wide `pricing`:
+    --provider-tag pins a specific endpoint whose price can differ from the curated
+    model-wide value, so a registry-derived bound could UNDER-count and breach the
+    ceiling. Resolved endpoint prices (below) are the sound alternative."""
     calls_per_model = 1 + len(tuple(levels))
     return num_models * calls_per_model * max_cost_per_call_usd
+
+
+def probe_call_bound_usd(pricing: Dict[str, Any]) -> float:
+    """Worst-case USD cost of ONE probe call on the endpoint `pricing` describes.
+
+    Every probe call caps output at PROBE_MAX_TOKENS, so this is a true upper bound
+    for that route: output priced at the cap (the call cannot bill more) plus the
+    fixed probe prompt. Rates are USD PER TOKEN, as `/endpoints` publishes them."""
+    return (
+        float(pricing["completion_per_token"]) * PROBE_MAX_TOKENS
+        + float(pricing["prompt_per_token"]) * PROBE_PROMPT_TOKENS_EST
+    )
+
+
+def resolve_probe_call_bounds(
+    model_entries: List[Dict[str, Any]],
+    provider_of: Callable[[Dict[str, Any]], str],
+    *,
+    get=None,
+) -> Dict[str, float]:
+    """Per-model worst-case cost of ONE probe call, priced from each model's EXACT
+    pinned endpoint via the public (free, keyless) /endpoints API.
+
+    This is what makes a TIGHT ceiling honest: bounding every call by the priciest
+    model in the registry overstates the sweep by roughly an order of magnitude,
+    which would force the maintainer to authorize headroom the sweep cannot spend.
+
+    Refuses loudly rather than guessing: a model whose pinned endpoint price cannot
+    be resolved has NO sound bound, and silently dropping it from the ceiling math
+    would under-count the authorized spend. The error names every unresolved model
+    so the maintainer can fix the tag (or pin one with --provider-tag)."""
+    kwargs = {} if get is None else {"get": get}
+    bounds: Dict[str, float] = {}
+    unresolved: List[str] = []
+    for entry in model_entries:
+        model_id = entry.get("id")
+        try:
+            pricing = fetch_endpoint_pricing(model_id, provider_of(entry), **kwargs)
+            bound = probe_call_bound_usd(pricing)
+        except (EndpointPricingError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            unresolved.append(f"{model_id}: {exc}")
+            continue
+        if not (isinstance(bound, float) and math.isfinite(bound) and bound > 0):
+            unresolved.append(f"{model_id}: resolved a non-positive/non-finite bound {bound!r}")
+            continue
+        bounds[model_id] = bound
+    if unresolved:
+        raise CeilingError(
+            f"could not resolve a per-call price bound for {len(unresolved)} model(s), so the "
+            f"sweep ceiling cannot be guaranteed -- refusing to probe:\n  "
+            + "\n  ".join(unresolved)
+        )
+    return bounds
+
+
+def estimate_max_probe_cost_per_model(
+    model_ids: Iterable[str], levels: Iterable[str], per_model_bounds: Dict[str, float]
+) -> float:
+    """Upper bound on sweep spend when each model is priced by its own endpoint:
+    sum over models of (1 baseline + one call per level) x that model's per-call
+    bound. Raises KeyError for a model with no bound -- the caller must not be able
+    to silently omit a model from the ceiling it is about to spend against."""
+    calls_per_model = 1 + len(tuple(levels))
+    return sum(per_model_bounds[mid] for mid in model_ids) * calls_per_model
 
 
 async def run_probe_sweep(
@@ -252,7 +323,8 @@ async def run_probe_sweep(
     api_key: str,
     *,
     max_probe_usd: Optional[float],
-    max_cost_per_call_usd: Optional[float],
+    max_cost_per_call_usd: Optional[float] = None,
+    per_model_bounds: Optional[Dict[str, float]] = None,
     existing: Optional[Dict[str, Dict[str, Any]]] = None,
     levels: Iterable[str] = CANDIDATE_LEVELS,
     transport=None,
@@ -262,11 +334,20 @@ async def run_probe_sweep(
     """Probe every model that needs it, resumably, and return the merged records.
 
     SPEND-CEILING GUARD (PAID PROBE AUTHORIZATION): before any paid call, refuse if
-    the authorized ceiling or the per-call bound is unset/non-positive/non-finite,
-    or if the worst-case sweep cost (num calls x the asserted per-call bound) exceeds
-    the ceiling. One model erroring degrades to a skipped row, but a SYSTEMIC failure
-    (every call fails) aborts loudly rather than publishing an all-skipped matrix.
-    Bounded concurrency; the caller persists via reasoning_capability.save_capabilities.
+    the authorized ceiling is unset/non-positive/non-finite, if no sound per-call
+    bound is available, or if the worst-case sweep cost exceeds the ceiling.
+
+    Two ways to bound a call, exactly one required:
+      * `per_model_bounds` (PREFERRED) -- each model priced by its OWN pinned
+        endpoint (see resolve_probe_call_bounds). Every model about to be probed
+        must have a positive finite bound; a missing one refuses rather than
+        omitting that model's spend from the ceiling.
+      * `max_cost_per_call_usd` -- one uniform maintainer-asserted bound. Sound but
+        loose, since it must cover the priciest model in the sweep.
+
+    One model erroring degrades to a skipped row, but a SYSTEMIC failure (every call
+    fails) aborts loudly rather than publishing an all-skipped matrix. Bounded
+    concurrency; the caller persists via reasoning_capability.save_capabilities.
     """
     levels = tuple(levels)
     merged = dict(existing or {})
@@ -285,20 +366,40 @@ async def run_probe_sweep(
         raise CeilingError(
             f"authorized probe ceiling {max_probe_usd!r} must be a positive, finite number -- refusing to probe"
         )
-    if not _positive_finite(max_cost_per_call_usd):
+    if per_model_bounds is None and not _positive_finite(max_cost_per_call_usd):
         raise CeilingError(
             f"per-call cost bound {max_cost_per_call_usd!r} must be a positive, finite number "
-            f"(the pinned endpoint's output price x {PROBE_MAX_TOKENS} max tokens) -- refusing to probe"
+            f"(the pinned endpoint's output price x {PROBE_MAX_TOKENS} max tokens), or pass "
+            f"per_model_bounds -- refusing to probe"
         )
     if concurrency < 1:
         # asyncio.Semaphore(0) starts locked -> every task blocks forever.
         raise ValueError(f"concurrency must be >= 1 (got {concurrency})")
 
-    worst_case = estimate_max_probe_cost(len(needing), levels, max_cost_per_call_usd)
+    if per_model_bounds is not None:
+        # A model with no sound bound must NOT be quietly dropped from the ceiling
+        # math -- it would still be probed, spending against an under-counted total.
+        missing = [
+            m["id"] for m in needing
+            if not _positive_finite(per_model_bounds.get(m["id"]))
+        ]
+        if missing:
+            raise CeilingError(
+                f"no positive, finite per-call bound for {len(missing)} model(s) about to be "
+                f"probed ({', '.join(sorted(missing))}) -- refusing to probe"
+            )
+        worst_case = estimate_max_probe_cost_per_model(
+            [m["id"] for m in needing], levels, per_model_bounds
+        )
+        basis = f"{len(needing)} models x {1 + len(levels)} calls, each priced by its own endpoint"
+    else:
+        worst_case = estimate_max_probe_cost(len(needing), levels, max_cost_per_call_usd)
+        basis = (
+            f"{len(needing)} models x {1 + len(levels)} calls x ${max_cost_per_call_usd}/call"
+        )
     if worst_case > max_probe_usd:
         raise CeilingError(
-            f"worst-case probe spend ${worst_case:.4f} ({len(needing)} models x "
-            f"{1 + len(levels)} calls x ${max_cost_per_call_usd}/call) exceeds the authorized "
+            f"worst-case probe spend ${worst_case:.4f} ({basis}) exceeds the authorized "
             f"ceiling ${max_probe_usd:.4f} -- refusing to probe"
         )
 

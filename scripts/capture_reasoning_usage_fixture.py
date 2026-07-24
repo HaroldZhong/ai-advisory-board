@@ -53,10 +53,21 @@ from pathlib import Path
 import httpx
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-# Per-ENDPOINT pricing (public, no key). Rates differ between tags of the SAME
-# provider, so this is the only authority that can price a pinned route.
-OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{model}/endpoints"
 ROOT = Path(__file__).resolve().parent.parent
+# scripts/ is not the repo root on sys.path when this runs as a script, so the
+# `backend` import below would fail. Tests import this module from the root where
+# it already resolves; this keeps `python scripts/...` working too.
+sys.path.insert(0, str(ROOT))
+
+# Per-ENDPOINT pricing (public, no key). Rates differ between tags of the SAME
+# provider, so this is the only authority that can price a pinned route. Shared
+# with the paid probe, whose spend ceiling needs the same per-endpoint rates.
+from backend.endpoint_pricing import (  # noqa: E402
+    OPENROUTER_ENDPOINTS_URL,  # noqa: F401  -- re-exported; part of this module's API
+    EndpointPricingError,
+    fetch_endpoint_pricing as _fetch_endpoint_pricing,
+)
+
 FIXTURE = ROOT / "tests" / "fixtures" / "reasoning_usage_fixture.json"
 
 # Rounding + rate drift allowance, as a fraction of the completion-priced cost.
@@ -116,66 +127,16 @@ def select_provider_from_metadata(data, expected_provider_name):
 def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
     """Resolve the EXACT pinned endpoint and return its own pricing + provenance.
 
-    Billing is per endpoint: `azure` and `azure/swedencentral` are both provider
-    "Azure" on openai/gpt-4o-mini yet price completion at 0.0000006 vs 0.00000066.
-    So the tag must match exactly -- no prefix or provider-name fallback -- and an
-    absent or ambiguous match fails rather than guessing a rate.
-
-    Rates are USD PER TOKEN (strings upstream); the curated registry is per MILLION.
+    Thin wrapper over the shared resolver in `backend.endpoint_pricing` (the paid
+    probe's spend ceiling needs the same per-endpoint rates, so the exact-tag
+    matching lives in one place). Re-raised as CaptureError to keep this script's
+    single-error-type contract: a capture either produces trustworthy evidence or
+    raises CaptureError.
     """
-    url = OPENROUTER_ENDPOINTS_URL.format(model=model)
-    resp = get(url, timeout=30.0)
-    resp.raise_for_status()
-    body = resp.json()
-    data = body.get("data") if isinstance(body.get("data"), dict) else body
-    endpoints = (data or {}).get("endpoints") or []
-
-    matches = [e for e in endpoints if e.get("tag") == provider_tag]
-    if not matches:
-        raise CaptureError(
-            f"no endpoint on {model} has tag == {provider_tag!r}. Available tags: "
-            f"{sorted(str(e.get('tag')) for e in endpoints)}. Pricing is per endpoint, so the "
-            "pin must name an exact tag -- variant tags (e.g. 'azure/swedencentral') price "
-            "differently from their base tag."
-        )
-    if len(matches) > 1:
-        raise CaptureError(
-            f"tag {provider_tag!r} matched {len(matches)} endpoints on {model} -- ambiguous, "
-            "so no single rate can be attributed to this capture"
-        )
-
-    endpoint = matches[0]
-    pricing = endpoint.get("pricing") or {}
-
-    def rate(key):
-        value = pricing.get(key)
-        return float(value) if value not in (None, "") else None
-
-    prompt_rate = rate("prompt")
-    completion_rate = rate("completion")
-    if prompt_rate is None or completion_rate is None:
-        raise CaptureError(
-            f"endpoint {provider_tag!r} on {model} publishes no prompt/completion pricing; "
-            "cannot price this capture"
-        )
-
-    return {
-        "source": url,
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "units": "USD per token",
-        # Endpoint identity -- the reading is valid for THIS route only.
-        "tag": endpoint.get("tag"),
-        "provider_name": endpoint.get("provider_name"),
-        "endpoint_name": endpoint.get("name"),
-        "endpoint_model_id": endpoint.get("model_id"),
-        "endpoint_model_name": endpoint.get("model_name"),
-        "prompt_per_token": prompt_rate,
-        "completion_per_token": completion_rate,
-        # A non-zero internal_reasoning price on THIS endpoint is an explicit,
-        # named separate charge for reasoning tokens.
-        "internal_reasoning_per_token": rate("internal_reasoning"),
-        "pricing_raw": pricing,
-    }
+    try:
+        return _fetch_endpoint_pricing(model, provider_tag, get=get)
+    except EndpointPricingError as exc:
+        raise CaptureError(str(exc)) from exc
 
 
 def classify_billing(
