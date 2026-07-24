@@ -42,10 +42,24 @@ def _sum_usage(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     plain-turn compression AND a summary merge in the same turn -- callers
     bill the returned usage with one calculate_cost() call, so both LLM
     calls' costs must land in one dict)."""
-    return {
+    merged = {
         "prompt_tokens": a.get("prompt_tokens", 0) + b.get("prompt_tokens", 0),
         "completion_tokens": a.get("completion_tokens", 0) + b.get("completion_tokens", 0),
     }
+    # Each LLM call carries OpenRouter's authoritative billed usage.cost; sum them
+    # so the merged record keeps the real billed total instead of falling back to
+    # registry pricing (which would diverge from charges once usage.cost is the
+    # authority). Only when BOTH legs are billed -- otherwise omit cost so
+    # calculate_cost registry-prices the summed tokens rather than under-counting
+    # a missing billed leg.
+    ca, cb = a.get("cost"), b.get("cost")
+
+    def _billed(x):
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and x >= 0
+
+    if _billed(ca) and _billed(cb):
+        merged["cost"] = float(ca) + float(cb)
+    return merged
 
 
 def _tokenize(text: str) -> set:

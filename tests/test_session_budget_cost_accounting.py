@@ -626,6 +626,37 @@ def test_turn_cost_mixes_billed_and_registry_fallback(monkeypatch):
     assert total == pytest.approx(0.40 + 0.75)
 
 
+def test_sum_usage_preserves_billed_cost_through_merge(monkeypatch):
+    """Codex PR#90 P2: when one index call triggers both compaction tiers, the two
+    utility usage records are merged via rag._sum_usage before a single
+    calculate_cost. Both legs carry OpenRouter's billed usage.cost, so the merged
+    record must keep the SUMMED billed cost -- otherwise the already-billed calls
+    fall back to registry pricing and diverge from real charges."""
+    main = import_main(monkeypatch)
+    from backend.rag import _sum_usage
+
+    a = {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.011}
+    b = {"prompt_tokens": 20, "completion_tokens": 8, "cost": 0.022}
+    merged = _sum_usage(a, b)
+    assert merged["prompt_tokens"] == 30 and merged["completion_tokens"] == 13
+    assert merged["cost"] == pytest.approx(0.033)
+    # The billed total survives the single calculate_cost the caller makes.
+    assert main.calculate_cost(merged, "google/gemini-2.5-flash") == pytest.approx(0.033)
+
+
+def test_sum_usage_omits_cost_when_a_leg_is_unbilled(monkeypatch):
+    """If a leg lacks a billed cost, the merge omits cost so calculate_cost
+    registry-prices the summed tokens rather than under-counting the billed leg."""
+    from backend.rag import _sum_usage
+
+    merged = _sum_usage(
+        {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.011},
+        {"prompt_tokens": 20, "completion_tokens": 8},  # no billed cost
+    )
+    assert "cost" not in merged
+    assert merged["prompt_tokens"] == 30 and merged["completion_tokens"] == 13
+
+
 def _billing_classifier():
     """The single source of the inside/separate decision, imported from the
     capture harness so gate and capture can never drift apart."""
