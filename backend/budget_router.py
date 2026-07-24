@@ -178,6 +178,13 @@ _TURN_TOKEN_ESTIMATES = {
     "council_stage1": {"input": 4000, "output": 1200},   # each member drafts a full answer
     "council_stage2": {"input": 5000, "output": 400},     # each member ranks the others
     "chairman_stage3": {"input": 8000, "output": 1500},   # chairman synthesizes everything
+    "steward": {"input": 3000, "output": 500},            # Stage 0b tool-steward (chairman)
+}
+
+# Rough tokens for the Stage 0 web-search grounding call, by depth.
+_WEB_SEARCH_TOKENS = {
+    "fast": {"input": 2000, "output": 700},
+    "deep": {"input": 3000, "output": 1500},
 }
 
 
@@ -190,6 +197,17 @@ def _model_call_cost(model_id: Optional[str], input_tokens: int, output_tokens: 
     input_price = pricing.get("input", 1.0)
     output_price = pricing.get("output", 5.0)
     return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
+
+
+def estimate_web_search_cost(depth: str = "fast") -> float:
+    """Rough cost of the Stage 0 web-search grounding call (Perplexity), when web
+    search is enabled -- priced on the same SEARCH_MODELS the pipeline uses (Codex
+    #110). Deep (sonar-pro) costs materially more than fast (sonar)."""
+    from .web_search import SEARCH_MODELS
+
+    model = SEARCH_MODELS.get(depth, SEARCH_MODELS["fast"])
+    tokens = _WEB_SEARCH_TOKENS.get(depth, _WEB_SEARCH_TOKENS["fast"])
+    return _model_call_cost(model, tokens["input"], tokens["output"])
 
 
 def estimate_turn_cost(
@@ -221,8 +239,11 @@ def estimate_turn_cost(
     stage1 = _TURN_TOKEN_ESTIMATES["council_stage1"]
     stage2 = _TURN_TOKEN_ESTIMATES["council_stage2"]
     stage3 = _TURN_TOKEN_ESTIMATES["chairman_stage3"]
+    steward = _TURN_TOKEN_ESTIMATES["steward"]
 
-    total = 0.0
+    # Stage 0b tool-steward always runs on the chairman before stage 1 (Codex #110);
+    # for a cheap council + expensive chairman it materially moves the total.
+    total = _model_call_cost(chairman, steward["input"], steward["output"])
     for member in members:
         total += _model_call_cost(member, stage1["input"] + rag_tokens, stage1["output"])
         total += _model_call_cost(member, stage2["input"], stage2["output"])

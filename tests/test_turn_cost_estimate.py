@@ -150,6 +150,46 @@ async def test_estimate_endpoint_promotes_auto_chat_by_task_signal(monkeypatch, 
     assert research_kw["is_large"] is True
 
 
+def test_council_estimate_includes_steward_chairman_call(monkeypatch):
+    """Codex #110 R9: the council estimate includes the Stage 0b tool-steward call on
+    the chairman (run before stage 1), added on top of the member + chairman stages."""
+    _main, br, config = import_modules(monkeypatch)
+    from backend.budget_router import _model_call_cost, _TURN_TOKEN_ESTIMATES
+
+    council = br.estimate_turn_cost("council", config.COUNCIL_MODELS, config.CHAIRMAN_MODEL)
+    s1 = _TURN_TOKEN_ESTIMATES["council_stage1"]
+    s2 = _TURN_TOKEN_ESTIMATES["council_stage2"]
+    s3 = _TURN_TOKEN_ESTIMATES["chairman_stage3"]
+    st = _TURN_TOKEN_ESTIMATES["steward"]
+    without_steward = sum(
+        _model_call_cost(m, s1["input"], s1["output"]) + _model_call_cost(m, s2["input"], s2["output"])
+        for m in config.COUNCIL_MODELS
+    ) + _model_call_cost(config.CHAIRMAN_MODEL, s3["input"], s3["output"])
+    steward_cost = _model_call_cost(config.CHAIRMAN_MODEL, st["input"], st["output"])
+    assert steward_cost > 0
+    assert council == round(without_steward + steward_cost, 6)
+
+
+@pytest.mark.asyncio
+async def test_estimate_endpoint_includes_web_search_when_enabled(monkeypatch, tmp_path):
+    """Codex #110 R9: web search adds a Stage 0 Perplexity grounding call, so an
+    enabled (especially deep) search predicts more than the same turn without it."""
+    main, _br, _config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    none = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="chat"))
+    fast = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="chat", web_search_enabled=True, web_search_depth="fast")
+    )
+    deep = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="chat", web_search_enabled=True, web_search_depth="deep")
+    )
+    assert fast["predicted_cost"] > none["predicted_cost"]
+    assert deep["predicted_cost"] > fast["predicted_cost"]
+
+
 @pytest.mark.asyncio
 async def test_estimate_endpoint_404_for_missing_conversation(monkeypatch, tmp_path):
     main, _br, _config = import_modules(monkeypatch)

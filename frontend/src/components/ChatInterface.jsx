@@ -363,6 +363,8 @@ export default function ChatInterface({
             executionMode: settings.executionMode,
             ragPreset: settings.ragPreset,
             modelTier: settings.modelTier,
+            webSearchEnabled: settings.webSearchEnabled,
+            webSearchDepth: settings.webSearchDepth,
           });
         } catch {
           estimate = null;

@@ -834,6 +834,8 @@ class TurnEstimateRequest(BaseModel):
     execution_mode: str = "auto"
     rag_preset: str = "auto"
     model_tier: str = "auto"
+    web_search_enabled: bool = False
+    web_search_depth: str = "fast"
 
 
 @app.post("/api/conversations/{conversation_id}/estimate")
@@ -847,7 +849,7 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     Never blocks -- the client uses ``is_large`` to warn/confirm. The honest billed
     total still comes from usage.cost.
     """
-    from .budget_router import create_run_plan, estimate_turn_cost
+    from .budget_router import create_run_plan, estimate_turn_cost, estimate_web_search_cost
 
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
@@ -879,6 +881,10 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     else:
         # Chat: the planner's own predicted cost -- identical to the send path.
         predicted = run_plan.predicted_cost
+
+    # Web search adds a Stage 0 Perplexity grounding call before either path (Codex #110).
+    if request.web_search_enabled:
+        predicted += estimate_web_search_cost(request.web_search_depth)
 
     predicted = round(predicted, 6)
     return {
