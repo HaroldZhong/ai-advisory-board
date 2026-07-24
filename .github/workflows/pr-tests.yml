@@ -68,6 +68,7 @@ jobs:
           tests/test_provider_kind.py
           tests/test_reasoning_capability.py
           tests/test_reasoning_probe.py
+          tests/test_probe_cli.py
           -q
 
   windows-tests:
