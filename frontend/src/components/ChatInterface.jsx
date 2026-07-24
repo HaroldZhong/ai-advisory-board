@@ -150,9 +150,13 @@ export default function ChatInterface({
     // disable-able so the user can consciously turn it off.
     isEnablingUnavailable: !zdrAvailable && !effectiveZdr,
   });
+  // D3: thinking effort now affects the estimate, so freeze it while an estimate/confirm
+  // is pending -- the shown estimate must match the effort the turn is sent at (Codex #110).
   const thinkingDisabledReason = isUpdatingThinkingEffort
     ? 'Thinking effort update is being saved'
-    : null;
+    : (isEstimating || showCouncilConfirm)
+      ? 'Confirm or cancel the pending send first'
+      : null;
 
   const handleBudgetConfirm = async (budgetUsd, allowOverage = true) => {
     try {
