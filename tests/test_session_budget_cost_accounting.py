@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -545,65 +546,208 @@ def _billing_classifier():
     return importlib.import_module("scripts.capture_reasoning_usage_fixture")
 
 
-def _synthetic_fixture(*, reasoning, cost, label, model="openai/gpt-4o-mini"):
-    """A fixture shaped like a real capture. openai/gpt-4o-mini is priced
-    input=$0.15/M, output=$0.6/M -> 1M/1M tokens is $0.75 completion-priced."""
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _routing_metadata(provider, *, selected=True):
+    """An openrouter_metadata block in the documented shape: endpoints.available[]
+    entries carry provider/model/selected (docs/guides/features/router-metadata)."""
+    return {
+        "requested": "openai/gpt-4o-mini",
+        "summary": f"available=1, selected={provider}",
+        "endpoints": {
+            "total": 1,
+            "available": [
+                {"provider": provider, "model": "openai/gpt-4o-mini", "selected": selected}
+            ],
+        },
+    }
+
+
+def test_routing_metadata_matching_pin_is_accepted():
+    """Provider pins are slugs ('openai'); metadata reports display names
+    ('OpenAI'). A case/punctuation difference is the same route."""
+    capture = _billing_classifier()
+    served = capture.select_provider_from_metadata(
+        {"openrouter_metadata": _routing_metadata("OpenAI")}, "openai"
+    )
+    assert served == "OpenAI"
+
+
+def test_routing_metadata_missing_is_rejected():
+    """Without openrouter_metadata the served route is unverified, so the capture
+    is not provider evidence."""
+    capture = _billing_classifier()
+    with pytest.raises(capture.CaptureError, match="openrouter_metadata"):
+        capture.select_provider_from_metadata({"choices": []}, "openai")
+
+
+def test_routing_metadata_without_selected_endpoint_is_rejected():
+    capture = _billing_classifier()
+    with pytest.raises(capture.CaptureError, match="no selected endpoint"):
+        capture.select_provider_from_metadata(
+            {"openrouter_metadata": _routing_metadata("OpenAI", selected=False)}, "openai"
+        )
+
+
+def test_routing_metadata_mismatched_provider_is_rejected():
+    """A fallback route invalidates a provider-specific billing reading."""
+    capture = _billing_classifier()
+    with pytest.raises(capture.CaptureError, match="routing mismatch"):
+        capture.select_provider_from_metadata(
+            {"openrouter_metadata": _routing_metadata("Azure")}, "openai"
+        )
+
+
+def test_capture_records_verified_route_and_price_provenance():
+    """End-to-end with mocked transports: a good capture records the verified
+    route and the exact rates + provenance the gate will later re-derive from."""
+    capture = _billing_classifier()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        assert headers["X-OpenRouter-Metadata"] == "enabled"
+        assert json["provider"] == {"order": ["openai"], "allow_fallbacks": False}
+        assert "usage" not in json, "usage:{include:true} is deprecated and must not be sent"
+        return _FakeResponse({
+            "choices": [{"message": {"content": "ok"}}],
+            "openrouter_metadata": _routing_metadata("OpenAI"),
+            "usage": {
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000,
+                "completion_tokens_details": {"reasoning_tokens": 400_000},
+                "cost": 0.75,
+                "cost_details": {"upstream_inference_cost": 0.70},
+            },
+        })
+
+    def fake_get(url, timeout=None):
+        return _FakeResponse({
+            "data": {"pricing": {"prompt": "0.00000015", "completion": "0.0000006",
+                                 "internal_reasoning": "0"}}
+        })
+
+    fixture = capture.capture("openai/gpt-4o-mini", "openai", "key",
+                              post=fake_post, get=fake_get)
+
+    assert fixture["provider_selected"] == "OpenAI"
+    assert fixture["price_authority"]["source"].endswith("/model/openai/gpt-4o-mini")
+    assert fixture["price_authority"]["fetched_at"]
+    assert fixture["price_authority"]["completion_per_token"] == 6e-7
+    assert fixture["upstream_inference_cost"] == 0.70
+    assert fixture["billing_relationship"] == "inside"
+    # The gate must accept a genuine capture end-to-end.
+    assert _assert_fixture_proves_inside_billing(fixture) == "inside"
+
+
+def test_failed_capture_leaves_fixture_untouched(monkeypatch, tmp_path):
+    """A capture that cannot verify its route must not overwrite the placeholder
+    (or a good prior capture) with junk."""
+    capture = _billing_classifier()
+    fixture_file = tmp_path / "reasoning_usage_fixture.json"
+    original = '{"_placeholder": true}'
+    fixture_file.write_text(original, encoding="utf-8")
+
+    monkeypatch.setattr(capture, "FIXTURE", fixture_file)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(sys, "argv", ["capture", "openai/gpt-4o-mini", "openai"])
+
+    def exploding_capture(*args, **kwargs):
+        raise capture.CaptureError("routing mismatch: simulated")
+
+    monkeypatch.setattr(capture, "capture", exploding_capture)
+
+    assert capture.main() == 1
+    assert fixture_file.read_text(encoding="utf-8") == original
+
+
+def _synthetic_fixture(*, reasoning, cost, label, internal_reasoning=None):
+    """A fixture shaped like a real capture, carrying its own captured rates.
+
+    Rates are USD PER TOKEN (OpenRouter's unit), unlike the curated registry's
+    per-million: 1.5e-7 prompt + 6e-7 completion over 1M/1M tokens is $0.75."""
     return {
         "_placeholder": False,
-        "model": model,
+        "model": "openai/gpt-4o-mini",
         "provider_requested": "synthetic-provider",
-        "provider_served": "synthetic-provider",
+        "provider_selected": "Synthetic-Provider",  # display-name form, must still match
         "usage": {
             "prompt_tokens": 1_000_000,
             "completion_tokens": 1_000_000,
             "completion_tokens_details": {"reasoning_tokens": reasoning},
         },
         "cost": cost,
+        "price_authority": {
+            "source": "https://openrouter.ai/api/v1/model/openai/gpt-4o-mini",
+            "fetched_at": "2026-07-23T00:00:00+00:00",
+            "units": "USD per token",
+            "prompt_per_token": 1.5e-7,
+            "completion_per_token": 6e-7,
+            "internal_reasoning_per_token": internal_reasoning,
+        },
         "billing_relationship": label,
     }
 
 
-def _assert_fixture_proves_inside_billing(main, fixture):
+def _assert_fixture_proves_inside_billing(fixture):
     """Shared D1 gate policy applied to a fixture dict.
 
-    Raises AssertionError unless the fixture is provider-attributed, cost-bearing,
-    and shows a clear INSIDE billing relationship per the single-sourced
-    classifier. Returns the relationship on success."""
+    The verdict is re-derived from the fixture's OWN stored rates, never from
+    today's mutable registry -- a capture stays reproducible even after registry
+    prices move (drift is reported separately, it must not silently reclassify).
+
+    Raises AssertionError unless the fixture is provider-verified, cost-bearing,
+    priced with recorded provenance, and shows a clear INSIDE relationship."""
     capture = _billing_classifier()
-    model = fixture["model"]
     usage = fixture["usage"]
     reported_cost = fixture.get("cost")
     recorded = fixture.get("billing_relationship")
     reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
-    completion = usage.get("completion_tokens", 0)
 
-    # The D1 decision is provider-specific; a fixture that cannot name its route
-    # is not evidence for it.
-    if not (fixture.get("provider_requested") or fixture.get("provider_served")):
+    # The decision is provider-specific, and the served route must have been
+    # VERIFIED against the pin -- not merely requested.
+    requested = fixture.get("provider_requested")
+    selected = fixture.get("provider_selected")
+    if not requested or not selected:
         raise AssertionError(
-            "fixture records no provider route (provider_requested/provider_served); the "
-            "billing decision is provider-specific -- re-capture with a pinned provider"
+            "fixture must record both provider_requested and the VERIFIED provider_selected "
+            "(from openrouter_metadata); a pin alone does not prove which route served the call"
+        )
+    if capture._normalize_provider(requested) != capture._normalize_provider(selected):
+        raise AssertionError(
+            f"routing mismatch in fixture: requested {requested!r}, served {selected!r} -- "
+            "the billing verdict is provider-specific, so re-capture on the pinned route"
         )
     if reported_cost is None:
-        raise AssertionError(
-            "capture must record OpenRouter's billed cost (usage.include=true) -- it is the authority"
-        )
+        raise AssertionError("capture must record the billed `usage.cost` -- it is the authority")
 
-    model_meta = main.get_model_by_id(model)
-    if not model_meta or (model_meta.get("pricing") or {}).get("output") is None:
-        raise AssertionError(
-            f"{model} is not registry-priced; capture with a registry-priced model so "
-            "billed cost can be compared"
-        )
-    output_rate = model_meta["pricing"]["output"]
-    completion_priced = main.calculate_cost(usage, model)
+    price = fixture.get("price_authority") or {}
+    for field in ("source", "fetched_at", "prompt_per_token", "completion_per_token"):
+        if price.get(field) is None:
+            raise AssertionError(
+                f"price_authority.{field} missing -- the verdict must be reproducible from "
+                "rates recorded AT CAPTURE TIME, with provenance"
+            )
+
+    # Price from the STORED rates (USD per token), not the registry.
+    completion_priced = (
+        usage.get("prompt_tokens", 0) * price["prompt_per_token"]
+        + usage.get("completion_tokens", 0) * price["completion_per_token"]
+    )
 
     relationship, detail = capture.classify_billing(
         reasoning_tokens=reasoning,
-        completion_tokens=completion,
         reported_cost=reported_cost,
         completion_priced_cost=completion_priced,
-        output_rate=output_rate,
+        completion_rate_per_token=price["completion_per_token"],
+        internal_reasoning_rate_per_token=price.get("internal_reasoning_per_token"),
     )
 
     # The classifier is the authority; a recorded label that disagrees means the
@@ -624,60 +768,81 @@ def _assert_fixture_proves_inside_billing(main, fixture):
 
 
 @pytest.mark.parametrize(
-    "case, reasoning, cost, label, should_pass",
+    "case, reasoning, cost, label, internal_reasoning, should_pass",
     [
         # cost 0.75 == completion-priced -> no surcharge, signal large enough
-        ("inside/large", 400_000, 0.75, "inside", True),
-        # cost 0.99 == completion-priced + 400k*0.6/M -> clear separate charge
-        ("separate/large", 400_000, 0.99, "separate", False),
+        ("inside/large", 400_000, 0.75, "inside", None, True),
+        # cost 0.99 == completion-priced + 400k*6e-7 -> clear separate charge
+        ("separate/large", 400_000, 0.99, "separate", None, False),
         # a REAL separate charge too small to distinguish from noise: must be
         # ambiguous, never a false 'inside' (the false-pass hole)
-        ("separate/small", 10_000, 0.756, "ambiguous", False),
+        ("separate/small", 10_000, 0.756, "ambiguous", None, False),
         # genuinely inside but signal too small to prove it -> ambiguous
-        ("inside/small", 10_000, 0.75, "ambiguous", False),
+        ("inside/small", 10_000, 0.75, "ambiguous", None, False),
         # label claims inside while cost shows separate -> mismatch rejected
-        ("mislabeled-inside", 400_000, 0.99, "inside", False),
+        ("mislabeled-inside", 400_000, 0.99, "inside", None, False),
+        # an explicit internal_reasoning price is a named separate charge, even
+        # though the billed cost alone would have read as 'inside'
+        ("explicit-internal-reasoning", 400_000, 0.75, "separate", 6e-7, False),
     ],
 )
-def test_d1_billing_gate_synthetic_cases(monkeypatch, case, reasoning, cost, label, should_pass):
+def test_d1_billing_gate_synthetic_cases(case, reasoning, cost, label, internal_reasoning, should_pass):
     """Proves the D1 gate is load-bearing WITHOUT a live capture, preserving the
-    five cases as runnable tests (they were previously only demonstrated ad-hoc by
+    cases as runnable tests (they were previously only demonstrated ad-hoc by
     swapping the fixture file in and out).
 
-    Only a clear, provider-attributed INSIDE reading may pass. Separate billing,
-    an indistinguishable surcharge, and a hand-edited label must all be rejected."""
-    main = import_main(monkeypatch)
-    fixture = _synthetic_fixture(reasoning=reasoning, cost=cost, label=label)
+    Only a clear, provider-verified INSIDE reading may pass. Separate billing, an
+    indistinguishable surcharge, a hand-edited label, and an explicitly priced
+    internal_reasoning rate must all be rejected."""
+    fixture = _synthetic_fixture(
+        reasoning=reasoning, cost=cost, label=label, internal_reasoning=internal_reasoning
+    )
 
     if should_pass:
-        assert _assert_fixture_proves_inside_billing(main, fixture) == "inside"
+        assert _assert_fixture_proves_inside_billing(fixture) == "inside"
     else:
         with pytest.raises(AssertionError):
-            _assert_fixture_proves_inside_billing(main, fixture)
+            _assert_fixture_proves_inside_billing(fixture)
 
 
-def test_d1_billing_gate_requires_provider_evidence(monkeypatch):
-    """A fixture with no recorded route cannot support a provider-specific
-    billing decision, even when the numbers themselves read as 'inside'."""
-    main = import_main(monkeypatch)
+def test_d1_billing_gate_requires_verified_route():
+    """A pin alone is not evidence: without the VERIFIED provider_selected from
+    routing metadata the reading cannot be attributed to a route."""
     fixture = _synthetic_fixture(reasoning=400_000, cost=0.75, label="inside")
-    fixture["provider_requested"] = None
-    fixture["provider_served"] = None
+    fixture["provider_selected"] = None
 
-    with pytest.raises(AssertionError, match="provider"):
-        _assert_fixture_proves_inside_billing(main, fixture)
+    with pytest.raises(AssertionError, match="provider_selected"):
+        _assert_fixture_proves_inside_billing(fixture)
 
 
-def test_reasoning_usage_fixture_billing_relationship(monkeypatch):
-    """D1 honesty gate (load-bearing once captured). Whether reasoning tokens
-    are billed INSIDE completion_tokens or SEPARATELY must come from a REAL
-    captured payload, decided by OpenRouter's billed `cost` -- NOT token
-    containment (reasoning<=completion holds either way). Passes only when the
-    fixture shows INSIDE billing (meter truthful as-is); FAILS on SEPARATE
-    billing, because current calculate_cost then under-charges and D1 must add a
-    provider-specific reasoning line. Capture with:
+def test_d1_billing_gate_rejects_routing_mismatch():
+    """A capture served by a provider other than the pinned one is not evidence
+    for the pinned provider's billing."""
+    fixture = _synthetic_fixture(reasoning=400_000, cost=0.75, label="inside")
+    fixture["provider_selected"] = "SomeOtherProvider"
 
-        OPENROUTER_API_KEY=... uv run python scripts/capture_reasoning_usage_fixture.py <model_id>
+    with pytest.raises(AssertionError, match="routing mismatch"):
+        _assert_fixture_proves_inside_billing(fixture)
+
+
+def test_d1_billing_gate_requires_recorded_price_provenance():
+    """The verdict must be reproducible from rates recorded at capture time, so a
+    fixture missing its provenance is rejected rather than re-priced from today's
+    registry."""
+    fixture = _synthetic_fixture(reasoning=400_000, cost=0.75, label="inside")
+    fixture["price_authority"]["fetched_at"] = None
+
+    with pytest.raises(AssertionError, match="fetched_at"):
+        _assert_fixture_proves_inside_billing(fixture)
+
+
+def test_reasoning_usage_fixture_billing_relationship():
+    """D1 honesty gate (load-bearing once captured). Whether reasoning tokens are
+    billed INSIDE completion_tokens or SEPARATELY must come from a REAL captured
+    payload on a VERIFIED route, decided by the billed `usage.cost` against the
+    rates recorded at capture time. Capture with:
+
+        OPENROUTER_API_KEY=... uv run python scripts/capture_reasoning_usage_fixture.py <model_id> <provider_slug>
 
     Applies the same policy as test_d1_billing_gate_synthetic_cases, so the live
     reading is judged by exactly the rules those cases prove. Skips until the
@@ -687,12 +852,41 @@ def test_reasoning_usage_fixture_billing_relationship(monkeypatch):
     if fixture.get("_placeholder"):
         pytest.skip(
             "real usage fixture not captured yet -- run "
-            "scripts/capture_reasoning_usage_fixture.py <model_id> [provider_slug] with a live key"
+            "scripts/capture_reasoning_usage_fixture.py <model_id> <provider_slug> with a live key"
         )
 
-    main = import_main(monkeypatch)
     usage = fixture["usage"]
     reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
     assert reasoning > 0, "fixture must come from a real reasoning turn"
 
-    assert _assert_fixture_proves_inside_billing(main, fixture) == "inside"
+    assert _assert_fixture_proves_inside_billing(fixture) == "inside"
+
+
+def test_captured_rates_match_current_registry_or_report_drift(monkeypatch):
+    """Registry prices are mutable; a captured verdict is not. This surfaces drift
+    between the rates stored at capture time and today's curated registry WITHOUT
+    letting that drift silently reclassify the billing verdict (the verdict is
+    always re-derived from the stored rates). Skips until a real capture exists."""
+    with open(FIXTURE_PATH, encoding="utf-8") as fh:
+        fixture = json.load(fh)
+    if fixture.get("_placeholder"):
+        pytest.skip("no captured fixture yet -- nothing to compare against the registry")
+
+    main = import_main(monkeypatch)
+    model_meta = main.get_model_by_id(fixture["model"])
+    if not model_meta or not (model_meta.get("pricing") or {}).get("output"):
+        pytest.skip(f"{fixture['model']} is not in the curated registry -- no drift baseline")
+
+    price = fixture["price_authority"]
+    # Registry rates are per MILLION tokens; captured rates are per token.
+    registry_completion_per_token = model_meta["pricing"]["output"] / 1_000_000
+    captured = price["completion_per_token"]
+    drift = abs(registry_completion_per_token - captured)
+
+    assert drift <= max(1e-12, 0.05 * captured), (
+        f"captured completion rate {captured}/tok (from {price['source']} at "
+        f"{price['fetched_at']}) has drifted from the registry's "
+        f"{registry_completion_per_token}/tok. The D1 verdict still stands on the captured "
+        "rates by design -- re-capture the fixture or refresh the registry, but do NOT "
+        "silently reclassify."
+    )

@@ -1,26 +1,33 @@
 {
   "_placeholder": true,
-  "_doc": "Placeholder. Run `scripts/capture_reasoning_usage_fixture.py <model_id> [provider_slug]` with a live OPENROUTER_API_KEY to overwrite this with a REAL usage payload. D1's cost-accounting decision (are reasoning_tokens billed inside completion_tokens, or separately?) is derived from OpenRouter's billed `cost` vs the registry-priced prompt+completion cost by classify_billing() in that script -- the single source the gate also imports. The decision is PROVIDER-SPECIFIC, so pin a provider and keep provider_requested/provider_served populated. While _placeholder is true, tests/test_session_budget_cost_accounting.py::test_reasoning_usage_fixture_billing_relationship skips; the synthetic-case tests run regardless.",
+  "_doc": "Placeholder. Run `scripts/capture_reasoning_usage_fixture.py <model_id> <provider_slug>` with a live OPENROUTER_API_KEY to overwrite this with a REAL usage payload. Both args are required: the D1 billing decision is provider-specific, so the capture pins the provider, opts into router metadata (X-OpenRouter-Metadata: enabled), and verifies the served endpoint matches the pin -- a capture that cannot verify its route fails and leaves this file untouched. The verdict is re-derived by the gate from the rates stored in price_authority (USD per token, with source + fetched_at), never from the mutable curated registry; registry differences are reported as drift instead. While _placeholder is true, the live gate skips; the synthetic-case and routing-metadata tests run regardless.",
   "model": null,
   "provider_requested": null,
-  "provider_served": null,
+  "provider_selected": null,
+  "routing_summary": null,
   "usage": {
     "prompt_tokens": 0,
     "completion_tokens": 0,
     "completion_tokens_details": {
       "reasoning_tokens": 0
     },
-    "cost": null
+    "cost": null,
+    "cost_details": {
+      "upstream_inference_cost": null
+    }
   },
   "cost": null,
-  "price_evidence": {
-    "registry_input_per_mtok": null,
-    "registry_output_per_mtok": null,
-    "completion_priced_cost": null,
-    "surcharge": null,
-    "expected_separate_surcharge": null,
-    "noise": null
+  "upstream_inference_cost": null,
+  "price_authority": {
+    "source": null,
+    "fetched_at": null,
+    "units": "USD per token",
+    "prompt_per_token": null,
+    "completion_per_token": null,
+    "internal_reasoning_per_token": null,
+    "completion_priced_cost": null
   },
+  "classification_detail": null,
   "billing_relationship": null,
   "_conclusion": null
 }
