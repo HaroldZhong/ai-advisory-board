@@ -187,6 +187,16 @@ _WEB_SEARCH_TOKENS = {
     "deep": {"input": 3000, "output": 1500},
 }
 
+# Rough reasoning tokens (billed as OUTPUT) added to each generation call by thinking
+# effort. High/X-High materially increase cost -- especially across a full council.
+_REASONING_OUTPUT_TOKENS = {
+    "minimal": 0,
+    "low": 800,
+    "medium": 2000,
+    "high": 5000,
+    "xhigh": 9000,
+}
+
 
 def _model_call_cost(model_id: Optional[str], input_tokens: int, output_tokens: int) -> float:
     """USD cost of one model call at CURATED_MODELS pricing (fallback $1/$5 per M tokens)."""
@@ -197,6 +207,13 @@ def _model_call_cost(model_id: Optional[str], input_tokens: int, output_tokens: 
     input_price = pricing.get("input", 1.0)
     output_price = pricing.get("output", 5.0)
     return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
+
+
+def estimate_reasoning_cost(model_id: Optional[str], thinking_effort: str = "medium") -> float:
+    """Rough cost of the reasoning tokens (billed as output) one generation call adds
+    at the given effort -- so a high-effort chat turn isn't under-estimated (Codex #110)."""
+    reasoning_out = _REASONING_OUTPUT_TOKENS.get(thinking_effort, _REASONING_OUTPUT_TOKENS["medium"])
+    return _model_call_cost(model_id, 0, reasoning_out)
 
 
 def estimate_web_search_cost(depth: str = "fast") -> float:
@@ -216,6 +233,7 @@ def estimate_turn_cost(
     chairman_model: Optional[str] = None,
     rag_tokens: int = 0,
     execution_mode: str = "standard",
+    thinking_effort: str = "medium",
 ) -> float:
     """Rough, conservative pre-send USD estimate for the next turn (APPROXIMATE).
 
@@ -230,10 +248,14 @@ def estimate_turn_cost(
     from .config import CHAIRMAN_MODEL, COUNCIL_MODELS
 
     chairman = chairman_model or CHAIRMAN_MODEL
+    # Reasoning tokens (billed as output) added to each GENERATION call by effort.
+    reasoning_out = _REASONING_OUTPUT_TOKENS.get(thinking_effort, _REASONING_OUTPUT_TOKENS["medium"])
 
     if mode != "council":
         exec_mode = execution_mode if execution_mode in ("quick", "standard", "research") else "standard"
-        return estimate_message_cost(exec_mode, rag_tokens, chairman)
+        base = estimate_message_cost(exec_mode, rag_tokens, chairman)
+        # High effort adds reasoning tokens on the chairman's single generation call.
+        return round(base + _model_call_cost(chairman, 0, reasoning_out), 6)
 
     members = council_models or COUNCIL_MODELS
     stage1 = _TURN_TOKEN_ESTIMATES["council_stage1"]
@@ -245,7 +267,10 @@ def estimate_turn_cost(
     # for a cheap council + expensive chairman it materially moves the total.
     total = _model_call_cost(chairman, steward["input"], steward["output"])
     for member in members:
-        total += _model_call_cost(member, stage1["input"] + rag_tokens, stage1["output"])
+        # Each member reasons on its stage-1 draft (reasoning billed as output); the
+        # short stage-2 ranking carries no meaningful reasoning budget.
+        total += _model_call_cost(member, stage1["input"] + rag_tokens, stage1["output"] + reasoning_out)
         total += _model_call_cost(member, stage2["input"], stage2["output"])
-    total += _model_call_cost(chairman, stage3["input"], stage3["output"])
+    # The chairman reasons on its stage-3 synthesis.
+    total += _model_call_cost(chairman, stage3["input"], stage3["output"] + reasoning_out)
     return round(total, 6)

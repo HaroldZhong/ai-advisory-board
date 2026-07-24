@@ -85,6 +85,11 @@ function ConversationView({
 
     let cancelled = false;
 
+    // Drop a stale conversation from the previous route immediately, so a child that
+    // reads `currentConversation` (e.g. ChatInterface's pre-send estimate) never sees a
+    // conversation whose id != the current route while the new one loads (Codex #110).
+    setCurrentConversation((prev) => (prev && prev.id === conversationId ? prev : null));
+
     const loadConversation = async (id) => {
       try {
         const conv = await api.getConversation(id);

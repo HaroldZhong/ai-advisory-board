@@ -84,8 +84,10 @@ def test_chat_estimate_mirrors_run_planner_pricing(monkeypatch):
     _main, br, config = import_modules(monkeypatch)
     chairman = config.CHAIRMAN_MODEL
     rag = 16000
-    standard = br.estimate_turn_cost("chat", None, chairman, rag_tokens=rag, execution_mode="standard")
-    research = br.estimate_turn_cost("chat", None, chairman, rag_tokens=rag, execution_mode="research")
+    # thinking_effort="minimal" -> no reasoning tokens, so the chat estimate is exactly
+    # the planner's own pricing primitive.
+    standard = br.estimate_turn_cost("chat", None, chairman, rag_tokens=rag, execution_mode="standard", thinking_effort="minimal")
+    research = br.estimate_turn_cost("chat", None, chairman, rag_tokens=rag, execution_mode="research", thinking_effort="minimal")
     assert research > standard  # research prices more base tokens
     assert research == br.estimate_message_cost("research", rag, chairman)  # equals the planner primitive
 
@@ -174,7 +176,8 @@ def test_council_estimate_includes_steward_chairman_call(monkeypatch):
     _main, br, config = import_modules(monkeypatch)
     from backend.budget_router import _model_call_cost, _TURN_TOKEN_ESTIMATES
 
-    council = br.estimate_turn_cost("council", config.COUNCIL_MODELS, config.CHAIRMAN_MODEL)
+    # thinking_effort="minimal" isolates the steward component from reasoning tokens.
+    council = br.estimate_turn_cost("council", config.COUNCIL_MODELS, config.CHAIRMAN_MODEL, thinking_effort="minimal")
     s1 = _TURN_TOKEN_ESTIMATES["council_stage1"]
     s2 = _TURN_TOKEN_ESTIMATES["council_stage2"]
     s3 = _TURN_TOKEN_ESTIMATES["chairman_stage3"]
@@ -206,6 +209,29 @@ async def test_estimate_endpoint_includes_web_search_when_enabled(monkeypatch, t
     )
     assert fast["predicted_cost"] > none["predicted_cost"]
     assert deep["predicted_cost"] > fast["predicted_cost"]
+
+
+@pytest.mark.asyncio
+async def test_estimate_endpoint_includes_thinking_effort(monkeypatch, tmp_path):
+    """Codex #110 R12: high thinking effort adds reasoning tokens (billed as output) to
+    every generation, so a high/xhigh-effort turn predicts more than a medium one -- a
+    high-effort full-council turn isn't under-warned below the threshold."""
+    main, _br, _config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    medium = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", thinking_effort="medium")
+    )
+    high = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", thinking_effort="high")
+    )
+    xhigh = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", thinking_effort="xhigh")
+    )
+    assert high["predicted_cost"] > medium["predicted_cost"]
+    assert xhigh["predicted_cost"] > high["predicted_cost"]
 
 
 @pytest.mark.asyncio

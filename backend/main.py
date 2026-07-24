@@ -836,6 +836,7 @@ class TurnEstimateRequest(BaseModel):
     model_tier: str = "auto"
     web_search_enabled: bool = False
     web_search_depth: str = "fast"
+    thinking_effort: Optional[str] = None  # resolved effort; falls back to the conversation's
 
 
 @app.post("/api/conversations/{conversation_id}/estimate")
@@ -849,7 +850,7 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     Never blocks -- the client uses ``is_large`` to warn/confirm. The honest billed
     total still comes from usage.cost.
     """
-    from .budget_router import create_run_plan, estimate_turn_cost, estimate_web_search_cost
+    from .budget_router import create_run_plan, estimate_reasoning_cost, estimate_turn_cost, estimate_web_search_cost
 
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
@@ -880,17 +881,27 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
         model_tier=request.model_tier,
     )
 
+    # Resolve the effort the turn will actually run at (request override, else the
+    # conversation's stored effort, else medium) -- high effort adds reasoning cost the
+    # threshold check must see (Codex #110).
+    thinking_effort = request.thinking_effort or metadata.get("thinking_effort") or "medium"
+
     if request.mode == "council":
-        # Council fan-out on the planner's RESOLVED rag budget + chairman.
+        # Council fan-out on the planner's RESOLVED rag budget + chairman, at the
+        # turn's effort.
         predicted = estimate_turn_cost(
             "council",
             council_models=metadata.get("council_models"),
             chairman_model=run_plan.chairman_model,
             rag_tokens=run_plan.rag_max_tokens,
+            thinking_effort=thinking_effort,
         )
     else:
-        # Chat: the planner's own predicted cost -- identical to the send path.
-        predicted = run_plan.predicted_cost
+        # Chat: the planner's own predicted cost (mirrors the send path's task-signal
+        # routing exactly) plus the chairman's reasoning at the turn's effort.
+        predicted = run_plan.predicted_cost + estimate_reasoning_cost(
+            run_plan.chairman_model, thinking_effort
+        )
 
     # Web search adds a Stage 0 Perplexity grounding call before either path (Codex #110).
     if request.web_search_enabled:

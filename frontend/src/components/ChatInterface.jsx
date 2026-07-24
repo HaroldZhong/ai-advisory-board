@@ -19,6 +19,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
 import { buildBudgetPolicyUpdate, formatCurrency, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
+import { resolveEffectiveThinkingEffort } from '@/utils/thinkingEffort';
 import { predictNextMessageMode } from '../utils/modePrediction';
 import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
@@ -329,6 +330,9 @@ export default function ChatInterface({
       return;
     }
     if (composerDisabled) return;
+    // No loaded conversation (e.g. mid conversation-switch, before the new one loads) --
+    // don't submit against a null/stale conversation and skip the estimate (Codex #110).
+    if (!conversation?.id) return;
     // A pre-send estimate is already in flight for this composer -- ignore the repeat
     // click/Enter so a double-tap during the await can't start two paid sends (Codex #110).
     if (estimatingRef.current) return;
@@ -365,6 +369,7 @@ export default function ChatInterface({
             modelTier: settings.modelTier,
             webSearchEnabled: settings.webSearchEnabled,
             webSearchDepth: settings.webSearchDepth,
+            thinkingEffort: resolveEffectiveThinkingEffort(conversation),
           });
         } catch {
           estimate = null;
