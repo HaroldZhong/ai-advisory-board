@@ -1,0 +1,39 @@
+{
+  "_placeholder": true,
+  "_doc": "Placeholder. Run `scripts/capture_reasoning_usage_fixture.py <model_id> <provider_tag>` with a live OPENROUTER_API_KEY to overwrite this with a REAL usage payload. Both args are required. Billing is per ENDPOINT, not per model or per provider name: GET /api/v1/models/{author}/{slug}/endpoints (public, no key) shows e.g. tags 'azure' and 'azure/swedencentral' both under provider_name 'Azure' with different completion rates. So the capture resolves the endpoint whose `tag` EXACTLY equals the pin (failing on a missing or ambiguous tag), prices only from that endpoint, and verifies the router's selected display name against that endpoint's provider_name -- which accepts a variant tag while still rejecting a different provider. A capture that cannot verify its route fails and leaves this file untouched. The gate re-derives the verdict from the stored price_authority (USD per token, with source + fetched_at); registry differences are reported as drift, never a reclassification. While _placeholder is true the live gate skips; the endpoint-pricing, routing-metadata and synthetic-case tests run regardless.",
+  "model": null,
+  "provider_requested": null,
+  "provider_selected": null,
+  "routing_summary": null,
+  "usage": {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "completion_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "cost": null,
+    "cost_details": {
+      "upstream_inference_cost": null
+    }
+  },
+  "cost": null,
+  "upstream_inference_cost": null,
+  "price_authority": {
+    "source": null,
+    "fetched_at": null,
+    "units": "USD per token",
+    "tag": null,
+    "provider_name": null,
+    "endpoint_name": null,
+    "endpoint_model_id": null,
+    "endpoint_model_name": null,
+    "prompt_per_token": null,
+    "completion_per_token": null,
+    "internal_reasoning_per_token": null,
+    "pricing_raw": null,
+    "completion_priced_cost": null
+  },
+  "classification_detail": null,
+  "billing_relationship": null,
+  "_conclusion": null
+}
