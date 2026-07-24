@@ -111,3 +111,52 @@ async def test_stream_send_rejects_over_cap_with_http_409(monkeypatch, tmp_path)
     conversation = main.storage.get_conversation(conversation_id)
     assert exc.value.status_code == 409
     assert conversation["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_new_budgeted_conversation_defaults_to_allow_overage(monkeypatch, tmp_path):
+    """v1.3.0 D3 (correction #10): a NEW conversation created with a budget but no
+    explicit overage choice now defaults to allow-overage -- the single 409 hard
+    cap is opt-in, so over-budget turns warn rather than block."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+
+    conv = await main.create_conversation(main.CreateConversationRequest(budget_usd=1.0))
+    conv_id = conv["id"]
+
+    assert main.storage.get_session_policy(conv_id)["allow_overage"] is True
+    main.storage.record_session_usage(conv_id, 1.0)  # at the cap
+    main.ensure_budget_allows_new_turn(conv_id)  # must NOT raise
+
+
+@pytest.mark.asyncio
+async def test_new_budgeted_conversation_explicit_hard_cap_still_blocks(monkeypatch, tmp_path):
+    """The hard cap remains available as an explicit opt-in even after the default
+    flip."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+
+    conv = await main.create_conversation(
+        main.CreateConversationRequest(budget_usd=1.0, budget_allow_overage=False)
+    )
+    conv_id = conv["id"]
+
+    assert main.storage.get_session_policy(conv_id)["allow_overage"] is False
+    main.storage.record_session_usage(conv_id, 1.0)
+    with pytest.raises(main.HTTPException) as exc:
+        main.ensure_budget_allows_new_turn(conv_id)
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_default_flip_does_not_migrate_existing_conversations(monkeypatch, tmp_path):
+    """Correction #10: existing stored allow_overage values are never bulk-migrated
+    -- a conversation persisted with allow_overage=False keeps hard-capping."""
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+
+    create_budgeted_conversation(main, "conv-existing-hardcap", allow_overage=False)
+    assert main.storage.get_session_policy("conv-existing-hardcap")["allow_overage"] is False
+    with pytest.raises(main.HTTPException) as exc:
+        main.ensure_budget_allows_new_turn("conv-existing-hardcap")
+    assert exc.value.status_code == 409

@@ -12,7 +12,8 @@ export async function createConversationWithDefaults({
     presetId,
     zdrEnabled,
     budgetUsd: defaultSessionBudgetUsd,
-    budgetAllowOverage: false,
+    // v1.3.0 D3: new conversations allow overage by default (warn, don't block).
+    budgetAllowOverage: true,
     defaultMode,
   });
 }

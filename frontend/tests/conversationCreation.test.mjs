@@ -31,7 +31,8 @@ test('creates a conversation with preset trust defaults atomically', async () =>
       presetId: 'private',
       zdrEnabled: true,
       budgetUsd: 2,
-      budgetAllowOverage: false,
+      // v1.3.0 D3: new conversations allow overage by default (warn, don't block).
+      budgetAllowOverage: true,
       defaultMode: undefined,
     },
   }]);

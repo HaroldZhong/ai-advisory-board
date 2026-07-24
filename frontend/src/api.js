@@ -41,7 +41,9 @@ export const api = {
         preset_id: options.presetId || null,
         zdr_enabled: options.zdrEnabled ?? null,
         budget_usd: options.budgetUsd ?? null,
-        budget_allow_overage: options.budgetAllowOverage ?? false,
+        // v1.3.0 D3: user-owned budget -- new conversations allow overage by
+        // default (warn, don't block); the hard cap is opt-in.
+        budget_allow_overage: options.budgetAllowOverage ?? true,
         default_mode: options.defaultMode ?? null,
       }),
     });
