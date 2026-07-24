@@ -3,7 +3,7 @@
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
 
-from .config import RAG_SETTINGS, BUDGET_POLICY, TASK_SIGNALS
+from .config import RAG_SETTINGS  # D4: the budget-router no longer consumes BUDGET_POLICY (it shadowed the demoted bracket ladder)
 from .rag_utils import detect_task_signal, get_budget_for_task_signal
 from .storage import get_session_policy, get_session_usage, get_budget_spent_percentage
 from .execution_modes import get_execution_mode, select_chairman_for_tier
@@ -71,28 +71,22 @@ def create_run_plan(
         rag_tokens, rag_preset = get_budget_for_task_signal(task_signal)
         mode = task_signal
     else:
-        # Apply budget policy
+        # v1.3.0 D4 (§5.1): budget brackets are ADVISORY, not enforcement. Route by
+        # the task signal (what the query actually needs) at EVERY spend level; the
+        # crossed bracket only ANNOTATES a suggestion via policy_reason -- it never
+        # forces a mode/rag downgrade the user did not choose (they own their spend;
+        # D3 made the hard cap opt-in). ZDR/model-tier routing is untouched.
+        rag_tokens, rag_preset = get_budget_for_task_signal(task_signal)
+        mode = task_signal
         pct = budget_pct * 100  # Convert to percentage
-        
         if pct <= 75:
             policy_reason = "budget_under_75"
-            rag_tokens, rag_preset = get_budget_for_task_signal(task_signal)
-            mode = task_signal
         elif pct <= 85:
-            policy_reason = "budget_75_85"
-            rag_preset = "medium"
-            rag_tokens = RAG_SETTINGS["presets"]["medium"]["tokens"]
-            mode = "standard"
+            policy_reason = "budget_75_85_advisory"
         elif pct <= 100:
-            policy_reason = "budget_85_100"
-            rag_preset = "low"
-            rag_tokens = RAG_SETTINGS["presets"]["low"]["tokens"]
-            mode = "quick"
+            policy_reason = "budget_85_100_advisory"
         else:
-            policy_reason = "budget_over_100"
-            rag_preset = "low"
-            rag_tokens = RAG_SETTINGS["presets"]["low"]["tokens"]
-            mode = "quick"
+            policy_reason = "budget_over_100_advisory"
     
     overrides_applied = False
     if normalized_execution_mode != "auto":
