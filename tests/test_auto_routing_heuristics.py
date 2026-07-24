@@ -90,21 +90,22 @@ def test_create_run_plan_auto_maps_task_signals_without_budget(
 
 
 @pytest.mark.parametrize(
-    ("pct", "expected_mode", "expected_rag", "expected_reason"),
+    ("pct", "expected_reason"),
     [
-        (0.75, "research", "high", "budget_under_75"),
-        (0.76, "standard", "medium", "budget_75_85"),
-        (0.85, "standard", "medium", "budget_75_85"),
-        (0.86, "quick", "low", "budget_85_100"),
-        (1.00, "quick", "low", "budget_85_100"),
-        (1.01, "quick", "low", "budget_over_100"),
+        # v1.3.0 D4: brackets are ADVISORY -- the routing stays task-signal-driven
+        # (research/high for this query) at EVERY spend level; only policy_reason
+        # changes to annotate the crossed bracket. No forced mode/rag downgrade.
+        (0.75, "budget_under_75"),
+        (0.76, "budget_75_85_advisory"),
+        (0.85, "budget_75_85_advisory"),
+        (0.86, "budget_85_100_advisory"),
+        (1.00, "budget_85_100_advisory"),
+        (1.01, "budget_over_100_advisory"),
     ],
 )
-def test_create_run_plan_budget_threshold_boundaries(
+def test_create_run_plan_budget_brackets_are_advisory_not_enforced(
     monkeypatch,
     pct,
-    expected_mode,
-    expected_rag,
     expected_reason,
 ):
     _stub_budget(monkeypatch, pct)
@@ -114,8 +115,9 @@ def test_create_run_plan_budget_threshold_boundaries(
         conversation_id="conv-budget-boundaries",
     )
 
-    assert run_plan.mode == expected_mode
-    assert run_plan.rag_preset == expected_rag
+    # the task signal ("research"/"high") is NEVER downgraded by the spend bracket
+    assert run_plan.mode == "research"
+    assert run_plan.rag_preset == "high"
     assert run_plan.policy_reason == expected_reason
 
 

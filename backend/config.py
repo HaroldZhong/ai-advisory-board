@@ -178,7 +178,10 @@ SESSION_POLICY_DEFAULTS = {
     "allow_overage": True,
 }
 
-# Budget policy: strategy based on spent percentage
+# Budget policy. v1.3.0 D4 (§5.1): the spend-percentage `thresholds` are ADVISORY
+# suggestions only -- the budget router no longer forces a mode/rag downgrade the
+# user did not choose (it routes by task signal and merely annotates the crossed
+# bracket). `quality_floor` remains load-bearing (budget_policy.py).
 BUDGET_POLICY = {
     "thresholds": {
         75: {"rag_preset": "auto", "mode": "from_task"},
