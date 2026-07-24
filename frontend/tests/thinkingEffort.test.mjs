@@ -56,10 +56,18 @@ test('v1.3.0 B3: the budget preset no longer caps thinking effort', () => {
   }), 'high');
 });
 
-test('thinking effort options include honest relative cost hints', () => {
-  assert.equal(getThinkingEffortOption('minimal').costHint, '~0.2x reasoning tokens');
-  assert.equal(getThinkingEffortOption('medium').costHint, 'Default reasoning token budget');
-  assert.equal(getThinkingEffortOption('xhigh').costHint, '~1.9x reasoning tokens');
+test('v1.3.0 B1: cost hints are honest directional copy, never a fabricated multiplier', () => {
+  // §3.4: the invented '~1.6x reasoning tokens' precision is retired -- no measured
+  // ratio ever backed it. Every hint must be clearly-labeled-rough directional copy,
+  // and must NOT fabricate a numeric multiplier.
+  for (const level of THINKING_EFFORT_LEVELS) {
+    const hint = getThinkingEffortOption(level).costHint;
+    assert.ok(hint && hint.length > 0, `${level} exposes a cost hint`);
+    assert.doesNotMatch(hint, /\d+(\.\d+)?\s*x/i, `${level} cost hint must not fabricate a multiplier`);
+  }
+  // still conveys direction: the cheapest level reads lowest, the most expensive highest.
+  assert.match(getThinkingEffortOption('minimal').costHint, /lowest/i);
+  assert.match(getThinkingEffortOption('xhigh').costHint, /highest/i);
 });
 
 test('thinking effort tones escalate only for expensive settings', () => {
