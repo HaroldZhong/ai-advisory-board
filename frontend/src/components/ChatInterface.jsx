@@ -18,7 +18,7 @@ import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
-import { buildBudgetPolicyUpdate, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
+import { buildBudgetPolicyUpdate, formatCurrency, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
 import { predictNextMessageMode } from '../utils/modePrediction';
 import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
@@ -91,6 +91,8 @@ export default function ChatInterface({
   const [editingAttachmentMetadata, setEditingAttachmentMetadata] = useState([]);
   const [askCouncil, setAskCouncil] = useState(false);
   const [showCouncilConfirm, setShowCouncilConfirm] = useState(false);
+  // v1.3.0 D3: approximate pre-send cost estimate shown in the council confirm.
+  const [turnEstimate, setTurnEstimate] = useState(null);
   const { settings, updateSettings } = useSettings();
 
   const sessionPolicy = conversation?.session_policy || {};
@@ -298,8 +300,17 @@ export default function ChatInterface({
     if (composerDisabled) return;
 
     // Armed "Ask the council" send: require an explicit confirm first
-    // (P3-T4 — a council run costs more and takes longer than chat).
+    // (P3-T4 — a council run costs more and takes longer than chat). D3 (§5.1):
+    // fetch an APPROXIMATE pre-send cost estimate to show in that confirm (warn,
+    // never block). A failed/omitted estimate must not block the send.
     if (askCouncil && !showCouncilConfirm) {
+      if (conversation?.id) {
+        try {
+          setTurnEstimate(await api.getTurnEstimate(conversation.id, 'council'));
+        } catch {
+          setTurnEstimate(null);
+        }
+      }
       setShowCouncilConfirm(true);
       return;
     }
@@ -316,6 +327,7 @@ export default function ChatInterface({
     setSendError(null);
     setAskCouncil(false);
     setShowCouncilConfirm(false);
+    setTurnEstimate(null);
 
     try {
       await onSendMessage(submittedInput, attachmentIds, submittedAttachments, -1, sendOptions);
@@ -337,6 +349,7 @@ export default function ChatInterface({
   const handleCouncilConfirmCancel = () => {
     setShowCouncilConfirm(false);
     setAskCouncil(false);
+    setTurnEstimate(null);
   };
 
   const handleKeyDown = (e) => {
@@ -822,7 +835,12 @@ export default function ChatInterface({
               role="alert"
               className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
             >
-              <span>Council run uses every council model — costs more and takes 2–5 min.</span>
+              <span>
+                Council run uses every council model — costs more and takes 2–5 min.
+                {turnEstimate?.predicted_cost > 0 && (
+                  <> Est. ~{formatCurrency(turnEstimate.predicted_cost)} (approximate).</>
+                )}
+              </span>
               <div className="flex gap-2">
                 <Button type="button" variant="ghost" size="sm" onClick={handleCouncilConfirmCancel}>
                   Cancel
