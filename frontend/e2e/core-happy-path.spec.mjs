@@ -112,7 +112,8 @@ function createConversation(body) {
       budget_usd: body.budget_usd,
       notify_thresholds: [0.75, 0.85, 1],
       mode: 'auto',
-      allow_overage: false,
+      // echo the requested overage choice (v1.3.0 D3 default is allow-overage)
+      allow_overage: body.budget_allow_overage ?? true,
     },
     session_usage: {
       spent_usd: 0,
@@ -420,7 +421,8 @@ test('first-run setup creates a private preset conversation and renders streamed
     preset_id: 'private',
     zdr_enabled: true,
     budget_usd: 2,
-    budget_allow_overage: false,
+    // v1.3.0 D3: new conversations allow overage by default (warn, don't block).
+    budget_allow_overage: true,
   });
 
   await expect(page.getByText('Private').first()).toBeVisible();
