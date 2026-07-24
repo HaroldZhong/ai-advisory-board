@@ -890,6 +890,7 @@ export default function ChatInterface({
             onConfirm={handleBudgetConfirm}
             currentBudget={sessionBudget}
             currentAllowOverage={sessionPolicy.allow_overage ?? true}
+            currentNotifyThresholds={sessionPolicy.notify_thresholds}
           />
           <AdvancedSettingsPanel
             isOpen={showAdvancedSettings}

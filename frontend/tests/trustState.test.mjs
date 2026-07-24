@@ -8,6 +8,8 @@ import {
   getBudgetTone,
   getBudgetWarningText,
   getBudgetCapBlockState,
+  resolveNotifyThresholds,
+  DEFAULT_NOTIFY_THRESHOLDS,
   buildBudgetPolicyUpdate,
   getPrivacyToggleDisabledReason,
   mergeConversationPrivacyUpdate,
@@ -34,6 +36,46 @@ test('budget tone follows 75, 85, and 100 percent thresholds', () => {
   assert.equal(getBudgetTone(0.85), 'warn');
   assert.equal(getBudgetTone(1), 'danger');
   assert.equal(getBudgetTone(1.2), 'danger');
+});
+
+test('D2: resolveNotifyThresholds accepts any backend-valid list, not only 3', () => {
+  // absent / malformed -> historical default
+  assert.deepEqual(resolveNotifyThresholds(undefined), DEFAULT_NOTIFY_THRESHOLDS);
+  assert.deepEqual(resolveNotifyThresholds({}), DEFAULT_NOTIFY_THRESHOLDS);
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [] }), DEFAULT_NOTIFY_THRESHOLDS);
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.5, 'x', 1] }), DEFAULT_NOTIFY_THRESHOLDS);
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.5, -1] }), DEFAULT_NOTIFY_THRESHOLDS);
+  // 2, 3, or 4 tiers are all backend-valid -> used (and sorted)
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.9, 0.6] }), [0.6, 0.9]);
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.9, 0.5, 0.7] }), [0.5, 0.7, 0.9]);
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.6, 0.8, 0.95, 0.5] }), [0.5, 0.6, 0.8, 0.95]);
+});
+
+test('D2: "budget reached" (danger) stays tied to the 1.0 cap, not the top notify tier', () => {
+  const served = [0.5, 0.7, 0.9];   // top tier 0.9 is BELOW the hard cap
+  // below the top sub-cap tier -> caution; at/above it (but <1.0) -> warn; NOT danger
+  assert.equal(getBudgetTone(0.55, served), 'caution');
+  assert.equal(getBudgetTone(0.72, served), 'caution');
+  assert.equal(getBudgetTone(0.9, served), 'warn');
+  assert.equal(getBudgetTone(0.95, served), 'warn');   // 90%+ but not reached
+  assert.equal(getBudgetTone(1.0, served), 'danger');  // reached ONLY at the real cap
+  assert.equal(getBudgetTone(0.49, served), 'neutral');
+  // the warning is a warn (not "Budget reached") at 95% when the top tier is 0.9
+  assert.equal(getBudgetWarningText(0.95, served).level, 'warn');
+  assert.notEqual(getBudgetWarningText(0.95, served).label, 'Budget reached');
+  assert.deepEqual(getBudgetWarningText(1.0, served), getBudgetWarningText(1.0, DEFAULT_NOTIFY_THRESHOLDS));
+  // label reflects the highest CROSSED sub-cap tier, not a hardcoded 85%
+  assert.equal(getBudgetWarningText(0.72, served).label, '70% used');
+});
+
+test('D2: formatTrustRowState exposes and uses the served notify thresholds', () => {
+  const conversation = {
+    session_policy: { budget_usd: 10, notify_thresholds: [0.5, 0.7, 0.9] },
+    session_usage: { spent_usd: 9.5 },  // 95% spent -> warn (top tier 0.9), not danger
+  };
+  const state = formatTrustRowState({ conversation, settings: {}, attachmentCount: 0, zdrAvailable: true });
+  assert.deepEqual(state.budget.notifyThresholds, [0.5, 0.7, 0.9]);
+  assert.equal(state.budget.tone, 'warn');
 });
 
 test('budget warning text includes non-color signals at each threshold', () => {

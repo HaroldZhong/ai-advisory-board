@@ -16,72 +16,91 @@ export function formatCurrency(value) {
   return `$${amount.toFixed(2)}`;
 }
 
-export function getBudgetTone(spentPct) {
+// v1.3.0 D2: single-source the budget notify tiers from the served policy's
+// `notify_thresholds` (config.py SESSION_POLICY_DEFAULTS) instead of triplicating
+// the constants here / in SessionBudgetSelector. Fall back to the historical
+// [caution, warn, danger] only when a policy omits them.
+export const DEFAULT_NOTIFY_THRESHOLDS = [0.75, 0.85, 1.0];
+
+// "Budget reached" is the actual hard cap (spentPct >= 1.0), independent of the
+// served notify tiers -- the backend only 409s at 1.0, so the UI must not claim
+// "reached" at a lower notify tier (or fail to at 100% when a tier exceeds 1.0).
+const CAP_REACHED = 1.0;
+
+// Accept ANY backend-valid list: non-empty, positive, finite numbers. The backend
+// validates and emits events for any sorted list (2, 3, 4… tiers), so the UI must
+// mirror whatever it served rather than only a 3-tier shape.
+export function resolveNotifyThresholds(policy) {
+  const served = policy?.notify_thresholds;
+  if (Array.isArray(served) && served.length > 0
+      && served.every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0)) {
+    return [...served].sort((a, b) => a - b);
+  }
+  return DEFAULT_NOTIFY_THRESHOLDS;
+}
+
+// Warning tiers are the served thresholds strictly below the hard cap.
+function subCapTiers(thresholds) {
+  return thresholds.filter((t) => t < CAP_REACHED);
+}
+
+const WARN_TEXT = {
+  body: 'Premium routing may be reduced on upcoming turns.',
+  action: 'Raise cap',
+};
+const CAUTION_TEXT = {
+  body: 'You are approaching this conversation budget.',
+  action: 'Adjust',
+};
+const REACHED_TEXT = {
+  level: 'danger',
+  label: 'Budget reached',
+  body: 'Raise the cap to keep spending predictable.',
+  action: 'Raise cap',
+};
+
+export function getBudgetTone(spentPct, thresholds = DEFAULT_NOTIFY_THRESHOLDS) {
   if (spentPct == null) return 'neutral';
-  if (spentPct >= 1) return 'danger';
-  if (spentPct >= 0.85) return 'warn';
-  if (spentPct >= 0.75) return 'caution';
+  if (spentPct >= CAP_REACHED) return 'danger';
+  const sub = subCapTiers(thresholds);
+  if (sub.length && spentPct >= sub[sub.length - 1]) return 'warn';
+  if (sub.length && spentPct >= sub[0]) return 'caution';
   return 'neutral';
 }
 
-export function getBudgetWarningText(spentPct) {
-  if (spentPct == null || spentPct < 0.75) return null;
-  if (spentPct >= 1) {
-    return {
-      level: 'danger',
-      label: 'Budget reached',
-      body: 'Raise the cap to keep spending predictable.',
-      action: 'Raise cap',
-    };
-  }
-  if (spentPct >= 0.85) {
-    return {
-      level: 'warn',
-      label: '85% used',
-      body: 'Premium routing may be reduced on upcoming turns.',
-      action: 'Raise cap',
-    };
-  }
+export function getBudgetWarningText(spentPct, thresholds = DEFAULT_NOTIFY_THRESHOLDS) {
+  if (spentPct == null) return null;
+  if (spentPct >= CAP_REACHED) return REACHED_TEXT;
+  const sub = subCapTiers(thresholds);
+  const crossed = sub.filter((t) => spentPct >= t);
+  if (crossed.length === 0) return null;
+  const highestCrossed = crossed[crossed.length - 1];
+  const isWarn = highestCrossed === sub[sub.length - 1];
   return {
-    level: 'caution',
-    label: '75% used',
-    body: 'You are approaching this conversation budget.',
-    action: 'Adjust',
+    level: isWarn ? 'warn' : 'caution',
+    label: `${Math.round(highestCrossed * 100)}% used`,
+    ...(isWarn ? WARN_TEXT : CAUTION_TEXT),
   };
 }
 
-function getBudgetWarningTextForThreshold(threshold) {
+function getBudgetWarningTextForThreshold(threshold, thresholds = DEFAULT_NOTIFY_THRESHOLDS) {
   if (threshold == null) return null;
-  if (threshold >= 1) {
-    return {
-      level: 'danger',
-      label: 'Budget reached',
-      body: 'Raise the cap to keep spending predictable.',
-      action: 'Raise cap',
-    };
-  }
-  if (threshold >= 0.85) {
-    return {
-      level: 'warn',
-      label: '85% used',
-      body: 'Premium routing may be reduced on upcoming turns.',
-      action: 'Raise cap',
-    };
-  }
+  if (threshold >= CAP_REACHED) return REACHED_TEXT;
+  const sub = subCapTiers(thresholds);
+  const isWarn = sub.length > 0 && threshold >= sub[sub.length - 1];
   return {
-    level: 'caution',
+    level: isWarn ? 'warn' : 'caution',
     label: `${Math.round(threshold * 100)}% used`,
-    body: 'You are approaching this conversation budget.',
-    action: 'Adjust',
+    ...(isWarn ? WARN_TEXT : CAUTION_TEXT),
   };
 }
 
-export function getEffectiveBudgetWarning(spentPct, eventThreshold) {
-  const currentWarning = getBudgetWarningText(spentPct);
+export function getEffectiveBudgetWarning(spentPct, eventThreshold, thresholds = DEFAULT_NOTIFY_THRESHOLDS) {
+  const currentWarning = getBudgetWarningText(spentPct, thresholds);
   if (currentWarning) return currentWarning;
   if (eventThreshold == null) return null;
   if (spentPct != null && spentPct < eventThreshold) return null;
-  return getBudgetWarningTextForThreshold(eventThreshold);
+  return getBudgetWarningTextForThreshold(eventThreshold, thresholds);
 }
 
 export function getBudgetCapBlockState(conversation) {
@@ -210,6 +229,7 @@ export function formatTrustRowState({
   const spentUsd = Number(usage.spent_usd || 0);
   const budgetUsd = policy.budget_usd ?? null;
   const spentPct = getSpentPct(conversation, policy, usage);
+  const notifyThresholds = resolveNotifyThresholds(policy);
   const budgetCapBlock = getBudgetCapBlockState(conversation);
   const pctLabel = spentPct == null ? null : `${Math.round(spentPct * 100)}% used`;
   const webEnabled = settings.webSearchEnabled === true;
@@ -243,12 +263,13 @@ export function formatTrustRowState({
       budgetUsd,
       spentUsd,
       spentPct,
-      tone: getBudgetTone(spentPct),
+      tone: getBudgetTone(spentPct, notifyThresholds),
       label: budgetUsd == null
         ? 'No budget'
         : `${formatCurrency(spentUsd)} / ${formatCurrency(budgetUsd)}`,
       detail: budgetUsd == null ? 'Set session limit' : pctLabel,
-      warning: getBudgetWarningText(spentPct),
+      warning: getBudgetWarningText(spentPct, notifyThresholds),
+      notifyThresholds,
       capBlock: budgetCapBlock,
     },
     tools: {

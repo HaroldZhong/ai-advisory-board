@@ -502,6 +502,12 @@ test('reopening the budget dialog re-seeds the hard-cap toggle from the saved po
   await openBudget.click();
   await expect(hardCap).not.toBeChecked();
 
+  // D2: truthful meter -- no invented "~N messages" estimates; honest cap copy;
+  // the alert tiers are rendered from the served notify_thresholds ([0.75,0.85,1]).
+  await expect(page.getByText('Standard cap')).toBeVisible();
+  await expect(page.getByText(/~\d+-\d+ messages/)).toHaveCount(0);
+  await expect(page.getByText(/alerts at 75%, 85%, and 100% of your budget/)).toBeVisible();
+
   // Toggle the hard cap ON, then CANCEL without saving.
   await hardCap.check();
   await page.getByRole('button', { name: 'Cancel' }).click();
