@@ -337,7 +337,7 @@ async def test_sweep_fails_loud_when_every_probe_fails():
     # an all-skipped matrix and exit 0.
     def all_fail(request):
         return httpx.Response(401, json={"error": "invalid key"})
-    with pytest.raises(RuntimeError, match="every call failed"):
+    with pytest.raises(RuntimeError, match="none produced a usable capability"):
         await probe.run_probe_sweep(
             [_entry("a"), _entry("b")], "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01,
             transport=httpx.MockTransport(all_fail),
@@ -965,41 +965,18 @@ async def test_no_capability_without_baseline_routing_metadata():
     assert not rec.get("supports_reasoning")
 
 
-def test_zdr_requests_are_never_constrained_by_a_probe_pin(monkeypatch):
-    """A recorded pin's ZDR status is UNKNOWABLE -- the probe observes ordinary
-    (non-ZDR) routing and /endpoints publishes no per-endpoint ZDR field. Combining
-    zdr:true with a non-ZDR pin under allow_fallbacks:false yields NO ROUTE, breaking
-    a model that legitimately supports ZDR elsewhere."""
-    import backend.openrouter as orouter
-    sent = {}
 
-    class _Resp:
-        status_code = 200
-        def raise_for_status(self): return None
-        def json(self):
-            return {"choices": [{"message": {"content": "ok"}}], "usage": {}}
-
-    class _Client:
-        def __init__(self, *a, **k): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, url, headers=None, json=None, **kw):
-            sent.clear(); sent.update(json or {})
-            return _Resp()
-
-    monkeypatch.setattr(orouter.httpx, "AsyncClient", _Client)
-    monkeypatch.setattr(orouter, "resolve_model_reasoning",
-                        lambda *a, **k: ({"effort": "high"}, "openai/priority"))
-    monkeypatch.setattr(orouter, "provider_is_openrouter", lambda: True)
-    monkeypatch.setattr(orouter, "get_openrouter_api_key", lambda: "k")
-
-    import asyncio
-    # ZDR ON -> the ZDR constraint stands alone; no pin may narrow it to one endpoint
-    asyncio.run(orouter.query_model("m/x", [{"role": "user", "content": "hi"}],
-                                    thinking_effort="high", zdr_enabled=True))
-    assert sent["provider"] == {"zdr": True}, sent["provider"]
-
-    # ZDR OFF -> the pin still applies, so capability fidelity is unaffected
-    asyncio.run(orouter.query_model("m/x", [{"role": "user", "content": "hi"}],
-                                    thinking_effort="high", zdr_enabled=False))
-    assert sent["provider"] == {"order": ["openai/priority"], "allow_fallbacks": False}
+@pytest.mark.asyncio
+async def test_all_unattributable_records_abort_instead_of_publishing():
+    probe = _probe()
+    # If the router-metadata opt-in is not honoured for the account, EVERY model
+    # returns an `unknown` record. Those are non-None, so counting them as successes
+    # would let the systemic guard pass and save an all-unknown sidecar with exit 0 --
+    # a silent no-op sweep that looks like it worked.
+    with pytest.raises(RuntimeError, match="none produced a usable capability"):
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], "k",
+            max_probe_usd=100.0, max_cost_per_call_usd=0.01,
+            transport=_mock_transport({None: 0, "low": 10, "medium": 20, "high": 30},
+                                      served_provider=None),
+        )

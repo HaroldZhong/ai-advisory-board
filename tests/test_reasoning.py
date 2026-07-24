@@ -256,3 +256,33 @@ def test_resolve_model_reasoning_unprobed_fallback_is_non_regressing():
     # Auto (no effort) + un-probed -> no reasoning object at all
     payload, pin = openrouter.resolve_model_reasoning(model_id, None, capability_records={})
     assert payload is None and pin is None
+
+
+def test_zdr_turns_use_neither_the_probe_pin_nor_its_endpoint_specific_shape():
+    """A probed row describes whichever endpoint ORDINARY (non-ZDR) routing selected,
+    and /endpoints publishes no per-endpoint ZDR field, so it says nothing about the
+    endpoint a ZDR turn reaches. Pinning it would intersect with zdr:true under
+    allow_fallbacks:false and yield NO ROUTE; sending its native shape to a different,
+    unverified ZDR endpoint is the mis-application the pin exists to prevent. ZDR
+    turns therefore fall back to the normalized reasoning.effort interface."""
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+    model_id = FIELD_MODEL
+    entry = openrouter._lookup_registry_model(model_id)
+    records = {model_id: {
+        "model_id": model_id, "probed": True, "fingerprint": model_fingerprint(entry),
+        "provider_pinned": "google", "supports_reasoning": True,
+        "control_surface": "onoff", "native_default_on": False,
+    }}
+
+    # Ordinary turn: the probed native shape AND its pin are both applied.
+    payload, pin = openrouter.resolve_model_reasoning(
+        model_id, "high", capability_records=records)
+    assert payload == {"enabled": True} and pin == "google"
+
+    # ZDR turn: no pin, and NOT the endpoint-specific shape -- the normalized
+    # interface instead (preflight rule 1), which is provider-agnostic.
+    payload, pin = openrouter.resolve_model_reasoning(
+        model_id, "high", capability_records=records, zdr_enabled=True)
+    assert pin is None, "a ZDR request must never be narrowed to a probed endpoint"
+    assert payload == {"effort": "high"}, payload

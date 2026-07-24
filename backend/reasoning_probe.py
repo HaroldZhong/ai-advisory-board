@@ -263,7 +263,12 @@ async def probe_model(
     try:
         getter = get if get is not None else _endpoints_get
         kwargs = {} if getter is None else {"get": getter}
-        provider_tag = resolve_served_endpoint_tag(model_id, served, **kwargs)
+        # resolve_served_endpoint_tag is SYNCHRONOUS (httpx.get, 30s timeout). Called
+        # directly it would block the event loop for the whole sweep, serialising
+        # every concurrent probe behind one slow /endpoints response.
+        provider_tag = await asyncio.to_thread(
+            resolve_served_endpoint_tag, model_id, served, **kwargs
+        )
     except Exception:
         # Best-effort enrichment only. The paid calls have already succeeded, so no
         # lookup failure -- HTTP, malformed JSON, unexpected shape -- may discard an
@@ -584,7 +589,13 @@ async def run_probe_sweep(
     for mid, rec in results:
         if rec is not None:
             merged[mid] = rec
-            succeeded += 1
+            # Only a record that actually carries a probed capability counts. An
+            # `unknown` row means the calls happened but could not be attributed --
+            # if the router-metadata opt-in is not honoured for the account EVERY
+            # model returns one, and counting those as successes would let the
+            # systemic guard pass and publish an all-unknown sidecar with exit 0.
+            if rec.get("probed"):
+                succeeded += 1
         elif mid in merged:
             # A REQUIRED re-probe (stale fingerprint or changed provider) failed, so
             # the old record is no longer trustworthy -- runtime freshness only checks
@@ -595,7 +606,9 @@ async def run_probe_sweep(
         # Every probe failed -> systemic (bad key / exhausted quota / wrong endpoint
         # tags for all). Don't let the CLI save an all-skipped sidecar and exit 0.
         raise RuntimeError(
-            f"probe attempted {len(needing)} models but every call failed -- likely a systemic "
-            f"error (invalid key, exhausted quota, or wrong endpoint tags); sidecar not updated"
+            f"probe attempted {len(needing)} models and none produced a usable capability -- "
+            f"likely a systemic error (invalid key, exhausted quota, or router metadata not "
+            f"enabled for this account, which leaves every result unattributable); "
+            f"sidecar not updated"
         )
     return merged
