@@ -95,8 +95,11 @@ def get_capability(
     rec = records.get(model_id)
     if rec is None or not rec.get("probed"):
         return unknown_record(model_id, current_fp)
-    if current_fp is not None and rec.get("fingerprint") != current_fp:
-        # Registry entry changed since the probe -> stale -> unknown until re-probed.
+    if current_fp is None or rec.get("fingerprint") != current_fp:
+        # Registry entry changed since the probe -> stale; OR no model_entry was
+        # passed so the fingerprint can't be computed -> unverifiable. Either way,
+        # a probed row is only authoritative once validated against the current
+        # registry entry, so return unknown until re-probed (correction #5).
         return unknown_record(model_id, current_fp)
     return rec
 

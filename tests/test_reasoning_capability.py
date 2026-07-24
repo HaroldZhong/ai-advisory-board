@@ -135,3 +135,32 @@ def test_absent_default_reasoning_effort_is_allowed():
     registry = _minimal_registry("high")
     del registry["presets"][0]["default_reasoning_effort"]
     reg._validate_presets(registry)  # no raise
+
+
+def test_present_null_default_reasoning_effort_fails_load():
+    # A present-but-null value is NOT an absent key: the runtime would read None and
+    # crash on THINKING_EFFORT_ORDER[None], so it must fail load with a clear error.
+    reg = importlib.import_module("backend.model_registry")
+    with pytest.raises(ValueError, match="default_reasoning_effort"):
+        reg._validate_presets(_minimal_registry(None))
+
+
+@pytest.mark.parametrize("bad", [["high"], {"effort": "high"}, 3])
+def test_nonstring_default_reasoning_effort_fails_with_valueerror_not_typeerror(bad):
+    # A list/dict/number must raise the clear ValueError, not TypeError: unhashable
+    # type from the set-membership test running before a type check.
+    reg = importlib.import_module("backend.model_registry")
+    with pytest.raises(ValueError, match="default_reasoning_effort"):
+        reg._validate_presets(_minimal_registry(bad))
+
+
+def test_probed_record_unverifiable_without_entry_is_unknown():
+    # Correction #5: a probed row is authoritative only once validated against the
+    # current registry entry. A 2-arg lookup (no model_entry) can't compute the
+    # fingerprint, so it must return unknown rather than trust a possibly-stale row.
+    cap = _cap()
+    entry = {"id": "m/1", "supports_reasoning": True, "reasoning_extraction": "field"}
+    records = {"m/1": _probed_record(cap, entry)}
+    assert cap.get_capability(records, "m/1")["control_surface"] == "unknown"
+    # with the entry it validates and returns the real record
+    assert cap.get_capability(records, "m/1", entry)["control_surface"] == "levels"
