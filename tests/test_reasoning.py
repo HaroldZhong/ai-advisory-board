@@ -158,3 +158,45 @@ def test_build_stage1_result_keys_actuals_on_tokens_not_reasoning_text():
         "usage": {"completion_tokens_details": {"reasoning_tokens": 128}},
     })
     assert real["reasoning_tokens"] == 128
+
+
+# --- correction #2: single capability authority (sidecar-first, registry fallback) ---
+
+def test_model_supports_reasoning_single_authority():
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+
+    model_id = "openai/gpt-5.3-chat"  # a real registry model
+    entry = openrouter._lookup_registry_model(model_id)
+    assert entry is not None
+    registry_verdict = entry.get("supports_reasoning") is True
+
+    # 1. UN-PROBED (empty sidecar) -> DEPRECATED registry fallback (non-regressing)
+    assert openrouter.model_supports_reasoning(model_id, capability_records={}) is registry_verdict
+
+    # 2. a PROBED record OVERRIDES the registry -- levels surface -> True
+    probed_true = {"model_id": model_id, "probed": True,
+                   "fingerprint": model_fingerprint(entry),
+                   "control_surface": "levels", "supports_reasoning": True}
+    assert openrouter.model_supports_reasoning(model_id, capability_records={model_id: probed_true}) is True
+
+    # 3. a PROBED "none" surface -> False, overriding the registry the other way
+    probed_none = {"model_id": model_id, "probed": True,
+                   "fingerprint": model_fingerprint(entry),
+                   "control_surface": "none", "supports_reasoning": False}
+    assert openrouter.model_supports_reasoning(model_id, capability_records={model_id: probed_none}) is False
+
+    # 4. STALE fingerprint -> not authoritative -> registry fallback again
+    stale = {**probed_true, "fingerprint": "STALE"}
+    assert openrouter.model_supports_reasoning(model_id, capability_records={model_id: stale}) is registry_verdict
+
+
+def test_model_supports_reasoning_runtime_path_uses_cached_sidecar():
+    # The runtime call (no explicit records) reads the checked-in sidecar (empty
+    # scaffold today), so it falls back to the registry -- proving the rewire is
+    # non-regressing until the probe populates the sidecar.
+    from backend import openrouter
+    openrouter.reset_reasoning_capability_cache()
+    model_id = "openai/gpt-5.3-chat"
+    entry = openrouter._lookup_registry_model(model_id)
+    assert openrouter.model_supports_reasoning(model_id) is (entry.get("supports_reasoning") is True)

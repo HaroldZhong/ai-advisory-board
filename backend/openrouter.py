@@ -174,9 +174,44 @@ def _lookup_registry_model(model: str) -> Optional[Dict[str, Any]]:
     return next((candidate for candidate in CURATED_MODELS if candidate["id"] == model), None)
 
 
-def model_supports_reasoning(model: str) -> bool:
-    """Return whether the curated registry says a model accepts reasoning controls."""
+_reasoning_capabilities_cache = None
+
+
+def _reasoning_capability_records() -> Dict[str, Any]:
+    """Cached load of the probe-backed capability sidecar. Read-only at runtime --
+    the probe is a separate maintainer process, so a running app loads the sidecar
+    once (a fresh probe is picked up on restart). Tests reset via
+    reset_reasoning_capability_cache()."""
+    global _reasoning_capabilities_cache
+    if _reasoning_capabilities_cache is None:
+        from .reasoning_capability import load_capabilities
+        _reasoning_capabilities_cache = load_capabilities()
+    return _reasoning_capabilities_cache
+
+
+def reset_reasoning_capability_cache() -> None:
+    """Drop the cached sidecar (test seam; also lets a long-running process re-read
+    after a probe if a caller chooses to)."""
+    global _reasoning_capabilities_cache
+    _reasoning_capabilities_cache = None
+
+
+def model_supports_reasoning(model: str, capability_records: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether this model accepts reasoning controls, from the SINGLE capability
+    authority (v1.3.0 correction #2). The probe-backed sidecar is authoritative once
+    a model is probed; the registry's `supports_reasoning` is a DEPRECATED fallback
+    used ONLY while the sidecar has no verified record for the model (it is removed
+    outright once the probe covers every model). `capability_records` is injectable
+    for tests; runtime uses the cached sidecar load."""
+    from .reasoning_capability import get_capability
+
     registry_model = _lookup_registry_model(model)
+    records = capability_records if capability_records is not None else _reasoning_capability_records()
+    cap = get_capability(records, model, registry_model)
+    if cap.get("control_surface") != "unknown":
+        # Probed -> the sidecar decides (a "none" surface correctly reports False).
+        return bool(cap.get("supports_reasoning"))
+    # Un-probed / unverifiable -> DEPRECATED registry fallback (correction #2).
     return registry_model is not None and registry_model.get("supports_reasoning") is True
 
 
