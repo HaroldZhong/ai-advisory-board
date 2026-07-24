@@ -25,15 +25,17 @@ Verified against current OpenRouter docs (2026-07):
     `usage.cost_details.upstream_inference_cost` is the upstream provider's
     charge. `usage: {include: true}` is DEPRECATED and has no effect -- usage is
     always returned. (docs/cookbook/administration/usage-accounting)
-  * `/api/v1/model/{author}/{slug}` returns a pricing object keyed
-    `prompt` / `completion` / `request` / `image` / `web_search` /
-    `internal_reasoning` / `input_cache_read` / `input_cache_write`, as STRINGS
-    in USD *per token* (the curated registry is per MILLION tokens -- do not mix).
-    (docs/guides/overview/models)
-  * The reachable docs expose no per-provider pricing route; model pricing is
-    published model-wide with a `top_provider`. We therefore record the rates we
-    used plus the VERIFIED pinned provider the reading is scoped to, rather than
-    claiming a per-provider rate we cannot source.
+  * `GET /api/v1/models/{author}/{slug}/endpoints` is PUBLIC (no key) and returns
+    `data.endpoints[]`, each carrying `tag`, `provider_name`, `name`, `model_id`,
+    `model_name` and its OWN `pricing` object (strings, USD *per token* -- the
+    curated registry is per MILLION tokens, do not mix). Verified live 2026-07:
+    openai/gpt-4o-mini returns tag `azure` and tag `azure/swedencentral` BOTH with
+    provider_name "Azure" but completion rates 0.0000006 vs 0.00000066. Billing is
+    therefore per ENDPOINT, not per model and not per provider name -- pricing must
+    key on the exact `tag`.
+  * Consequently the router's selected display name is checked against the pinned
+    ENDPOINT's `provider_name` (so a variant tag like `azure/swedencentral`, served
+    as "Azure", still verifies) while the PRICE comes from the exact tag.
 
 `classify_billing` below is the SINGLE SOURCE of the inside/separate decision --
 tests import it from here rather than re-implementing the thresholds.
@@ -51,7 +53,9 @@ from pathlib import Path
 import httpx
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL_URL = "https://openrouter.ai/api/v1/model/{model}"
+# Per-ENDPOINT pricing (public, no key). Rates differ between tags of the SAME
+# provider, so this is the only authority that can price a pinned route.
+OPENROUTER_ENDPOINTS_URL = "https://openrouter.ai/api/v1/models/{model}/endpoints"
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tests" / "fixtures" / "reasoning_usage_fixture.json"
 
@@ -71,11 +75,16 @@ def _normalize_provider(name):
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
 
 
-def select_provider_from_metadata(data, provider_requested):
-    """Return the provider name of the SELECTED endpoint, verified against the pin.
+def select_provider_from_metadata(data, expected_provider_name):
+    """Return the provider display name of the SELECTED endpoint, verified against
+    the pinned endpoint's `provider_name`.
+
+    Checked against provider_name rather than the tag on purpose: a variant tag
+    such as `azure/swedencentral` is served as "Azure", so tag-matching would
+    reject a correct route. A genuinely different provider still fails.
 
     Raises CaptureError when routing metadata is absent, exposes no selected
-    endpoint, or names a provider other than the one requested.
+    endpoint, or names a different provider.
     """
     metadata = data.get("openrouter_metadata")
     if not metadata:
@@ -94,29 +103,49 @@ def select_provider_from_metadata(data, provider_requested):
         )
 
     served = selected[0].get("provider")
-    if _normalize_provider(served) != _normalize_provider(provider_requested):
+    if _normalize_provider(served) != _normalize_provider(expected_provider_name):
         raise CaptureError(
-            f"routing mismatch: pinned provider {provider_requested!r} but the request was "
-            f"served by {served!r}. The billing verdict is provider-specific, so a fallback "
-            "route invalidates the capture; re-run with allow_fallbacks disabled or pin the "
-            "provider that actually serves this model."
+            f"routing mismatch: the pinned endpoint belongs to provider "
+            f"{expected_provider_name!r} but the request was served by {served!r}. A fallback "
+            "route invalidates a per-endpoint billing reading; re-run with allow_fallbacks "
+            "disabled or pin a tag on the provider that actually serves this model."
         )
     return served
 
 
-def fetch_price_authority(model, *, get=httpx.get):
-    """Fetch the pricing OpenRouter publishes for this model, with provenance.
+def fetch_endpoint_pricing(model, provider_tag, *, get=httpx.get):
+    """Resolve the EXACT pinned endpoint and return its own pricing + provenance.
 
-    Returns a dict of the exact rates used, their source and fetch time, so the
-    gate can re-derive the verdict from stored evidence. Rates are USD PER TOKEN
-    (strings upstream); the curated registry is per MILLION tokens.
+    Billing is per endpoint: `azure` and `azure/swedencentral` are both provider
+    "Azure" on openai/gpt-4o-mini yet price completion at 0.0000006 vs 0.00000066.
+    So the tag must match exactly -- no prefix or provider-name fallback -- and an
+    absent or ambiguous match fails rather than guessing a rate.
+
+    Rates are USD PER TOKEN (strings upstream); the curated registry is per MILLION.
     """
-    url = OPENROUTER_MODEL_URL.format(model=model)
+    url = OPENROUTER_ENDPOINTS_URL.format(model=model)
     resp = get(url, timeout=30.0)
     resp.raise_for_status()
     body = resp.json()
-    entry = body.get("data") if isinstance(body.get("data"), dict) else body
-    pricing = (entry or {}).get("pricing") or {}
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    endpoints = (data or {}).get("endpoints") or []
+
+    matches = [e for e in endpoints if e.get("tag") == provider_tag]
+    if not matches:
+        raise CaptureError(
+            f"no endpoint on {model} has tag == {provider_tag!r}. Available tags: "
+            f"{sorted(str(e.get('tag')) for e in endpoints)}. Pricing is per endpoint, so the "
+            "pin must name an exact tag -- variant tags (e.g. 'azure/swedencentral') price "
+            "differently from their base tag."
+        )
+    if len(matches) > 1:
+        raise CaptureError(
+            f"tag {provider_tag!r} matched {len(matches)} endpoints on {model} -- ambiguous, "
+            "so no single rate can be attributed to this capture"
+        )
+
+    endpoint = matches[0]
+    pricing = endpoint.get("pricing") or {}
 
     def rate(key):
         value = pricing.get(key)
@@ -126,18 +155,26 @@ def fetch_price_authority(model, *, get=httpx.get):
     completion_rate = rate("completion")
     if prompt_rate is None or completion_rate is None:
         raise CaptureError(
-            f"{url} returned no prompt/completion pricing; cannot price this capture"
+            f"endpoint {provider_tag!r} on {model} publishes no prompt/completion pricing; "
+            "cannot price this capture"
         )
 
     return {
         "source": url,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "units": "USD per token",
+        # Endpoint identity -- the reading is valid for THIS route only.
+        "tag": endpoint.get("tag"),
+        "provider_name": endpoint.get("provider_name"),
+        "endpoint_name": endpoint.get("name"),
+        "endpoint_model_id": endpoint.get("model_id"),
+        "endpoint_model_name": endpoint.get("model_name"),
         "prompt_per_token": prompt_rate,
         "completion_per_token": completion_rate,
-        # A non-zero internal_reasoning price is an explicit, named separate
-        # charge for reasoning tokens -- the strongest available signal.
+        # A non-zero internal_reasoning price on THIS endpoint is an explicit,
+        # named separate charge for reasoning tokens.
         "internal_reasoning_per_token": rate("internal_reasoning"),
+        "pricing_raw": pricing,
     }
 
 
@@ -223,7 +260,13 @@ CONCLUSIONS = {
 
 def capture(model, provider_slug, api_key, *, post=httpx.post, get=httpx.get):
     """Run one pinned reasoning call and build the fixture. Raises CaptureError
-    rather than returning unverified evidence."""
+    rather than returning unverified evidence.
+
+    Resolves the pinned ENDPOINT first: its `provider_name` is what the router's
+    selected display name is verified against, and its own pricing is the only
+    rate used to classify."""
+    price = fetch_endpoint_pricing(model, provider_slug, get=get)
+
     payload = {
         "model": model,
         "messages": [{
@@ -247,7 +290,7 @@ def capture(model, provider_slug, api_key, *, post=httpx.post, get=httpx.get):
     resp.raise_for_status()
     data = resp.json()
 
-    provider_selected = select_provider_from_metadata(data, provider_slug)
+    provider_selected = select_provider_from_metadata(data, price["provider_name"])
 
     usage = data.get("usage", {})
     reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
@@ -256,7 +299,6 @@ def capture(model, provider_slug, api_key, *, post=httpx.post, get=httpx.get):
     reported_cost = usage.get("cost")
     upstream_cost = (usage.get("cost_details") or {}).get("upstream_inference_cost")
 
-    price = fetch_price_authority(model, get=get)
     completion_priced = (
         prompt * price["prompt_per_token"] + completion * price["completion_per_token"]
     )
@@ -285,10 +327,12 @@ def capture(model, provider_slug, api_key, *, post=httpx.post, get=httpx.get):
         "_note": (
             "billing_relationship comes from classify_billing() in "
             "scripts/capture_reasoning_usage_fixture.py -- the single source the D1 gate "
-            "imports. The verdict is derived from the STORED price_authority rates (USD per "
-            "token, captured with source + fetched_at), never from the mutable curated "
-            "registry, so it stays reproducible. It is scoped to provider_selected, which "
-            "was verified against provider_requested via openrouter_metadata."
+            "imports. The verdict is derived from the STORED price_authority rates of the "
+            "EXACT pinned endpoint (matched on `tag`, USD per token, captured with source + "
+            "fetched_at), never from model-wide or registry pricing, so it stays reproducible. "
+            "Billing is per endpoint: variant tags of one provider price differently, which is "
+            "why the price keys on `tag` while the router's selected display name is verified "
+            "against that endpoint's `provider_name`."
         ),
     }
 
@@ -323,11 +367,13 @@ def main() -> int:
     FIXTURE.write_text(json.dumps(fixture, indent=2), encoding="utf-8")
 
     price = fixture["price_authority"]
-    print(f"model={model}  provider_requested={provider_slug}  provider_selected={fixture['provider_selected']}")
+    print(f"model={model}  endpoint tag={price['tag']!r} provider_name={price['provider_name']!r} "
+          f"({price['endpoint_name']})")
+    print(f"router selected={fixture['provider_selected']!r} (verified against provider_name)")
     print(f"usage={fixture['usage'].get('completion_tokens')} completion tokens, "
           f"{(fixture['usage'].get('completion_tokens_details') or {}).get('reasoning_tokens')} reasoning")
     print(f"cost={fixture['cost']}  completion_priced={price['completion_priced_cost']}")
-    print(f"rates: prompt={price['prompt_per_token']}/tok completion={price['completion_per_token']}/tok "
+    print(f"endpoint rates: prompt={price['prompt_per_token']}/tok completion={price['completion_per_token']}/tok "
           f"internal_reasoning={price['internal_reasoning_per_token']} (source {price['source']})")
     print(f"billing_relationship={fixture['billing_relationship']}")
     print(fixture["_conclusion"])

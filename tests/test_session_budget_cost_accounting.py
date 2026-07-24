@@ -572,14 +572,118 @@ def _routing_metadata(provider, *, selected=True):
     }
 
 
-def test_routing_metadata_matching_pin_is_accepted():
-    """Provider pins are slugs ('openai'); metadata reports display names
-    ('OpenAI'). A case/punctuation difference is the same route."""
+def _endpoints_payload():
+    """Mirrors the real GET /api/v1/models/{model}/endpoints response, verified
+    live 2026-07 against openai/gpt-4o-mini: TWO providers, and TWO tags under one
+    provider ("azure" vs "azure/swedencentral", both provider_name "Azure") whose
+    completion rates genuinely differ. Billing is per endpoint, not per provider."""
+    return {"data": {"id": "openai/gpt-4o-mini", "endpoints": [
+        {"name": "Azure | openai/gpt-4o-mini", "tag": "azure", "provider_name": "Azure",
+         "model_id": "openai/gpt-4o-mini", "model_name": "GPT-4o-mini",
+         "pricing": {"prompt": "0.00000015", "completion": "0.0000006"}},
+        {"name": "OpenAI | openai/gpt-4o-mini", "tag": "openai", "provider_name": "OpenAI",
+         "model_id": "openai/gpt-4o-mini", "model_name": "GPT-4o-mini",
+         "pricing": {"prompt": "0.0000002", "completion": "0.0000009"}},
+        {"name": "Azure (Sweden Central) | openai/gpt-4o-mini", "tag": "azure/swedencentral",
+         "provider_name": "Azure", "model_id": "openai/gpt-4o-mini", "model_name": "GPT-4o-mini",
+         "pricing": {"prompt": "0.000000165", "completion": "0.00000066",
+                     "internal_reasoning": "0.000001"}},
+    ]}}
+
+
+def _endpoints_getter(payload=None):
+    def _get(url, timeout=None):
+        assert url.endswith("/endpoints"), "pricing must come from the per-endpoint route"
+        return _FakeResponse(payload if payload is not None else _endpoints_payload())
+    return _get
+
+
+def test_endpoint_pricing_differs_between_providers_for_one_model():
+    """Two providers serving the same model price differently, so a model-wide
+    rate cannot stand in for a pinned route."""
+    capture = _billing_classifier()
+    azure = capture.fetch_endpoint_pricing("openai/gpt-4o-mini", "azure", get=_endpoints_getter())
+    openai = capture.fetch_endpoint_pricing("openai/gpt-4o-mini", "openai", get=_endpoints_getter())
+
+    assert azure["completion_per_token"] == 6e-7
+    assert openai["completion_per_token"] == 9e-7
+    assert azure["provider_name"] == "Azure" and openai["provider_name"] == "OpenAI"
+
+
+def test_endpoint_pricing_differs_between_tags_of_one_provider():
+    """The trap this defect was about: two tags of the SAME provider price
+    differently, so matching on provider_name would pick the wrong rate."""
+    capture = _billing_classifier()
+    base = capture.fetch_endpoint_pricing("openai/gpt-4o-mini", "azure", get=_endpoints_getter())
+    variant = capture.fetch_endpoint_pricing(
+        "openai/gpt-4o-mini", "azure/swedencentral", get=_endpoints_getter()
+    )
+
+    assert base["provider_name"] == variant["provider_name"] == "Azure"
+    assert base["completion_per_token"] == 6e-7
+    assert variant["completion_per_token"] == 6.6e-7
+    assert base["completion_per_token"] != variant["completion_per_token"]
+
+
+def test_endpoint_pricing_variant_tag_records_full_identity():
+    """The exact variant tag is selectable and its identity + own
+    internal_reasoning price are recorded."""
+    capture = _billing_classifier()
+    price = capture.fetch_endpoint_pricing(
+        "openai/gpt-4o-mini", "azure/swedencentral", get=_endpoints_getter()
+    )
+
+    assert price["tag"] == "azure/swedencentral"
+    assert price["provider_name"] == "Azure"
+    assert price["endpoint_name"] == "Azure (Sweden Central) | openai/gpt-4o-mini"
+    assert price["endpoint_model_id"] == "openai/gpt-4o-mini"
+    assert price["internal_reasoning_per_token"] == 1e-6
+    assert price["source"].endswith("/models/openai/gpt-4o-mini/endpoints")
+    assert price["fetched_at"]
+
+
+def test_endpoint_pricing_rejects_missing_tag():
+    """No exact tag -> fail (and say which tags exist) rather than fall back to a
+    provider-name or model-wide rate."""
+    capture = _billing_classifier()
+    with pytest.raises(capture.CaptureError, match="no endpoint on .* has tag"):
+        capture.fetch_endpoint_pricing("openai/gpt-4o-mini", "azur", get=_endpoints_getter())
+
+
+def test_endpoint_pricing_rejects_ambiguous_tag():
+    """Duplicate tags cannot be priced unambiguously."""
+    capture = _billing_classifier()
+    payload = _endpoints_payload()
+    payload["data"]["endpoints"].append(dict(payload["data"]["endpoints"][0]))
+
+    with pytest.raises(capture.CaptureError, match="ambiguous"):
+        capture.fetch_endpoint_pricing(
+            "openai/gpt-4o-mini", "azure", get=_endpoints_getter(payload)
+        )
+
+
+def test_routing_metadata_matching_display_name_is_accepted():
+    """The router reports a display name; it is verified against the pinned
+    ENDPOINT's provider_name."""
     capture = _billing_classifier()
     served = capture.select_provider_from_metadata(
-        {"openrouter_metadata": _routing_metadata("OpenAI")}, "openai"
+        {"openrouter_metadata": _routing_metadata("OpenAI")}, "OpenAI"
     )
     assert served == "OpenAI"
+
+
+def test_routing_metadata_accepts_variant_tag_served_under_provider_name():
+    """Pinning `azure/swedencentral` is served as "Azure". Verifying against the
+    endpoint's provider_name accepts it; verifying against the raw tag would have
+    wrongly rejected a correct route."""
+    capture = _billing_classifier()
+    price = capture.fetch_endpoint_pricing(
+        "openai/gpt-4o-mini", "azure/swedencentral", get=_endpoints_getter()
+    )
+    served = capture.select_provider_from_metadata(
+        {"openrouter_metadata": _routing_metadata("Azure")}, price["provider_name"]
+    )
+    assert served == "Azure"
 
 
 def test_routing_metadata_missing_is_rejected():
@@ -587,23 +691,24 @@ def test_routing_metadata_missing_is_rejected():
     is not provider evidence."""
     capture = _billing_classifier()
     with pytest.raises(capture.CaptureError, match="openrouter_metadata"):
-        capture.select_provider_from_metadata({"choices": []}, "openai")
+        capture.select_provider_from_metadata({"choices": []}, "OpenAI")
 
 
 def test_routing_metadata_without_selected_endpoint_is_rejected():
     capture = _billing_classifier()
     with pytest.raises(capture.CaptureError, match="no selected endpoint"):
         capture.select_provider_from_metadata(
-            {"openrouter_metadata": _routing_metadata("OpenAI", selected=False)}, "openai"
+            {"openrouter_metadata": _routing_metadata("OpenAI", selected=False)}, "OpenAI"
         )
 
 
 def test_routing_metadata_mismatched_provider_is_rejected():
-    """A fallback route invalidates a provider-specific billing reading."""
+    """A genuinely different provider still fails, even though variant tags of the
+    same provider are tolerated."""
     capture = _billing_classifier()
     with pytest.raises(capture.CaptureError, match="routing mismatch"):
         capture.select_provider_from_metadata(
-            {"openrouter_metadata": _routing_metadata("Azure")}, "openai"
+            {"openrouter_metadata": _routing_metadata("Azure")}, "OpenAI"
         )
 
 
@@ -628,23 +733,55 @@ def test_capture_records_verified_route_and_price_provenance():
             },
         })
 
-    def fake_get(url, timeout=None):
-        return _FakeResponse({
-            "data": {"pricing": {"prompt": "0.00000015", "completion": "0.0000006",
-                                 "internal_reasoning": "0"}}
-        })
-
     fixture = capture.capture("openai/gpt-4o-mini", "openai", "key",
-                              post=fake_post, get=fake_get)
+                              post=fake_post, get=_endpoints_getter())
 
     assert fixture["provider_selected"] == "OpenAI"
-    assert fixture["price_authority"]["source"].endswith("/model/openai/gpt-4o-mini")
-    assert fixture["price_authority"]["fetched_at"]
-    assert fixture["price_authority"]["completion_per_token"] == 6e-7
+    price = fixture["price_authority"]
+    assert price["source"].endswith("/models/openai/gpt-4o-mini/endpoints")
+    assert price["fetched_at"]
+    assert price["tag"] == "openai"
+    assert price["provider_name"] == "OpenAI"
+    # The OpenAI endpoint's own rate, not Azure's and not a model-wide rate.
+    assert price["completion_per_token"] == 9e-7
     assert fixture["upstream_inference_cost"] == 0.70
     assert fixture["billing_relationship"] == "inside"
     # The gate must accept a genuine capture end-to-end.
     assert _assert_fixture_proves_inside_billing(fixture) == "inside"
+
+
+def test_classification_follows_the_pinned_endpoint_rate():
+    """Proof the verdict is derived from the PINNED endpoint's rate: one identical
+    billed cost classifies differently depending on which tag was pinned, because
+    the two endpoints price differently. A model-wide rate could not do this."""
+    capture = _billing_classifier()
+    usage_tokens = 1_000_000
+    reasoning = 400_000
+    billed = 0.99
+
+    def verdict(tag):
+        price = capture.fetch_endpoint_pricing(
+            "openai/gpt-4o-mini", tag, get=_endpoints_getter()
+        )
+        completion_priced = (
+            usage_tokens * price["prompt_per_token"]
+            + usage_tokens * price["completion_per_token"]
+        )
+        relationship, _ = capture.classify_billing(
+            reasoning_tokens=reasoning,
+            reported_cost=billed,
+            completion_priced_cost=completion_priced,
+            completion_rate_per_token=price["completion_per_token"],
+            internal_reasoning_rate_per_token=price["internal_reasoning_per_token"],
+        )
+        return relationship
+
+    # azure prices completion at 6e-7 -> $0.75 priced, so $0.99 billed is a
+    # surcharge matching 400k reasoning tokens: SEPARATE.
+    assert verdict("azure") == "separate"
+    # openai prices it at 9e-7 -> $1.10 priced, so the same $0.99 carries no
+    # surcharge at all: INSIDE.
+    assert verdict("openai") == "inside"
 
 
 def test_failed_capture_leaves_fixture_untouched(monkeypatch, tmp_path):
@@ -685,9 +822,12 @@ def _synthetic_fixture(*, reasoning, cost, label, internal_reasoning=None):
         },
         "cost": cost,
         "price_authority": {
-            "source": "https://openrouter.ai/api/v1/model/openai/gpt-4o-mini",
+            "source": "https://openrouter.ai/api/v1/models/openai/gpt-4o-mini/endpoints",
             "fetched_at": "2026-07-23T00:00:00+00:00",
             "units": "USD per token",
+            "tag": "synthetic-provider",
+            "provider_name": "Synthetic-Provider",
+            "endpoint_name": "Synthetic-Provider | openai/gpt-4o-mini",
             "prompt_per_token": 1.5e-7,
             "completion_per_token": 6e-7,
             "internal_reasoning_per_token": internal_reasoning,
@@ -711,8 +851,6 @@ def _assert_fixture_proves_inside_billing(fixture):
     recorded = fixture.get("billing_relationship")
     reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
 
-    # The decision is provider-specific, and the served route must have been
-    # VERIFIED against the pin -- not merely requested.
     requested = fixture.get("provider_requested")
     selected = fixture.get("provider_selected")
     if not requested or not selected:
@@ -720,21 +858,31 @@ def _assert_fixture_proves_inside_billing(fixture):
             "fixture must record both provider_requested and the VERIFIED provider_selected "
             "(from openrouter_metadata); a pin alone does not prove which route served the call"
         )
-    if capture._normalize_provider(requested) != capture._normalize_provider(selected):
-        raise AssertionError(
-            f"routing mismatch in fixture: requested {requested!r}, served {selected!r} -- "
-            "the billing verdict is provider-specific, so re-capture on the pinned route"
-        )
     if reported_cost is None:
         raise AssertionError("capture must record the billed `usage.cost` -- it is the authority")
 
     price = fixture.get("price_authority") or {}
-    for field in ("source", "fetched_at", "prompt_per_token", "completion_per_token"):
+    for field in ("source", "fetched_at", "tag", "provider_name",
+                  "prompt_per_token", "completion_per_token"):
         if price.get(field) is None:
             raise AssertionError(
-                f"price_authority.{field} missing -- the verdict must be reproducible from "
-                "rates recorded AT CAPTURE TIME, with provenance"
+                f"price_authority.{field} missing -- the verdict must be reproducible from the "
+                "EXACT pinned endpoint's rates recorded AT CAPTURE TIME, with provenance"
             )
+
+    # Pricing keys on the exact endpoint tag (variant tags of one provider price
+    # differently), while the router's display name is verified against that
+    # endpoint's provider_name -- so `azure/swedencentral` served as "Azure" passes.
+    if price["tag"] != requested:
+        raise AssertionError(
+            f"priced endpoint tag {price['tag']!r} is not the pinned tag {requested!r} -- "
+            "billing is per endpoint, so the rate must come from the tag that was pinned"
+        )
+    if capture._normalize_provider(selected) != capture._normalize_provider(price["provider_name"]):
+        raise AssertionError(
+            f"routing mismatch in fixture: pinned endpoint belongs to "
+            f"{price['provider_name']!r} but the router served {selected!r} -- re-capture"
+        )
 
     # Price from the STORED rates (USD per token), not the registry.
     completion_priced = (
