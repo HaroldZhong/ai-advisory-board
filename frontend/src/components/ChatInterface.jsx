@@ -19,7 +19,6 @@ import { useSettings } from '@/contexts/SettingsContext';
 import TrustRow from './TrustRow';
 import { getChatSurfaceClass } from '@/utils/responsiveChatLayout';
 import { buildBudgetPolicyUpdate, formatCurrency, getBudgetCapBlockState, getPrivacyToggleDisabledReason, resolveEffectiveZdr } from '@/utils/trustState';
-import { resolveEffectiveThinkingEffort } from '@/utils/thinkingEffort';
 import { predictNextMessageMode } from '../utils/modePrediction';
 import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
@@ -354,7 +353,6 @@ export default function ChatInterface({
     // override. Resolve the actual next mode: armed -> council; else the auto
     // prediction (council on a council-default first turn, otherwise chat).
     const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
-    const resolvedEffort = resolveEffectiveThinkingEffort(conversation);
     const estimateConversationId = conversation?.id;
     if (!showCouncilConfirm) {
       // Fetch the estimate for the mode that will actually run. Never blocks: a
@@ -374,7 +372,10 @@ export default function ChatInterface({
             modelTier: settings.modelTier,
             webSearchEnabled: settings.webSearchEnabled,
             webSearchDepth: settings.webSearchDepth,
-            thinkingEffort: resolvedEffort,
+            // Pass only the STORED effort (or nothing) -- the backend resolves the
+            // preset default for legacy conversations the same way the send path does
+            // (don't force the FE 'medium' fallback) (Codex #110).
+            thinkingEffort: conversation?.metadata?.thinking_effort,
           });
         } catch {
           estimate = null;
@@ -386,13 +387,12 @@ export default function ChatInterface({
       // The user switched conversations while the estimate was in flight -- discard it
       // rather than show A's confirm over B or send B's turn on A's estimate (Codex #110).
       if (conversationIdRef.current !== estimateConversationId) return;
-      // Confirm before an explicitly armed council send (P3-T4), any LARGE predicted
-      // turn, OR a HIGH-effort full-council turn -- the D3 contract (§5.1) names
-      // "high effort x full council" as its own warn case, so cheap Budget-council
-      // models running high/x-high effort still warn even below the dollar threshold
-      // (Codex #110). A turn that is none of these dispatches uninterrupted.
-      const highEffortCouncil = resolvedSendMode === 'council' && (resolvedEffort === 'high' || resolvedEffort === 'xhigh');
-      if (askCouncil || estimate?.is_large || highEffortCouncil) {
+      // Confirm before an explicitly armed council send (P3-T4) or any turn the backend
+      // flags as large -- is_large now encodes BOTH D3 §5.1 warn cases (large predicted
+      // spend AND high-effort full-council), decided with the send path's own effort
+      // resolution so legacy preset conversations are correct (Codex #110). A turn that
+      // is neither dispatches uninterrupted.
+      if (askCouncil || estimate?.is_large) {
         setTurnEstimate(estimate);
         setShowCouncilConfirm(true);
         return;

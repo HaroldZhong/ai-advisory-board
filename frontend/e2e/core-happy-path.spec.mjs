@@ -551,46 +551,6 @@ test('D3 soft seatbelt: a large predicted CHAT turn also warns, not only council
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
-test('D3 soft seatbelt: a high-effort full-council turn warns even below the dollar threshold', async ({ page }) => {
-  // §5.1 names "high effort x full council" as its own warn case, so a cheap Budget-style
-  // council running High effort must confirm even when the estimate is under the threshold.
-  await completeSetupToNewConversation(page);
-  // A cheap council estimate (is_large false) ...
-  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
-    await route.fulfill(json({ predicted_cost: 0.03, approximate: true, threshold: 0.15, is_large: false }));
-  });
-  // ... on a conversation running High thinking effort.
-  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}$`), async (route) => {
-    await route.fulfill(json({
-      id: CONVERSATION_ID,
-      created_at: '2026-05-03T00:00:00Z',
-      title: 'High effort',
-      total_cost: 0,
-      messages: [],
-      metadata: {
-        thinking_effort: 'high',
-        default_mode: 'chat',
-        chairman_model: MODEL_CLAUDE,
-        council_models: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
-      },
-      session_policy: { budget_usd: null, notify_thresholds: [0.75, 0.85, 1], mode: 'auto', allow_overage: true },
-      session_usage: { spent_usd: 0, messages: 0, last_warning_level: null },
-      budget_spent_pct: 0,
-    }));
-  });
-  await page.getByRole('button', { name: 'Start conversation' }).click();
-  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
-
-  await page.getByRole('button', { name: 'Ask the council' }).click();
-  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Weigh this deeply.');
-  await page.getByRole('button', { name: 'Send message' }).click();
-
-  // Confirm appears despite is_large:false -- it is a high-effort council turn.
-  await expect(page.getByRole('alert')).toContainText('Council run uses every council model');
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveCount(0);
-});
-
 test('reopening the budget dialog re-seeds the hard-cap toggle from the saved policy', async ({ page }) => {
   // v1.3.0 D3 regression guard: the budget dialog stays mounted across opens, so a
   // stale/cancelled local toggle must never survive to overwrite the saved policy.

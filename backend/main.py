@@ -881,10 +881,13 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
         model_tier=request.model_tier,
     )
 
-    # Resolve the effort the turn will actually run at (request override, else the
-    # conversation's stored effort, else medium) -- high effort adds reasoning cost the
-    # threshold check must see (Codex #110).
-    thinking_effort = request.thinking_effort or metadata.get("thinking_effort") or "medium"
+    # Resolve the effort the turn will actually run at with the SAME resolver the send
+    # path uses (request override > stored metadata > preset default > medium), so a
+    # legacy preset conversation with no stored effort is priced at its preset default
+    # (e.g. Research -> high), not a forced medium (Codex #110). resolve_effective_
+    # thinking_effort only reads `.thinking_effort` off the request, which the estimate
+    # request carries.
+    thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
     if request.mode == "council":
         # Council fan-out on the planner's RESOLVED rag budget + chairman, at the
@@ -908,11 +911,19 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
         predicted += estimate_web_search_cost(request.web_search_depth)
 
     predicted = round(predicted, 6)
+    # "Large" = the D3 contract's two warn cases (§5.1): a large predicted spend, OR a
+    # high-effort full-council turn (cheap council models can stay under the dollar
+    # threshold while running high/x-high effort). Deciding it here -- with the send
+    # path's own effort resolution -- keeps a legacy preset conversation correct even
+    # though the client can't resolve the preset default (Codex #110).
+    is_large = predicted >= config.LARGE_TURN_ESTIMATE_USD or (
+        request.mode == "council" and thinking_effort in ("high", "xhigh")
+    )
     return {
         "predicted_cost": predicted,
         "approximate": True,
         "threshold": config.LARGE_TURN_ESTIMATE_USD,
-        "is_large": predicted >= config.LARGE_TURN_ESTIMATE_USD,
+        "is_large": is_large,
     }
 
 

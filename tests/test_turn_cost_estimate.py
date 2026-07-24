@@ -235,6 +235,33 @@ async def test_estimate_endpoint_includes_thinking_effort(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_estimate_flags_high_effort_council_including_legacy_preset(monkeypatch, tmp_path):
+    """Codex #110 R14+R15: (a) a high-effort full-council turn is 'large' even below the
+    dollar threshold (the D3 'high effort x full council' warn case); (b) a LEGACY preset
+    conversation with no stored thinking_effort resolves the preset default the same way
+    the send path does, so its council turn is flagged large without a client override."""
+    main, _br, config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+
+    # A Budget council is cheap; at high effort it stays under the dollar threshold but
+    # must still be flagged large by the effort rule.
+    budget = await main.create_conversation(main.CreateConversationRequest(preset_id="budget"))
+    high = await main.estimate_turn_endpoint(
+        budget["id"], main.TurnEstimateRequest(mode="council", thinking_effort="high")
+    )
+    assert high["predicted_cost"] < config.LARGE_TURN_ESTIMATE_USD  # genuinely cheap
+    assert high["is_large"] is True  # ... but flagged by the high-effort x council rule
+
+    # Legacy Research conversation: no stored thinking_effort -> the estimate resolves the
+    # preset default (high), so a council turn is flagged large without a client override.
+    main.storage.create_conversation("legacy-research", {"preset_id": "research"})
+    legacy = await main.estimate_turn_endpoint(
+        "legacy-research", main.TurnEstimateRequest(mode="council")  # no effort override
+    )
+    assert legacy["is_large"] is True
+
+
+@pytest.mark.asyncio
 async def test_estimate_endpoint_404_for_missing_conversation(monkeypatch, tmp_path):
     main, _br, _config = import_modules(monkeypatch)
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
