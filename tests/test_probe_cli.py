@@ -74,9 +74,13 @@ def test_cli_refuses_without_api_key(monkeypatch):
     assert cli.main(["--max-probe-usd", "5", "--max-cost-per-call", "0.05"]) == 1
 
 
-def test_resolve_provider_tag_defaults_to_id_prefix():
+def test_cli_offers_no_global_provider_pin():
+    """There is no tag to choose up front any more: the sweep probes UNPINNED and
+    records whichever endpoint actually served. A global pin is also exactly what the
+    routing rule forbids, and the old id-prefix default named a NON-EXISTENT endpoint
+    for 17 of 33 registry models -- with allow_fallbacks:false that is no route."""
     cli = _cli()
-    assert cli.resolve_provider_tag({"id": "openai/gpt-x"}) == "openai"
-    assert cli.resolve_provider_tag({"id": "anthropic/claude"}, None) == "anthropic"
-    # explicit override pins one tag for all models
-    assert cli.resolve_provider_tag({"id": "openai/gpt-x"}, "azure") == "azure"
+    assert not hasattr(cli, "resolve_provider_tag")
+    with pytest.raises(SystemExit):
+        cli.main(["--max-probe-usd", "5", "--resolve-endpoint-prices",
+                  "--provider-tag", "openai"])

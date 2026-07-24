@@ -141,13 +141,18 @@ def test_plain_reflects_baseline_only_not_effort_reasoning():
 
 # --- probe_model: end-to-end through an injected MockTransport ---------------
 
-def _mock_transport(signals_by_effort):
+def _mock_transport(signals_by_effort, served_provider=None):
     """Return httpx.MockTransport that scripts reasoning_tokens by the request's
-    reasoning.effort (None = the baseline call)."""
+    reasoning.effort (None = the baseline call). Optionally reports which provider
+    served, the way router metadata does."""
     def handler(request):
         body = json.loads(request.content.decode("utf-8"))
-        # pin is enforced client-side; assert the probe sent it
-        assert body["provider"] == {"order": ["openai"], "allow_fallbacks": False}
+        # The sweep probes UNPINNED so the capability is learned on the endpoint
+        # OpenRouter actually routes to. A pin here would send `allow_fallbacks:
+        # false` with a tag nobody verified -- which meant NO ROUTE for 17 of 33
+        # registry models under the old id-prefix guess.
+        assert "provider" not in body, f"probe must not pin a provider: {body.get('provider')!r}"
+        assert body["max_tokens"] == 8000
         effort = (body.get("reasoning") or {}).get("effort")
         rt = signals_by_effort.get(effort, 0)
         payload = {
@@ -155,6 +160,11 @@ def _mock_transport(signals_by_effort):
             "usage": {"completion_tokens": 20,
                       "completion_tokens_details": {"reasoning_tokens": rt}},
         }
+        if served_provider is not None:
+            payload["openrouter_metadata"] = {
+                "endpoints": {"available": [{"provider": served_provider,
+                                             "model": "m/x", "selected": True}]}
+            }
         return httpx.Response(200, json=payload)
     return httpx.MockTransport(handler)
 
@@ -163,11 +173,17 @@ def _mock_transport(signals_by_effort):
 async def test_probe_model_classifies_levels_via_mock_transport():
     probe = _probe()
     entry = {"id": "openai/gpt-x", "supports_reasoning": True, "reasoning_extraction": "field"}
-    tx = _mock_transport({None: 0, "low": 10, "medium": 25, "high": 40})
-    rec = await probe.probe_model(entry, "openai", "test-key", transport=tx)
+    tx = _mock_transport({None: 0, "low": 10, "medium": 25, "high": 40},
+                         served_provider="OpenAI")
+    rec = await probe.probe_model(
+        entry, "test-key", transport=tx,
+        get=_endpoints_getter({"openai/gpt-x": [("openai", 0.000001, 0.000002)]}),
+    )
     assert rec["model_id"] == "openai/gpt-x"
     assert rec["control_surface"] == "levels"
     assert rec["probed"] is True
+    # The pin is RESOLVED FROM THE PROVIDER THAT SERVED (display name "OpenAI" ->
+    # the model's single endpoint with that provider_name), never requested up front.
     assert rec["provider_pinned"] == "openai"
     assert rec["probed_at"]
 
@@ -177,7 +193,7 @@ async def test_probe_model_classifies_none_for_nonreasoning_model():
     probe = _probe()
     entry = {"id": "x/plain"}
     tx = _mock_transport({None: 0, "low": 0, "medium": 0, "high": 0})
-    rec = await probe.probe_model(entry, "openai", "test-key", transport=tx)
+    rec = await probe.probe_model(entry, "test-key", transport=tx)
     assert rec["control_surface"] == "none"
     assert rec["supports_reasoning"] is False
 
@@ -191,7 +207,7 @@ async def test_probe_model_never_hits_network_without_transport(monkeypatch):
     assert probe._probe_transport is None
     entry = {"id": "x/y"}
     tx = _mock_transport({None: 5, "low": 5, "medium": 5, "high": 5})
-    rec = await probe.probe_model(entry, "openai", "k", transport=tx)
+    rec = await probe.probe_model(entry, "k", transport=tx)
     assert rec["native_default_on"] is True and rec["control_surface"] == "onoff"
 
 
@@ -207,7 +223,7 @@ async def test_probe_posts_to_configured_base_url(monkeypatch):
                                                    "completion_tokens_details": {"reasoning_tokens": 3}}})
 
     monkeypatch.setattr(probe.config, "OPENROUTER_API_URL", "https://relay.example/api/v1/chat/completions")
-    await probe.probe_model(_entry("m/x"), "openai", "k", transport=httpx.MockTransport(handler))
+    await probe.probe_model(_entry("m/x"), "k", transport=httpx.MockTransport(handler))
     # respects the configured base URL, not a hard-coded openrouter.ai
     assert seen and all(u == "https://relay.example/api/v1/chat/completions" for u in seen)
 
@@ -241,7 +257,7 @@ async def test_sweep_refuses_without_a_ceiling():
     probe = _probe()
     with pytest.raises(probe.CeilingError, match="unset"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=None, max_cost_per_call_usd=0.01,
+            [_entry("a")], "k", max_probe_usd=None, max_cost_per_call_usd=0.01,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -254,7 +270,7 @@ async def test_sweep_refuses_nonpositive_or_nonfinite_ceiling(bad):
     # slip through the `worst_case > ceiling` comparison and fire the paid sweep.
     with pytest.raises(probe.CeilingError, match="positive, finite"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=bad, max_cost_per_call_usd=0.01,
+            [_entry("a")], "k", max_probe_usd=bad, max_cost_per_call_usd=0.01,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -267,7 +283,7 @@ async def test_sweep_refuses_bad_per_call_bound(bad):
     # bound would zero-or-poison the worst-case estimate and defeat the ceiling.
     with pytest.raises(probe.CeilingError, match="per-call cost bound"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=100.0, max_cost_per_call_usd=bad,
+            [_entry("a")], "k", max_probe_usd=100.0, max_cost_per_call_usd=bad,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -278,7 +294,7 @@ async def test_sweep_rejects_zero_concurrency():
     # Semaphore(0) starts locked -> the sweep would hang forever.
     with pytest.raises(ValueError, match="concurrency"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, concurrency=0,
+            [_entry("a")], "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, concurrency=0,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -292,7 +308,7 @@ async def test_sweep_fails_loud_when_every_probe_fails():
         return httpx.Response(401, json={"error": "invalid key"})
     with pytest.raises(RuntimeError, match="every call failed"):
         await probe.run_probe_sweep(
-            [_entry("a"), _entry("b")], lambda m: "openai", "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01,
+            [_entry("a"), _entry("b")], "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01,
             transport=httpx.MockTransport(all_fail),
         )
 
@@ -310,7 +326,7 @@ async def test_probe_sends_bounded_max_tokens():
             "usage": {"completion_tokens": 5, "completion_tokens_details": {"reasoning_tokens": 3}},
         })
 
-    await probe.probe_model(_entry("m/x"), "openai", "k", transport=httpx.MockTransport(handler))
+    await probe.probe_model(_entry("m/x"), "k", transport=httpx.MockTransport(handler))
     # every probe call (baseline + each level) bounds output so per-call cost is finite
     assert seen and all(mt == probe.PROBE_MAX_TOKENS for mt in seen)
 
@@ -322,7 +338,7 @@ async def test_sweep_refuses_when_worst_case_exceeds_ceiling():
         # 3 models x 4 calls x $0.10 = $1.20 worst case, ceiling $0.50
         await probe.run_probe_sweep(
             [_entry("a"), _entry("b"), _entry("c")],
-            lambda m: "openai", "k", max_probe_usd=0.50, max_cost_per_call_usd=0.10,
+            "k", max_probe_usd=0.50, max_cost_per_call_usd=0.10,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -332,7 +348,7 @@ async def test_sweep_probes_within_ceiling_and_merges():
     probe = _probe()
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
-        [_entry("a"), _entry("b")], lambda m: "openai", "k",
+        [_entry("a"), _entry("b")], "k",
         max_probe_usd=1.00, max_cost_per_call_usd=0.01, transport=tx,
     )
     assert merged["a"]["control_surface"] == "levels"
@@ -347,23 +363,13 @@ async def test_sweep_is_resumable_skips_fresh_rows():
                       "provider_pinned": "openai", "control_surface": "onoff"}}
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
-        [a, b], lambda m: "openai", "k",
+        [a, b], "k",
         max_probe_usd=1.00, max_cost_per_call_usd=0.01, existing=existing, transport=tx,
     )
     # a is fresh (fingerprint + provider match) -> untouched; b is newly probed
     assert merged["a"]["control_surface"] == "onoff"
     assert merged["b"]["control_surface"] == "levels"
 
-
-def test_models_needing_probe_reprobes_on_provider_change():
-    probe = _probe()
-    a = _entry("a")
-    existing = {"a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a),
-                      "provider_pinned": "openai"}}
-    # same provider -> fresh -> skipped
-    assert probe.models_needing_probe([a], existing, lambda m: "openai") == []
-    # different requested endpoint -> row is stale -> re-probe
-    assert [m["id"] for m in probe.models_needing_probe([a], existing, lambda m: "azure")] == ["a"]
 
 
 @pytest.mark.asyncio
@@ -383,7 +389,7 @@ async def test_sweep_degrades_per_model_on_error():
         })
 
     merged = await probe.run_probe_sweep(
-        [_entry("bad"), _entry("good")], lambda m: "openai", "k",
+        [_entry("bad"), _entry("good")], "k",
         max_probe_usd=1.00, max_cost_per_call_usd=0.01,
         transport=httpx.MockTransport(flaky_transport),
     )
@@ -397,8 +403,10 @@ async def test_failed_reprobe_replaces_stale_row_with_unknown():
     probe = _probe()
     a, b = _entry("a"), _entry("b")
     # 'a' has a fresh fingerprint but was measured for a DIFFERENT provider -> the
-    # requested 'azure' endpoint forces a re-probe; make only 'a' fail.
-    existing = {"a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a),
+    # A STALE FINGERPRINT forces the re-probe. (Provider-change invalidation is gone:
+    # provider_pinned is now an observation of what served, not a requested tag, so
+    # there is no requested value to compare a stored row against.) Make only 'a' fail.
+    existing = {"a": {"model_id": "a", "probed": True, "fingerprint": "STALE",
                       "provider_pinned": "openai", "control_surface": "levels"}}
 
     def handler(request):
@@ -410,7 +418,7 @@ async def test_failed_reprobe_replaces_stale_row_with_unknown():
                                          "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}}})
 
     merged = await probe.run_probe_sweep(
-        [a, b], lambda m: "azure", "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, existing=existing,
+        [a, b], "k", max_probe_usd=100.0, max_cost_per_call_usd=0.01, existing=existing,
         transport=httpx.MockTransport(handler),
     )
     # the stale openai-measured row must NOT survive as authoritative -> unknown
@@ -465,9 +473,7 @@ def test_resolve_probe_call_bounds_prices_each_model_by_its_own_endpoint():
         "pricey/model": [("pricey", 0.000002, 0.00018)],
     })
     bounds = probe.resolve_probe_call_bounds(
-        [_entry("cheap/model"), _entry("pricey/model")],
-        lambda m: m["id"].split("/", 1)[0],
-        get=get,
+        [_entry("cheap/model"), _entry("pricey/model")], get=get,
     )
     # No published internal_reasoning rate -> assumed surcharge == completion rate.
     assert bounds["cheap/model"] == pytest.approx(
@@ -478,15 +484,13 @@ def test_resolve_probe_call_bounds_prices_each_model_by_its_own_endpoint():
     assert bounds["pricey/model"] > bounds["cheap/model"] * 100
 
 
-def test_resolve_probe_call_bounds_refuses_an_unresolvable_pin():
+def test_resolve_probe_call_bounds_refuses_a_model_with_no_priceable_endpoint():
     probe = _probe()
     # Dropping an unpriceable model from the ceiling math would under-count the spend
     # it is still about to make, so this refuses loudly and names the model.
-    get = _endpoints_getter({"a/model": [("a", 0.0000001, 0.0000002)]})
+    get = _endpoints_getter({"a/model": []})
     with pytest.raises(probe.CeilingError, match="a/model"):
-        probe.resolve_probe_call_bounds(
-            [_entry("a/model")], lambda m: "not-a-real-tag", get=get,
-        )
+        probe.resolve_probe_call_bounds([_entry("a/model")], get=get)
 
 
 def test_estimate_max_probe_cost_per_model_sums_each_models_own_bound():
@@ -515,7 +519,7 @@ def test_per_model_ceiling_is_far_tighter_than_a_uniform_bound():
 async def test_sweep_accepts_per_model_bounds_without_a_uniform_bound():
     probe = _probe()
     merged = await probe.run_probe_sweep(
-        [_entry("a"), _entry("b")], lambda m: "openai", "k",
+        [_entry("a"), _entry("b")], "k",
         max_probe_usd=1.0,
         per_model_bounds={"a": 0.01, "b": 0.02},
         transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
@@ -531,7 +535,7 @@ async def test_sweep_refuses_when_a_model_it_will_probe_has_no_bound():
     # assert the specific guard AND the named model.
     with pytest.raises(probe.CeilingError) as excinfo:
         await probe.run_probe_sweep(
-            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            [_entry("a"), _entry("b")], "k",
             max_probe_usd=1.0,
             per_model_bounds={"a": 0.01},
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
@@ -547,7 +551,7 @@ async def test_sweep_refuses_a_nonpositive_or_nonfinite_per_model_bound(bad):
     probe = _probe()
     with pytest.raises(probe.CeilingError, match="per-call bound"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k",
+            [_entry("a")], "k",
             max_probe_usd=1.0,
             per_model_bounds={"a": bad},
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
@@ -560,7 +564,7 @@ async def test_sweep_refuses_when_per_model_worst_case_exceeds_the_ceiling():
     # 2 models x 4 calls x $0.30 = $2.40 > $1.00 authorized.
     with pytest.raises(probe.CeilingError, match="exceeds the authorized"):
         await probe.run_probe_sweep(
-            [_entry("a"), _entry("b")], lambda m: "openai", "k",
+            [_entry("a"), _entry("b")], "k",
             max_probe_usd=1.0,
             per_model_bounds={"a": 0.30, "b": 0.30},
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
@@ -605,7 +609,7 @@ def test_resolve_probe_call_bounds_refuses_off_openrouter(monkeypatch):
     monkeypatch.setattr(probe.config, "PROVIDER_KIND", "openai-compatible", raising=False)
     with pytest.raises(probe.CeilingError, match="OpenRouter"):
         probe.resolve_probe_call_bounds(
-            [_entry("a/model")], lambda m: "a",
+            [_entry("a/model")],
             get=_endpoints_getter({"a/model": [("a", 0.0000001, 0.0000002)]}),
         )
 
@@ -717,3 +721,100 @@ def test_cache_write_ttl_variants_are_accounted_not_refused():
     assert price["unaccounted_nonzero_price_keys"] == []
     # worst of the cache-write family, not just the plain key
     assert price["input_cache_write_per_token"] == pytest.approx(0.000006)
+
+
+# --- recording the endpoint that ACTUALLY SERVED -----------------------------
+
+def _named_endpoints_getter(by_model):
+    """/endpoints where each entry is (tag, provider_name)."""
+    def get(url, timeout=None):
+        model = url.split("/models/", 1)[1].rsplit("/endpoints", 1)[0]
+        return httpx.Response(200, json={"data": {"endpoints": [
+            {"tag": tag, "provider_name": name, "model_id": model,
+             "pricing": {"prompt": "0.000001", "completion": "0.000002"}}
+            for tag, name in by_model.get(model, [])
+        ]}}, request=httpx.Request("GET", url))
+    return get
+
+
+def test_served_provider_name_reads_the_selected_endpoint():
+    probe = _probe()
+    assert probe.served_provider_name({"openrouter_metadata": {"endpoints": {"available": [
+        {"provider": "Together", "selected": False},
+        {"provider": "Google Vertex", "selected": True},
+    ]}}}) == "Google Vertex"
+    # no metadata (header not honoured / older route) -> unknown, not a guess
+    assert probe.served_provider_name({"choices": []}) is None
+
+
+def test_served_name_resolves_to_an_exact_tag_when_unambiguous():
+    from backend.endpoint_pricing import resolve_served_endpoint_tag
+    get = _named_endpoints_getter({"x/y": [("google-vertex", "Google Vertex"),
+                                           ("google-ai-studio", "Google AI Studio")]})
+    # display name -> the ONE endpoint published under it
+    assert resolve_served_endpoint_tag("x/y", "Google Vertex", get=get) == "google-vertex"
+    # normalisation: metadata spelling never matches a slug character-for-character
+    assert resolve_served_endpoint_tag("x/y", "google vertex", get=get) == "google-vertex"
+
+
+def test_served_name_yields_no_pin_when_it_maps_to_several_tags():
+    from backend.endpoint_pricing import resolve_served_endpoint_tag
+    # Router metadata reports a provider NAME, never a tag, and one name can cover
+    # variants that price differently. Recording either would force real traffic onto
+    # an endpoint nobody chose, so this must decline rather than guess.
+    get = _named_endpoints_getter({"x/y": [
+        ("google-vertex", "Google Vertex"),
+        ("google-vertex/europe", "Google Vertex"),
+        ("google-vertex/global", "Google Vertex"),
+    ]})
+    assert resolve_served_endpoint_tag("x/y", "Google Vertex", get=get) is None
+
+
+def test_served_name_yields_no_pin_when_unknown_or_absent():
+    from backend.endpoint_pricing import resolve_served_endpoint_tag
+    get = _named_endpoints_getter({"x/y": [("openai", "OpenAI")]})
+    assert resolve_served_endpoint_tag("x/y", "Nobody", get=get) is None
+    assert resolve_served_endpoint_tag("x/y", None, get=get) is None
+
+
+@pytest.mark.asyncio
+async def test_probe_records_no_pin_when_the_served_provider_is_ambiguous():
+    probe = _probe()
+    # Capability is still recorded -- only the pin is withheld. resolve_model_reasoning
+    # then returns no endpoint_pin and runtime routes normally, exactly as today.
+    tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30},
+                         served_provider="Google Vertex")
+    rec = await probe.probe_model(
+        _entry("g/m"), "k", transport=tx,
+        get=_named_endpoints_getter({"g/m": [("google-vertex", "Google Vertex"),
+                                             ("google-vertex/europe", "Google Vertex")]}),
+    )
+    assert rec["probed"] is True
+    assert rec["control_surface"] == "levels"
+    assert rec["provider_pinned"] is None
+
+
+@pytest.mark.asyncio
+async def test_probe_keeps_the_capability_when_tag_resolution_fails():
+    probe = _probe()
+    def exploding_get(url, timeout=None):
+        raise httpx.ConnectError("endpoints unreachable")
+    rec = await probe.probe_model(
+        _entry("g/m"), "k",
+        transport=_mock_transport({None: 0, "low": 10, "medium": 20, "high": 30},
+                                  served_provider="OpenAI"),
+        get=exploding_get,
+    )
+    # A failed pin lookup must not discard an observed capability.
+    assert rec["probed"] is True and rec["control_surface"] == "levels"
+    assert rec["provider_pinned"] is None
+
+
+def test_bounds_cover_the_priciest_endpoint_since_the_probe_is_unpinned():
+    probe = _probe()
+    # Unpinned => any endpoint may serve => only the WORST is an upper bound.
+    get = _endpoints_getter({"m/x": [("cheap", 0.0000001, 0.0000002),
+                                     ("dear", 0.000002, 0.00001)]})
+    bounds = probe.resolve_probe_call_bounds([_entry("m/x")], get=get)
+    assert bounds["m/x"] == pytest.approx(
+        2 * 0.00001 * probe.PROBE_MAX_TOKENS + 0.000002 * probe.PROBE_PROMPT_TOKENS_EST)

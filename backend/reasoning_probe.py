@@ -28,12 +28,17 @@ import asyncio
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import httpx
 
 from . import config
-from .endpoint_pricing import EndpointPricingError, fetch_endpoint_pricing
+from .endpoint_pricing import (
+    EndpointPricingError,
+    fetch_endpoints,
+    price_endpoint,
+    resolve_served_endpoint_tag,
+)
 from .reasoning_capability import model_fingerprint, unknown_record
 
 
@@ -151,12 +156,16 @@ async def _post(model_id, provider_tag, api_key, effort, transport):
     payload: Dict[str, Any] = {
         "model": model_id,
         "messages": [{"role": "user", "content": PROBE_PROMPT}],
-        # Pin the exact endpoint tag; billing + support are provider-specific (#6).
-        "provider": {"order": [provider_tag], "allow_fallbacks": False},
         # Bound completion (incl. reasoning) tokens so per-call cost is finite and
         # the sweep's spend ceiling is enforceable rather than assumed.
         "max_tokens": PROBE_MAX_TOKENS,
     }
+    if provider_tag:
+        # Pinning is OPT-IN. The sweep probes UNPINNED so the capability is learned
+        # on the endpoint OpenRouter actually routes to -- the same endpoint real
+        # traffic gets -- rather than one nobody chose. A guessed pin is worse than
+        # none: `allow_fallbacks: False` turns a wrong tag into no route at all.
+        payload["provider"] = {"order": [provider_tag], "allow_fallbacks": False}
     if effort is not None:
         # OpenRouter's normalized reasoning interface (correction #1).
         payload["reasoning"] = {"effort": effort}
@@ -173,17 +182,45 @@ async def _post(model_id, provider_tag, api_key, effort, transport):
         return resp.json()
 
 
+def served_provider_name(response: Dict[str, Any]) -> Optional[str]:
+    """DISPLAY NAME of the endpoint that actually served this response, from the
+    router metadata the probe opts into (`X-OpenRouter-Metadata: enabled`).
+
+    The metadata exposes provider / model / selected only -- there is NO endpoint tag
+    in it -- so this is a name like "Google Vertex", not a slug. Callers must map it
+    back to an exact tag (endpoint_pricing.resolve_served_endpoint_tag) and accept
+    that the mapping can be ambiguous."""
+    metadata = response.get("openrouter_metadata") or {}
+    available = (metadata.get("endpoints") or {}).get("available") or []
+    for entry in available:
+        if entry.get("selected"):
+            return entry.get("provider")
+    return None
+
+
 async def probe_model(
     model_entry: Dict[str, Any],
-    provider_tag: str,
     api_key: str,
     *,
     levels: Iterable[str] = CANDIDATE_LEVELS,
     transport=None,
     now: Optional[datetime] = None,
+    get=None,
 ) -> Dict[str, Any]:
     """Probe one model end-to-end and return its capability record. One baseline
     call (no effort) + one call per candidate level, through the injected transport.
+
+    Probes UNPINNED and records the endpoint that ACTUALLY SERVED, rather than
+    pinning a tag chosen up front. The recorded `provider_pinned` becomes the pin
+    runtime applies to real traffic, so it must name an endpoint someone actually
+    routes to -- not a guess. (The old default, the model id's provider prefix, named
+    a non-existent endpoint for 17 of 33 registry models.)
+
+    The exact tag is resolved from the served provider's DISPLAY NAME via the free
+    /endpoints data. When that name maps to several tags that price differently, no
+    exact endpoint can be determined and the record carries NO pin: runtime then
+    routes normally, exactly as it does today, instead of being forced somewhere
+    nobody chose.
 
     PAID when transport is None (real network) -- callers gate that on the ceiling.
     """
@@ -192,12 +229,22 @@ async def probe_model(
     levels = tuple(levels)
     extraction = model_entry.get("reasoning_extraction")
 
-    baseline = reasoning_signal(await _post(model_id, provider_tag, api_key, None, tx), extraction)
+    baseline_response = await _post(model_id, None, api_key, None, tx)
+    baseline = reasoning_signal(baseline_response, extraction)
     level_signals: Dict[str, int] = {}
     for level in levels:
         level_signals[level] = reasoning_signal(
-            await _post(model_id, provider_tag, api_key, level, tx), extraction
+            await _post(model_id, None, api_key, level, tx), extraction
         )
+
+    served = served_provider_name(baseline_response)
+    try:
+        kwargs = {} if get is None else {"get": get}
+        provider_tag = resolve_served_endpoint_tag(model_id, served, **kwargs)
+    except (EndpointPricingError, httpx.HTTPError):
+        # Capability was still observed; only the pin is unknown. Record it unpinned
+        # rather than discarding a valid probe result.
+        provider_tag = None
 
     probed_at = (now or datetime.now(timezone.utc)).isoformat()
     return classify_capability(
@@ -211,13 +258,14 @@ async def probe_model(
 def models_needing_probe(
     registry_models: Iterable[Dict[str, Any]],
     existing: Dict[str, Dict[str, Any]],
-    provider_of: Optional[Callable[[Dict[str, Any]], str]] = None,
 ) -> List[Dict[str, Any]]:
     """Resumable set: skip models already probed whose stored fingerprint still
-    matches the registry entry (fresh); return the rest (unprobed or stale). When
-    `provider_of` is given, a fresh row whose `provider_pinned` differs from the
-    now-requested endpoint tag is ALSO re-probed -- probe results are
-    provider-specific, so a --provider-tag change must invalidate the old row."""
+    matches the registry entry (fresh); return the rest (unprobed or stale).
+
+    There is no provider-change invalidation any more: `provider_pinned` is now an
+    OBSERVATION of the endpoint that served the probe, not a tag requested up front,
+    so there is no requested value to compare it against. Fingerprint changes (and
+    the 30-day staleness warning) remain the invalidation signals."""
     needing: List[Dict[str, Any]] = []
     for m in registry_models:
         mid = m.get("id")
@@ -225,8 +273,6 @@ def models_needing_probe(
             continue
         rec = existing.get(mid)
         fresh = bool(rec and rec.get("probed") and rec.get("fingerprint") == model_fingerprint(m))
-        if fresh and provider_of is not None and rec.get("provider_pinned") != provider_of(m):
-            fresh = False  # a different endpoint was requested -> re-probe
         if fresh:
             continue
         needing.append(m)
@@ -322,21 +368,21 @@ def probe_call_bound_usd(pricing: Dict[str, Any]) -> float:
 
 def resolve_probe_call_bounds(
     model_entries: List[Dict[str, Any]],
-    provider_of: Callable[[Dict[str, Any]], str],
     *,
     get=None,
 ) -> Dict[str, float]:
-    """Per-model worst-case cost of ONE probe call, priced from each model's EXACT
-    pinned endpoint via the public (free, keyless) /endpoints API.
+    """Per-model worst-case cost of ONE probe call, from the public (free, keyless)
+    /endpoints API.
 
-    This is what makes a TIGHT ceiling honest: bounding every call by the priciest
-    model in the registry overstates the sweep by roughly an order of magnitude,
-    which would force the maintainer to authorize headroom the sweep cannot spend.
+    The sweep probes UNPINNED, so ANY of a model's endpoints may serve the call. The
+    bound is therefore the WORST across all of them -- the only figure that stays an
+    upper bound whichever one OpenRouter picks. It is still far tighter than one
+    uniform bound across the whole registry, which the priciest single model would
+    otherwise dictate for every call.
 
-    Refuses loudly rather than guessing: a model whose pinned endpoint price cannot
-    be resolved has NO sound bound, and silently dropping it from the ceiling math
-    would under-count the authorized spend. The error names every unresolved model
-    so the maintainer can fix the tag (or pin one with --provider-tag).
+    Refuses loudly rather than guessing: a model with no priceable endpoint has NO
+    sound bound, and silently dropping it from the ceiling math would under-count the
+    authorized spend. The error names every unresolved model and why.
 
     OpenRouter-only: `/endpoints`, endpoint tags and per-endpoint pricing are
     OpenRouter concepts. Against a generic openai-compatible relay there is nothing
@@ -357,8 +403,14 @@ def resolve_probe_call_bounds(
     for entry in model_entries:
         model_id = entry.get("id")
         try:
-            pricing = fetch_endpoint_pricing(model_id, provider_of(entry), **kwargs)
-            bound = probe_call_bound_usd(pricing)
+            url, endpoints = fetch_endpoints(model_id, **kwargs)
+            if not endpoints:
+                unresolved.append(f"{model_id}: publishes no endpoints")
+                continue
+            # EVERY endpoint must price, not just the priciest that happens to parse:
+            # an endpoint we cannot price is one that could serve the call for an
+            # unknown amount, so the max over the rest would not bound it.
+            bound = max(probe_call_bound_usd(price_endpoint(url, e)) for e in endpoints)
         except (EndpointPricingError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             unresolved.append(f"{model_id}: {exc}")
             continue
@@ -388,7 +440,6 @@ def estimate_max_probe_cost_per_model(
 
 async def run_probe_sweep(
     registry_models: List[Dict[str, Any]],
-    provider_of: Callable[[Dict[str, Any]], str],
     api_key: str,
     *,
     max_probe_usd: Optional[float],
@@ -420,7 +471,7 @@ async def run_probe_sweep(
     """
     levels = tuple(levels)
     merged = dict(existing or {})
-    needing = models_needing_probe(registry_models, merged, provider_of)
+    needing = models_needing_probe(registry_models, merged)
 
     def _positive_finite(value):
         return (not isinstance(value, bool) and isinstance(value, (int, float))
@@ -478,7 +529,7 @@ async def run_probe_sweep(
         async with sem:
             try:
                 rec = await probe_model(
-                    model_entry, provider_of(model_entry), api_key,
+                    model_entry, api_key,
                     levels=levels, transport=transport, now=now,
                 )
                 return model_entry["id"], rec

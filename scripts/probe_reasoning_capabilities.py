@@ -27,11 +27,13 @@ Usage:
   OPENROUTER_API_KEY=... uv run python scripts/probe_reasoning_capabilities.py \
       --max-probe-usd 15.00 --resolve-endpoint-prices [--concurrency 4]
 
-Provider routing (correction #6): each model is pinned to an exact endpoint tag.
-By default the tag is the model id's provider prefix (e.g. openai/gpt-x -> openai);
-pass --provider-tag to pin one tag for every model, or refine per-model routing by
-extending resolve_provider_tag(). --resolve-endpoint-prices validates those pins as
-a side effect: an unknown tag fails price resolution and names the available tags.
+Provider routing: the sweep probes UNPINNED and RECORDS the endpoint that actually
+served, resolving its exact tag from the served provider name via the free /endpoints
+data. There is no global provider pin and no tag to choose up front -- a guessed tag
+named a non-existent endpoint for 17 of 33 registry models, and with
+`allow_fallbacks: false` a wrong tag means no route at all. When a served provider
+name maps to several tags that price differently, the record carries NO pin and
+runtime routes normally.
 """
 import argparse
 import asyncio
@@ -45,30 +47,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend import model_registry, reasoning_capability, reasoning_probe  # noqa: E402
 
 
-def resolve_provider_tag(model_entry, override=None):
-    """Exact endpoint tag to pin for this model (correction #6). Default: the
-    provider prefix of the model id. `override` pins one tag for all models."""
-    if override:
-        return override
-    mid = model_entry.get("id", "")
-    return mid.split("/", 1)[0] if "/" in mid else mid
-
-
 async def _run(args) -> int:
     registry = model_registry.load_model_registry()
     models = [m for m in registry.get("models", []) if m.get("id")]
     existing = reasoning_capability.load_capabilities()
     api_key = os.environ["OPENROUTER_API_KEY"]
 
-    def provider_of(model_entry):
-        return resolve_provider_tag(model_entry, args.provider_tag)
-
     per_model_bounds = None
     if args.resolve_endpoint_prices:
         # Only the models this sweep will actually call. /endpoints is public and
         # free, so nothing here spends against the ceiling it is computing.
-        needing = reasoning_probe.models_needing_probe(models, existing, provider_of)
-        per_model_bounds = reasoning_probe.resolve_probe_call_bounds(needing, provider_of)
+        needing = reasoning_probe.models_needing_probe(models, existing)
+        per_model_bounds = reasoning_probe.resolve_probe_call_bounds(needing)
         worst_case = reasoning_probe.estimate_max_probe_cost_per_model(
             [m["id"] for m in needing], reasoning_probe.CANDIDATE_LEVELS, per_model_bounds
         )
@@ -79,7 +69,6 @@ async def _run(args) -> int:
 
     merged = await reasoning_probe.run_probe_sweep(
         models,
-        provider_of,
         api_key,
         max_probe_usd=args.max_probe_usd,
         max_cost_per_call_usd=args.max_cost_per_call,
@@ -117,8 +106,6 @@ def main(argv=None) -> int:
                              "endpoint tags, so use --max-cost-per-call there.")
     parser.add_argument("--concurrency", type=int, default=4,
                         help="Parallel probe calls (>= 1).")
-    parser.add_argument("--provider-tag", default=None,
-                        help="Pin one endpoint tag for every model (default: per-model id prefix).")
     args = parser.parse_args(argv)
 
     if args.max_probe_usd <= 0:
