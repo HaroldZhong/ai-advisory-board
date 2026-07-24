@@ -2,6 +2,7 @@ import { memo } from 'react';
 import MarkdownRenderer from './MarkdownRenderer';
 import ReasoningSection from './ReasoningSection';
 import { Card } from "@/components/ui/card";
+import { formatReasoningActuals } from "@/utils/reasoningDisplay";
 
 function Stage3({
   finalResponse,
@@ -36,6 +37,10 @@ function Stage3({
         />
         <div className="prose max-w-none text-sm dark:prose-invert">
           <MarkdownRenderer>{finalResponse.response}</MarkdownRenderer>
+        </div>
+        {/* B5/E3 §3d: honest post-turn reasoning actuals, keyed on token count. */}
+        <div className="mt-3 text-xs text-muted-foreground">
+          {formatReasoningActuals(finalResponse.reasoning_tokens)}
         </div>
       </Card>
     </div>

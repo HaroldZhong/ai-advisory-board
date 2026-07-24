@@ -16,6 +16,17 @@ export function formatTokenCount(tokenCount) {
   return `${(tokenCount / 1_000_000).toFixed(1)}M tokens`;
 }
 
+// v1.3.0 B5/E3 (§3d): the honest post-turn reasoning actuals for one member. Keyed
+// ONLY on the reasoning_tokens COUNT (from B5), never on reasoning text -- so 0 or
+// absent tokens read as "not available" even when reasoning text was returned, and
+// this never implies "no reasoning happened" from empty text.
+export function formatReasoningActuals(reasoningTokens) {
+  if (Number.isFinite(reasoningTokens) && reasoningTokens > 0) {
+    return `reasoning: ${formatTokenCount(reasoningTokens)}`;
+  }
+  return 'reasoning: not available';
+}
+
 export function formatDuration(durationMs) {
   if (!Number.isFinite(durationMs)) return null;
 

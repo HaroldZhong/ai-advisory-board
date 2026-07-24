@@ -3,10 +3,23 @@ import test from 'node:test';
 
 import {
   formatDuration,
+  formatReasoningActuals,
   formatTokenCount,
   getReasoningStatusLabel,
   hasReasoningText,
 } from '../src/utils/reasoningDisplay.js';
+
+test('B5/E3 §3d: reasoning actuals are keyed on token count, never on text', () => {
+  // real reasoning tokens -> the count
+  assert.equal(formatReasoningActuals(1200), 'reasoning: 1.2k tokens');
+  assert.equal(formatReasoningActuals(900), 'reasoning: 900 tokens');
+  // the honesty trap: 0 tokens (even if reasoning text was returned) -> not available
+  assert.equal(formatReasoningActuals(0), 'reasoning: not available');
+  // absent / null / undefined / NaN -> not available (never implies "no reasoning")
+  assert.equal(formatReasoningActuals(null), 'reasoning: not available');
+  assert.equal(formatReasoningActuals(undefined), 'reasoning: not available');
+  assert.equal(formatReasoningActuals(NaN), 'reasoning: not available');
+});
 
 test('formatTokenCount keeps small counts readable', () => {
   assert.equal(formatTokenCount(0), '0 tokens');

@@ -278,6 +278,7 @@ async function installMockApi(page) {
         data: {
           model: MODEL_CLAUDE,
           response: 'The answer is 5.',
+          reasoning_tokens: 1200,  // B5/E3 §3d honest actuals
         },
       },
       {
@@ -432,6 +433,8 @@ test('first-run setup creates a private preset conversation and renders streamed
   await page.getByRole('button', { name: 'Send message' }).click();
 
   await expect(page.getByText('Final Council Answer')).toBeVisible();
+  // B5/E3 §3d: the chairman's honest post-turn reasoning actuals render from the count
+  await expect(page.getByText('reasoning: 1.2k tokens')).toBeVisible();
   await expect(page.getByText('Reasoning complete').first()).toBeVisible();
   await expect(page.getByText('The answer is 5.')).toBeVisible();
   await expect(page.getByText('Turn Cost:')).toBeVisible();
