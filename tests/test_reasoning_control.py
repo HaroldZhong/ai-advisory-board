@@ -31,6 +31,19 @@ def test_levels_snaps_missing_medium_to_nearest():
     assert rc.translate_reasoning_control(_cap("levels", levels=["low", "high"]), "high")["effort"] == "high"
 
 
+@pytest.mark.parametrize("level,supported,expected", [
+    ("high", ["low", "medium"], "medium"),   # high->medium is nearer than high->low
+    ("low", ["medium", "high"], "medium"),    # low->medium is nearer than low->high
+    ("minimal", ["high", "xhigh"], "high"),   # far below range -> nearest is the floor
+])
+def test_levels_snaps_to_the_actually_nearest_when_not_equidistant(level, supported, expected):
+    # Pins the nearest-distance branch on NON-equidistant inputs, so a min->max or
+    # dropped-abs regression in _snap_to_supported can't ship green (the equidistant
+    # case above accepts either side and would miss it).
+    rc = _rc()
+    assert rc.translate_reasoning_control(_cap("levels", levels=supported), level) == {"kind": "effort", "effort": expected}
+
+
 # --- rung c: budget -> ratio, clamped ------------------------------------------
 
 def test_budget_maps_level_to_clamped_tokens():
