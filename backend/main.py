@@ -825,56 +825,62 @@ async def get_session_policy_endpoint(conversation_id: str):
     return build_session_budget_state(conversation_id)
 
 
-@app.get("/api/conversations/{conversation_id}/estimate")
-async def estimate_turn_endpoint(
-    conversation_id: str,
-    mode: str = "council",
-    execution_mode: str = "auto",
-    rag_preset: str = "auto",
-    model_tier: str = "auto",
-):
-    """v1.3.0 D3 soft seatbelt (§5.1): an APPROXIMATE pre-send cost estimate for the
-    next turn. Never blocks -- the client uses ``is_large`` to decide whether to
-    warn/confirm before dispatch. The honest billed total still comes from usage.cost.
+class TurnEstimateRequest(BaseModel):
+    """Pre-send estimate context (D3). Carries the pending message so the estimate
+    can run the SAME task-signal routing as the real send path."""
+    content: str = ""
+    has_attachments: bool = False
+    mode: str = "council"  # UI mode: "chat" | "council"
+    execution_mode: str = "auto"
+    rag_preset: str = "auto"
+    model_tier: str = "auto"
 
-    Accounts for the per-send routing overrides that materially move cost (Codex
-    #110): the RAG context size (an explicit ``rag_preset``, else the ``execution_mode``
-    implied preset -- research retrieves more) and the chairman model (``model_tier``),
-    so a research/high-context or premium-tier turn is not silently under-estimated.
-    Token counts remain heuristics.
+
+@app.post("/api/conversations/{conversation_id}/estimate")
+async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequest):
+    """v1.3.0 D3 soft seatbelt (§5.1): an APPROXIMATE pre-send cost estimate for the
+    next turn, computed through the SAME run planner the send path uses
+    (``create_run_plan(query=content, has_files=...)``) -- so task-signal, execution
+    mode, RAG preset, and model-tier routing match the real turn and a large auto
+    research/file/keyword turn is not silently under-estimated (Codex #110). For
+    council the chairman-only planner cost is replaced by the full fan-out estimate.
+    Never blocks -- the client uses ``is_large`` to warn/confirm. The honest billed
+    total still comes from usage.cost.
     """
-    from .budget_router import estimate_turn_cost
-    from .execution_modes import select_chairman_for_tier
+    from .budget_router import create_run_plan, estimate_turn_cost
 
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     metadata = conversation.get("metadata", {})
-
-    # A non-auto model tier routes the turn to a different chairman.
-    chairman = metadata.get("chairman_model")
-    if model_tier and model_tier != "auto":
-        chairman = select_chairman_for_tier(model_tier, chairman)
-
-    # RAG context is the dominant per-send cost swing. An explicit non-auto rag_preset
-    # wins; otherwise the execution mode implies one (research -> more context).
-    # Conservative: never assume less context than the turn will actually retrieve.
-    rag_presets = config.RAG_SETTINGS["presets"]
-    mode_to_rag = {"research": "high", "standard": "medium", "quick": "low"}
-    if rag_preset in rag_presets and rag_preset != "auto":
-        rag_key = rag_preset
-    else:
-        rag_key = mode_to_rag.get(execution_mode, config.RAG_SETTINGS["default_preset"])
-    rag_tokens = rag_presets.get(rag_key, rag_presets[config.RAG_SETTINGS["default_preset"]])["tokens"]
-
-    predicted = estimate_turn_cost(
-        mode,
-        council_models=metadata.get("council_models"),
-        chairman_model=chairman,
-        rag_tokens=rag_tokens,
-        execution_mode=execution_mode,
+    # Resolve the chairman the way the send path does -- a plain conversation stores no
+    # chairman_model but runs on config.CHAIRMAN_MODEL, so pricing must use it (not the
+    # $1/$5 fallback that create_run_plan applies for a None model).
+    chairman_model = metadata.get("chairman_model") or config.CHAIRMAN_MODEL
+    run_plan = create_run_plan(
+        query=request.content,
+        conversation_id=conversation_id,
+        has_files=request.has_attachments,
+        chairman_model=chairman_model,
+        execution_mode=request.execution_mode,
+        rag_preset=request.rag_preset,
+        model_tier=request.model_tier,
     )
+
+    if request.mode == "council":
+        # Council fan-out on the planner's RESOLVED rag budget + chairman.
+        predicted = estimate_turn_cost(
+            "council",
+            council_models=metadata.get("council_models"),
+            chairman_model=run_plan.chairman_model,
+            rag_tokens=run_plan.rag_max_tokens,
+        )
+    else:
+        # Chat: the planner's own predicted cost -- identical to the send path.
+        predicted = run_plan.predicted_cost
+
+    predicted = round(predicted, 6)
     return {
         "predicted_cost": predicted,
         "approximate": True,

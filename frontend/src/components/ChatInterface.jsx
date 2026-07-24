@@ -332,7 +332,10 @@ export default function ChatInterface({
       if (conversation?.id) {
         estimatingRef.current = true;
         try {
-          estimate = await api.getTurnEstimate(conversation.id, resolvedSendMode, {
+          estimate = await api.getTurnEstimate(conversation.id, {
+            content: input,
+            hasAttachments: attachments.length > 0,
+            mode: resolvedSendMode,
             executionMode: settings.executionMode,
             ragPreset: settings.ragPreset,
             modelTier: settings.modelTier,

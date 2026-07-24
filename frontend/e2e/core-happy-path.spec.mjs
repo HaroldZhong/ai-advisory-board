@@ -184,10 +184,10 @@ async function installMockApi(page) {
   });
 
   await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
-    // v1.3.0 D3 soft seatbelt: an approximate pre-send estimate, mode-aware like the
-    // real endpoint -- a full council turn is "large" (warn), an ordinary chat turn
-    // is not (dispatches uninterrupted).
-    const isCouncil = new URL(route.request().url()).searchParams.get('mode') === 'council';
+    // v1.3.0 D3 soft seatbelt: an approximate pre-send estimate (POST), mode-aware
+    // like the real endpoint -- a full council turn is "large" (warn), an ordinary
+    // chat turn is not (dispatches uninterrupted). Mode is in the POST body.
+    const isCouncil = (route.request().postDataJSON?.()?.mode ?? 'council') === 'council';
     await route.fulfill(json(
       isCouncil
         ? { predicted_cost: 0.2038, approximate: true, threshold: 0.15, is_large: true }

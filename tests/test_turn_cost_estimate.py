@@ -52,7 +52,7 @@ async def test_estimate_endpoint_shape_and_never_blocks(monkeypatch, tmp_path):
     conv = await main.create_conversation(main.CreateConversationRequest())
     conv_id = conv["id"]
 
-    result = await main.estimate_turn_endpoint(conv_id, mode="council")
+    result = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="council"))
     assert result["approximate"] is True
     assert result["threshold"] == config.LARGE_TURN_ESTIMATE_USD
     assert result["predicted_cost"] > 0
@@ -69,11 +69,11 @@ async def test_estimate_endpoint_is_large_tracks_threshold(monkeypatch, tmp_path
     conv_id = conv["id"]
 
     monkeypatch.setattr(config, "LARGE_TURN_ESTIMATE_USD", 0.0001)
-    large = await main.estimate_turn_endpoint(conv_id, mode="council")
+    large = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="council"))
     assert large["is_large"] is True
 
     monkeypatch.setattr(config, "LARGE_TURN_ESTIMATE_USD", 1000.0)
-    small = await main.estimate_turn_endpoint(conv_id, mode="council")
+    small = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="council"))
     assert small["is_large"] is False
 
 
@@ -99,7 +99,9 @@ async def test_estimate_endpoint_flags_large_research_chat_turn(monkeypatch, tmp
     conv = await main.create_conversation(main.CreateConversationRequest())
     conv_id = conv["id"]
 
-    research_chat = await main.estimate_turn_endpoint(conv_id, mode="chat", execution_mode="research")
+    research_chat = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="chat", execution_mode="research")
+    )
     assert research_chat["is_large"] is True
 
 
@@ -114,12 +116,38 @@ async def test_estimate_endpoint_accounts_for_routing_overrides(monkeypatch, tmp
     conv = await main.create_conversation(main.CreateConversationRequest())
     conv_id = conv["id"]
 
-    baseline = await main.estimate_turn_endpoint(conv_id, mode="council")
-    max_rag = await main.estimate_turn_endpoint(conv_id, mode="council", rag_preset="max")
-    research = await main.estimate_turn_endpoint(conv_id, mode="council", execution_mode="research")
+    baseline = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="council"))
+    max_rag = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", rag_preset="max")
+    )
+    research = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", execution_mode="research")
+    )
 
     assert max_rag["predicted_cost"] > baseline["predicted_cost"]
     assert research["predicted_cost"] > baseline["predicted_cost"]
+
+
+@pytest.mark.asyncio
+async def test_estimate_endpoint_promotes_auto_chat_by_task_signal(monkeypatch, tmp_path):
+    """Codex #110 R5: on auto execution mode the estimate runs the SAME task-signal
+    routing as the send path (create_run_plan on the pending content), so a chat turn
+    whose content trips the research signal is priced as research (large) while a plain
+    chat turn is not -- an expensive auto chat send no longer bypasses the confirm."""
+    main, _br, _config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    plain = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="chat", content="hi there")
+    )
+    research_kw = await main.estimate_turn_endpoint(
+        conv_id,
+        main.TurnEstimateRequest(mode="chat", content="research and analyze and compare these papers"),
+    )
+    assert plain["is_large"] is False
+    assert research_kw["is_large"] is True
 
 
 @pytest.mark.asyncio
@@ -127,5 +155,5 @@ async def test_estimate_endpoint_404_for_missing_conversation(monkeypatch, tmp_p
     main, _br, _config = import_modules(monkeypatch)
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
     with pytest.raises(main.HTTPException) as exc:
-        await main.estimate_turn_endpoint("does-not-exist", mode="council")
+        await main.estimate_turn_endpoint("does-not-exist", main.TurnEstimateRequest(mode="council"))
     assert exc.value.status_code == 404
