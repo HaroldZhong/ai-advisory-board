@@ -25,11 +25,13 @@ Classification (brainstorm §2.4 steps 3–4):
 from __future__ import annotations
 
 import asyncio
+import math
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import httpx
 
+from . import config
 from .reasoning_capability import model_fingerprint, unknown_record
 
 
@@ -38,16 +40,22 @@ class CeilingError(RuntimeError):
     guaranteed for the requested sweep. This is the code embodiment of the
     PAID PROBE AUTHORIZATION -- no paid call happens past this guard."""
 
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Deliberately probe the three widely-supported efforts. minimal/xhigh are omitted
+# because a provider that rejects an effort fails the whole model probe (all-or-
+# nothing per model), and B2's snap maps an unprobed minimal/xhigh to the nearest
+# verified level -- a safe degradation. classify_capability records exactly the
+# levels probed, so the sidecar never claims an unverified effort.
 CANDIDATE_LEVELS = ("low", "medium", "high")
 PROBE_PROMPT = (
     "Reason step by step, then answer: a bat and ball cost $1.10; the bat costs "
     "$1.00 more than the ball. How much is the ball?"
 )
 # Hard per-call output bound so a paid probe call's cost is finite and the spend
-# ceiling is enforceable (not just an assumption). High enough that low/med/high
-# effort still differentiate by reasoning-token count for `levels` models.
+# ceiling is enforceable (not just an assumption). High enough that the effort
+# levels still differentiate by reasoning-token count for `levels` models.
 PROBE_MAX_TOKENS = 8000
+# Generous fixed size of PROBE_PROMPT for the per-call cost bound (tokens).
+PROBE_PROMPT_TOKENS_EST = 64
 
 _probe_transport = None  # httpx.MockTransport injection point for tests; None = real net.
 
@@ -58,8 +66,10 @@ def reasoning_signal(response: Dict[str, Any]) -> int:
     usage = response.get("usage") or {}
     details = usage.get("completion_tokens_details") or {}
     rt = details.get("reasoning_tokens")
-    if isinstance(rt, (int, float)) and not isinstance(rt, bool) and rt > 0:
-        return int(rt)
+    if isinstance(rt, (int, float)) and not isinstance(rt, bool):
+        # The authoritative counter. An explicit 0 is a definitive "did not reason"
+        # and must short-circuit -- never fall through to the weaker text heuristic.
+        return int(rt) if rt > 0 else 0
 
     message = ((response.get("choices") or [{}])[0] or {}).get("message") or {}
     if message.get("reasoning") or message.get("reasoning_details"):
@@ -80,33 +90,40 @@ def classify_capability(
     baseline_signal: int,
     level_signals: Dict[str, int],
     *,
+    levels: Iterable[str] = CANDIDATE_LEVELS,
     probed_at: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build a capability record from the probe signals. Pure + fully testable."""
+    """Build a capability record from the probe signals. Pure + fully testable.
+    `levels` is the set of effort levels ACTUALLY probed (default the full ladder);
+    classification and the recorded `levels` reflect only those, so a caller running
+    a cheaper custom sweep is never credited with unprobed levels."""
     rec = unknown_record(model_id, fingerprint)
     rec["provider_pinned"] = provider_tag
     rec["probed"] = True
     rec["probed_at"] = probed_at or datetime.now(timezone.utc).isoformat()
 
-    ordered = [level_signals.get(level, 0) for level in CANDIDATE_LEVELS]
+    probed_levels = list(levels)
+    ordered = [level_signals.get(level, 0) for level in probed_levels]
     reasoned = baseline_signal > 0 or any(s > 0 for s in ordered)
 
     # Honesty guard: only observed reasoning yields a "supported" surface.
     rec["supports_reasoning"] = bool(reasoned)
     rec["native_default_on"] = baseline_signal > 0
-    rec["plain"] = "reasoned" if reasoned else "none"
+    # `plain` is the no-effort (plain) request's behavior -> baseline only, NOT any
+    # effort-only signal (an effort-only model does not reason on a plain request).
+    rec["plain"] = "reasoned" if baseline_signal > 0 else "none"
 
     if not reasoned:
         rec["control_surface"] = "none"
         return rec
 
     non_decreasing = all(ordered[i] <= ordered[i + 1] for i in range(len(ordered) - 1))
-    differentiates = non_decreasing and ordered[0] < ordered[-1]
+    differentiates = len(ordered) >= 2 and non_decreasing and ordered[0] < ordered[-1]
     rec["varies_effort"] = bool(differentiates)
 
     if differentiates:
         rec["control_surface"] = "levels"
-        rec["levels"] = list(CANDIDATE_LEVELS)
+        rec["levels"] = list(probed_levels)   # only the levels actually probed
     else:
         # Reasons but the level does not move effort -> only on/off is real.
         rec["control_surface"] = "onoff"
@@ -132,7 +149,9 @@ async def _post(model_id, provider_tag, api_key, effort, transport):
         "X-OpenRouter-Metadata": "enabled",
     }
     async with httpx.AsyncClient(timeout=120.0, transport=transport) as client:
-        resp = await client.post(OPENROUTER_API_URL, headers=headers, json=payload)
+        # Respect the app's configured OpenRouter endpoint (relay/proxy) instead of
+        # a hard-coded openrouter.ai URL (backend.config owns the base URL).
+        resp = await client.post(config.OPENROUTER_API_URL, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()
 
@@ -153,6 +172,7 @@ async def probe_model(
     """
     model_id = model_entry["id"]
     tx = transport if transport is not None else _probe_transport
+    levels = tuple(levels)
 
     baseline = reasoning_signal(await _post(model_id, provider_tag, api_key, None, tx))
     level_signals: Dict[str, int] = {}
@@ -164,7 +184,7 @@ async def probe_model(
     probed_at = (now or datetime.now(timezone.utc)).isoformat()
     return classify_capability(
         model_id, model_fingerprint(model_entry), provider_tag,
-        baseline, level_signals, probed_at=probed_at,
+        baseline, level_signals, levels=levels, probed_at=probed_at,
     )
 
 
@@ -188,14 +208,34 @@ def models_needing_probe(
     return needing
 
 
-def estimate_max_probe_cost(num_models: int, levels: Iterable[str], max_cost_per_call_usd: float) -> float:
-    """Upper bound on sweep spend: each model makes 1 baseline + one call per level.
-    `max_cost_per_call_usd` is the worst-case dollar cost of a single call; each
-    probe call bounds its output at PROBE_MAX_TOKENS, so the maintainer sets this to
-    (worst endpoint output price) x PROBE_MAX_TOKENS (+ the small prompt) and the
-    bound holds -- it is not an unenforced assumption about unbounded output."""
+def _per_call_cost_usd(model_entry: Dict[str, Any]) -> Optional[float]:
+    """Worst-case dollar cost of ONE probe call for this model, derived from the
+    registry pricing ($/M tokens) and the enforced PROBE_MAX_TOKENS output bound.
+    Returns None when the model has no usable output price -- the caller must then
+    refuse, since an unpriced model can't be bounded."""
+    pricing = model_entry.get("pricing") or {}
+    out_price = pricing.get("output")
+    in_price = pricing.get("input")
+    if not isinstance(out_price, (int, float)) or isinstance(out_price, bool) or out_price < 0:
+        return None
+    if not isinstance(in_price, (int, float)) or isinstance(in_price, bool) or in_price < 0:
+        in_price = 0
+    return (in_price * PROBE_PROMPT_TOKENS_EST + out_price * PROBE_MAX_TOKENS) / 1_000_000
+
+
+def estimate_max_probe_cost(models_needing: Iterable[Dict[str, Any]], levels: Iterable[str]) -> Optional[float]:
+    """Real upper bound on sweep spend: for each model, (1 baseline + one call per
+    level) x its own registry-priced per-call cost (output price x PROBE_MAX_TOKENS).
+    Returns None if ANY model lacks a usable price, so the caller refuses rather than
+    trusting a flat per-call assumption that a $180/M model would blow past."""
     calls_per_model = 1 + len(tuple(levels))
-    return num_models * calls_per_model * max_cost_per_call_usd
+    total = 0.0
+    for m in models_needing:
+        per_call = _per_call_cost_usd(m)
+        if per_call is None:
+            return None
+        total += calls_per_model * per_call
+    return total
 
 
 async def run_probe_sweep(
@@ -204,7 +244,6 @@ async def run_probe_sweep(
     api_key: str,
     *,
     max_probe_usd: Optional[float],
-    max_cost_per_call_usd: float,
     existing: Optional[Dict[str, Dict[str, Any]]] = None,
     levels: Iterable[str] = CANDIDATE_LEVELS,
     transport=None,
@@ -214,10 +253,11 @@ async def run_probe_sweep(
     """Probe every model that needs it, resumably, and return the merged records.
 
     SPEND-CEILING GUARD (PAID PROBE AUTHORIZATION): before any paid call, refuse
-    if the authorized ceiling is unset, or if the worst-case sweep cost cannot be
-    guaranteed under it. One model erroring degrades to a skipped row (its record
-    stays unknown) rather than aborting the sweep. Bounded concurrency; the caller
-    persists the result via reasoning_capability.save_capabilities.
+    if the authorized ceiling is unset/non-positive/non-finite, or if the worst-case
+    sweep cost (priced from the registry) cannot be guaranteed under it. One model
+    erroring degrades to a skipped row, but a SYSTEMIC failure (every call fails)
+    aborts loudly rather than publishing an all-skipped matrix. Bounded concurrency;
+    the caller persists the result via reasoning_capability.save_capabilities.
     """
     levels = tuple(levels)
     merged = dict(existing or {})
@@ -227,23 +267,27 @@ async def run_probe_sweep(
         raise CeilingError(
             "no authorized probe spend ceiling (<MAX_PROBE_USD> is unset) -- refusing to probe"
         )
-    if max_probe_usd <= 0:
+    if (isinstance(max_probe_usd, bool) or not isinstance(max_probe_usd, (int, float))
+            or not math.isfinite(max_probe_usd) or max_probe_usd <= 0):
+        # `not (x > 0)` alone would miss NaN slipping through the ceiling check.
         raise CeilingError(
-            f"authorized probe ceiling ${max_probe_usd} must be positive -- refusing to probe"
+            f"authorized probe ceiling {max_probe_usd!r} must be a positive, finite number -- refusing to probe"
         )
-    if max_cost_per_call_usd <= 0:
-        # A non-positive per-call cost makes the worst-case estimate <= 0, which
-        # would slip past the ceiling check below and fire the full paid sweep.
+    if concurrency < 1:
+        # asyncio.Semaphore(0) starts locked -> every task blocks forever.
+        raise ValueError(f"concurrency must be >= 1 (got {concurrency})")
+
+    worst_case = estimate_max_probe_cost(needing, levels)
+    if worst_case is None:
         raise CeilingError(
-            f"max_cost_per_call_usd ${max_cost_per_call_usd} must be positive so the "
-            f"worst-case estimate can bound spend -- refusing to probe"
+            "cannot bound worst-case spend: a model needing a probe has no registry output "
+            "price -- refusing to probe (add pricing or exclude the model)"
         )
-    worst_case = estimate_max_probe_cost(len(needing), levels, max_cost_per_call_usd)
     if worst_case > max_probe_usd:
         raise CeilingError(
             f"worst-case probe spend ${worst_case:.4f} ({len(needing)} models x "
-            f"{1 + len(levels)} calls x ${max_cost_per_call_usd}/call) exceeds the authorized "
-            f"ceiling ${max_probe_usd:.4f} -- refusing to probe"
+            f"{1 + len(levels)} calls, registry-priced x {PROBE_MAX_TOKENS} max tokens) exceeds "
+            f"the authorized ceiling ${max_probe_usd:.4f} -- refusing to probe"
         )
 
     sem = asyncio.Semaphore(concurrency)
@@ -260,7 +304,17 @@ async def run_probe_sweep(
                 # Degrade per-model: a single failure must not abort the matrix.
                 return model_entry["id"], None
 
-    for mid, rec in await asyncio.gather(*[_one(m) for m in needing]):
+    results = await asyncio.gather(*[_one(m) for m in needing])
+    succeeded = 0
+    for mid, rec in results:
         if rec is not None:
             merged[mid] = rec
+            succeeded += 1
+    if needing and succeeded == 0:
+        # Every probe failed -> systemic (bad key / exhausted quota / wrong endpoint
+        # tags for all). Don't let the CLI save an all-skipped sidecar and exit 0.
+        raise RuntimeError(
+            f"probe attempted {len(needing)} models but every call failed -- likely a systemic "
+            f"error (invalid key, exhausted quota, or wrong endpoint tags); sidecar not updated"
+        )
     return merged

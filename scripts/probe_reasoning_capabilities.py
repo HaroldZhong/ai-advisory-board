@@ -6,9 +6,14 @@ twice: --max-probe-usd is a required arg, and run_probe_sweep re-checks the
 worst-case cost against it). Writes the capability sidecar; resumable (fresh rows
 are skipped), bounded concurrency, per-model degradation.
 
+The worst-case cost is derived from each model's registry pricing x the enforced
+PROBE_MAX_TOKENS output bound (no flat per-call assumption to get wrong), and the
+sweep refuses if that exceeds --max-probe-usd or if a model needing a probe has no
+registry price.
+
 Usage:
   OPENROUTER_API_KEY=... uv run python scripts/probe_reasoning_capabilities.py \
-      --max-probe-usd 5.00 [--max-cost-per-call 0.05] [--concurrency 4]
+      --max-probe-usd 5.00 [--concurrency 4]
 
 Provider routing (correction #6): each model is pinned to an exact endpoint tag.
 By default the tag is the model id's provider prefix (e.g. openai/gpt-x -> openai);
@@ -48,13 +53,17 @@ async def _run(args) -> int:
         lambda m: resolve_provider_tag(m, args.provider_tag),
         api_key,
         max_probe_usd=args.max_probe_usd,
-        max_cost_per_call_usd=args.max_cost_per_call,
         existing=existing,
         concurrency=args.concurrency,
     )
     reasoning_capability.save_capabilities(merged.values())
     probed = sum(1 for r in merged.values() if r.get("probed"))
     print(f"probed/kept {probed} of {len(models)} models -> {reasoning_capability.SIDECAR_PATH}")
+    # Make skipped rows visible: a wrong endpoint tag silently drops a model, so name
+    # what was NOT probed rather than reporting only a reassuring count.
+    skipped = [m["id"] for m in models if not merged.get(m["id"], {}).get("probed")]
+    if skipped:
+        print(f"NOT probed ({len(skipped)}): {', '.join(skipped)}")
     return 0
 
 
@@ -63,9 +72,8 @@ def main(argv=None) -> int:
     # Required: no ceiling -> no run. This is the CLI-level spend guard.
     parser.add_argument("--max-probe-usd", type=float, required=True,
                         help="Hard maximum authorized spend for this sweep (USD).")
-    parser.add_argument("--max-cost-per-call", type=float, default=0.05,
-                        help="Worst-case cost per probe call (USD), for the ceiling estimate.")
-    parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--concurrency", type=int, default=4,
+                        help="Parallel probe calls (>= 1).")
     parser.add_argument("--provider-tag", default=None,
                         help="Pin one endpoint tag for every model (default: per-model id prefix).")
     args = parser.parse_args(argv)
@@ -73,10 +81,8 @@ def main(argv=None) -> int:
     if args.max_probe_usd <= 0:
         print("error: --max-probe-usd must be positive", file=sys.stderr)
         return 2
-    if args.max_cost_per_call <= 0:
-        # A non-positive per-call cost zeroes the worst-case estimate and would
-        # defeat the ceiling; run_probe_sweep also re-checks this.
-        print("error: --max-cost-per-call must be positive", file=sys.stderr)
+    if args.concurrency < 1:
+        print("error: --concurrency must be >= 1", file=sys.stderr)
         return 2
     if not os.environ.get("OPENROUTER_API_KEY"):
         print("error: OPENROUTER_API_KEY not set", file=sys.stderr)

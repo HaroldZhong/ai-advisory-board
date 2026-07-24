@@ -46,6 +46,15 @@ def test_signal_zero_when_no_reasoning():
     assert probe.reasoning_signal(resp) == 0
 
 
+def test_signal_explicit_zero_reasoning_tokens_is_definitive():
+    probe = _probe()
+    # reasoning_tokens explicitly 0 is authoritative -> 0, even with a long visible
+    # answer that a fall-through heuristic might otherwise misread.
+    resp = {"choices": [{"message": {"content": " ".join(["w"] * 300)}}],
+            "usage": {"completion_tokens": 400, "completion_tokens_details": {"reasoning_tokens": 0}}}
+    assert probe.reasoning_signal(resp) == 0
+
+
 # --- classify_capability: surface from signals ------------------------------
 
 def test_classify_levels_when_signal_rises():
@@ -84,6 +93,30 @@ def test_classify_records_native_default_on_from_baseline():
     assert on["native_default_on"] is True   # reasoned with no effort sent
     assert off["native_default_on"] is False
     assert on["provider_pinned"] == "openai"
+
+
+def test_classify_honors_only_the_probed_levels():
+    probe = _probe()
+    # one-level custom sweep: a high signal must NOT be credited as low/medium too
+    one = probe.classify_capability("m/1", "fp", "openai", 0, {"high": 30}, levels=("high",))
+    assert one["supports_reasoning"] is True and one["control_surface"] == "onoff"
+    # onoff surface claims no specific level ladder -> must NOT phantom-fill low/medium/high
+    assert one.get("levels") is None
+    # two-level sweep must differentiate on those two, not be downgraded by a
+    # phantom unprobed 'high' treated as 0
+    two = probe.classify_capability("m/1", "fp", "openai", 0, {"low": 10, "medium": 25}, levels=("low", "medium"))
+    assert two["control_surface"] == "levels"
+    assert two["levels"] == ["low", "medium"]
+
+
+def test_plain_reflects_baseline_only_not_effort_reasoning():
+    probe = _probe()
+    # baseline (no-effort) did NOT reason but an effort level did -> plain='none'
+    effort_only = probe.classify_capability("m/1", "fp", "openai", 0, {"low": 0, "medium": 20, "high": 30})
+    assert effort_only["plain"] == "none" and effort_only["supports_reasoning"] is True
+    # baseline reasoned -> plain='reasoned'
+    baseline_on = probe.classify_capability("m/2", "fp", "openai", 12, {"low": 12, "medium": 12, "high": 12})
+    assert baseline_on["plain"] == "reasoned"
 
 
 # --- probe_model: end-to-end through an injected MockTransport ---------------
@@ -142,10 +175,29 @@ async def test_probe_model_never_hits_network_without_transport(monkeypatch):
     assert rec["native_default_on"] is True and rec["control_surface"] == "onoff"
 
 
+@pytest.mark.asyncio
+async def test_probe_posts_to_configured_base_url(monkeypatch):
+    probe = _probe()
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                                         "usage": {"completion_tokens": 5,
+                                                   "completion_tokens_details": {"reasoning_tokens": 3}}})
+
+    monkeypatch.setattr(probe.config, "OPENROUTER_API_URL", "https://relay.example/api/v1/chat/completions")
+    await probe.probe_model(_entry("m/x"), "openai", "k", transport=httpx.MockTransport(handler))
+    # respects the configured base URL, not a hard-coded openrouter.ai
+    assert seen and all(u == "https://relay.example/api/v1/chat/completions" for u in seen)
+
+
 # --- A4: sweep orchestration (resumable, ceiling-guarded) --------------------
 
-def _entry(mid, extraction="field"):
-    return {"id": mid, "supports_reasoning": True, "reasoning_extraction": extraction}
+def _entry(mid, extraction="field", output=1.0, input=0.5):
+    # pricing ($/M tokens) so the sweep can derive a real per-call cost bound
+    return {"id": mid, "supports_reasoning": True, "reasoning_extraction": extraction,
+            "pricing": {"input": input, "output": output}}
 
 
 def test_models_needing_probe_skips_fresh_includes_stale_and_unprobed():
@@ -160,10 +212,13 @@ def test_models_needing_probe_skips_fresh_includes_stale_and_unprobed():
     assert needing == {"b", "c"}
 
 
-def test_estimate_max_probe_cost():
+def test_estimate_max_probe_cost_from_registry_pricing():
     probe = _probe()
-    # 2 models x (1 baseline + 3 levels) x $0.01 = $0.08
-    assert probe.estimate_max_probe_cost(2, ("low", "medium", "high"), 0.01) == pytest.approx(0.08)
+    # 1 model, output $180/M, PROBE_MAX_TOKENS=8000 -> ~$1.44/call x 4 calls ~ $5.76
+    one = probe.estimate_max_probe_cost([_entry("a", output=180.0, input=2.0)], ("low", "medium", "high"))
+    assert one == pytest.approx(4 * (2.0 * probe.PROBE_PROMPT_TOKENS_EST + 180.0 * probe.PROBE_MAX_TOKENS) / 1_000_000)
+    # an unpriced model can't be bounded -> None (caller must refuse)
+    assert probe.estimate_max_probe_cost([{"id": "x"}], ("low",)) is None
 
 
 @pytest.mark.asyncio
@@ -171,23 +226,57 @@ async def test_sweep_refuses_without_a_ceiling():
     probe = _probe()
     with pytest.raises(probe.CeilingError, match="unset"):
         await probe.run_probe_sweep(
-            [_entry("a")], lambda m: "openai", "k",
-            max_probe_usd=None, max_cost_per_call_usd=0.01,
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=None,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_cost", [0, -0.01])
-async def test_sweep_refuses_when_per_call_cost_not_positive(bad_cost):
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf")])
+async def test_sweep_refuses_nonpositive_or_nonfinite_ceiling(bad):
     probe = _probe()
-    # A non-positive per-call cost zeroes the worst-case estimate; without this
-    # guard `0 > max_probe_usd` is False and the full paid sweep would fire.
-    with pytest.raises(probe.CeilingError, match="max_cost_per_call_usd"):
+    # 0/negative AND NaN/inf must all be rejected: `not (x > 0)` alone would let NaN
+    # slip through the `worst_case > ceiling` comparison and fire the paid sweep.
+    with pytest.raises(probe.CeilingError, match="positive, finite"):
         await probe.run_probe_sweep(
-            [_entry("a"), _entry("b")], lambda m: "openai", "k",
-            max_probe_usd=5.0, max_cost_per_call_usd=bad_cost,
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=bad,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_refuses_when_a_model_has_no_price():
+    probe = _probe()
+    # Can't bound an unpriced model's spend -> refuse rather than guess.
+    with pytest.raises(probe.CeilingError, match="no registry output price"):
+        await probe.run_probe_sweep(
+            [_entry("a"), {"id": "unpriced"}], lambda m: "openai", "k", max_probe_usd=100.0,
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_rejects_zero_concurrency():
+    probe = _probe()
+    # Semaphore(0) starts locked -> the sweep would hang forever.
+    with pytest.raises(ValueError, match="concurrency"):
+        await probe.run_probe_sweep(
+            [_entry("a")], lambda m: "openai", "k", max_probe_usd=100.0, concurrency=0,
+            transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sweep_fails_loud_when_every_probe_fails():
+    probe = _probe()
+    # Systemic failure (e.g. invalid key) fails every call -> abort, don't publish
+    # an all-skipped matrix and exit 0.
+    def all_fail(request):
+        return httpx.Response(401, json={"error": "invalid key"})
+    with pytest.raises(RuntimeError, match="every call failed"):
+        await probe.run_probe_sweep(
+            [_entry("a"), _entry("b")], lambda m: "openai", "k", max_probe_usd=100.0,
+            transport=httpx.MockTransport(all_fail),
         )
 
 
@@ -213,10 +302,10 @@ async def test_probe_sends_bounded_max_tokens():
 async def test_sweep_refuses_when_worst_case_exceeds_ceiling():
     probe = _probe()
     with pytest.raises(probe.CeilingError, match="exceeds the authorized ceiling"):
-        # 3 models x 4 calls x $0.10 = $1.20 worst case, ceiling $0.50
+        # 3 expensive models ($180/M) x 4 calls x ~$1.44 ~ $17 worst case, ceiling $0.50
         await probe.run_probe_sweep(
-            [_entry("a"), _entry("b"), _entry("c")], lambda m: "openai", "k",
-            max_probe_usd=0.50, max_cost_per_call_usd=0.10,
+            [_entry("a", output=180.0), _entry("b", output=180.0), _entry("c", output=180.0)],
+            lambda m: "openai", "k", max_probe_usd=0.50,
             transport=_mock_transport({None: 0, "low": 1, "medium": 2, "high": 3}),
         )
 
@@ -227,7 +316,7 @@ async def test_sweep_probes_within_ceiling_and_merges():
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
         [_entry("a"), _entry("b")], lambda m: "openai", "k",
-        max_probe_usd=1.00, max_cost_per_call_usd=0.01, transport=tx,
+        max_probe_usd=1.00, transport=tx,
     )
     assert merged["a"]["control_surface"] == "levels"
     assert merged["b"]["control_surface"] == "levels"
@@ -242,7 +331,7 @@ async def test_sweep_is_resumable_skips_fresh_rows():
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
         [a, b], lambda m: "openai", "k",
-        max_probe_usd=1.00, max_cost_per_call_usd=0.01, existing=existing, transport=tx,
+        max_probe_usd=1.00, existing=existing, transport=tx,
     )
     # a is fresh -> untouched; b is newly probed
     assert merged["a"]["control_surface"] == "onoff"
@@ -267,7 +356,7 @@ async def test_sweep_degrades_per_model_on_error():
 
     merged = await probe.run_probe_sweep(
         [_entry("bad"), _entry("good")], lambda m: "openai", "k",
-        max_probe_usd=1.00, max_cost_per_call_usd=0.01,
+        max_probe_usd=1.00,
         transport=httpx.MockTransport(flaky_transport),
     )
     # one failing model does not abort the sweep; the good one still lands
