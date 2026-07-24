@@ -184,14 +184,15 @@ async function installMockApi(page) {
   });
 
   await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
-    // v1.3.0 D3 soft seatbelt: an approximate pre-send estimate. Flag a council
-    // turn as large so the confirm surfaces the cost.
-    await route.fulfill(json({
-      predicted_cost: 0.2038,
-      approximate: true,
-      threshold: 0.15,
-      is_large: true,
-    }));
+    // v1.3.0 D3 soft seatbelt: an approximate pre-send estimate, mode-aware like the
+    // real endpoint -- a full council turn is "large" (warn), an ordinary chat turn
+    // is not (dispatches uninterrupted).
+    const isCouncil = new URL(route.request().url()).searchParams.get('mode') === 'council';
+    await route.fulfill(json(
+      isCouncil
+        ? { predicted_cost: 0.2038, approximate: true, threshold: 0.15, is_large: true }
+        : { predicted_cost: 0.045, approximate: true, threshold: 0.15, is_large: false },
+    ));
   });
 
   await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}$`), async (route) => {
@@ -524,6 +525,28 @@ test('D3 soft seatbelt: the council confirm surfaces an approximate cost and is 
   await expect(confirm).toContainText('costs more');
 
   // Dismissible: Cancel closes the confirm and no turn is dispatched.
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('D3 soft seatbelt: a large predicted CHAT turn also warns, not only council', async ({ page }) => {
+  // v1.3.0 D3 (§5.1): "large predicted spend" is mode-agnostic -- an expensive chat
+  // turn (pricey chairman) must warn too, not only a council fan-out (Codex #110 R2).
+  await completeSetupToNewConversation(page);
+  // Override the estimate so a plain chat turn reads as large.
+  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
+    await route.fulfill(json({ predicted_cost: 0.3, approximate: true, threshold: 0.15, is_large: true }));
+  });
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+
+  // Plain chat send (council NOT armed) whose estimate is large must still warn.
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('A large chat turn.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  const confirm = page.getByRole('alert');
+  await expect(confirm).toContainText('larger-than-usual turn');
+  await expect(confirm).toContainText('Est. ~$0.30 (approximate)');
   await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
 });

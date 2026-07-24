@@ -159,6 +159,17 @@ export default function ChatInterface({
     isRecentUpdate.current = Date.now();
   }, [conversation?.messages?.length, conversation?.id]);
 
+  // ChatInterface is not remounted on a conversation switch (App renders it without
+  // a key), so its composer state survives. Reset the council-confirm state when the
+  // conversation changes, or a stale confirm from conversation A -- including its
+  // per-conversation cost estimate -- would render over conversation B and dispatch
+  // to B while showing A's number (Codex #110 audit P3).
+  useEffect(() => {
+    setAskCouncil(false);
+    setShowCouncilConfirm(false);
+    setTurnEstimate(null);
+  }, [conversation?.id]);
+
   // Track user scroll intent
   const handleScroll = (event) => {
     const viewport = event.target;
@@ -299,25 +310,26 @@ export default function ChatInterface({
     }
     if (composerDisabled) return;
 
-    // The next send runs council if the user armed "Ask the council" (P3-T4) OR the
-    // auto-resolved next mode is council — the first turn of a council-default/legacy
-    // conversation, which dispatches council automatically (Codex #110). Both are the
-    // expensive path D3 (§5.1) warns before.
-    const nextIsCouncil = askCouncil || nextMessageMode === 'council';
-    if (nextIsCouncil && !showCouncilConfirm) {
-      // Fetch an APPROXIMATE pre-send estimate (warn, never block; a failed estimate
-      // must not block the send).
+    // D3 (§5.1) soft seatbelt: warn with an APPROXIMATE pre-send estimate before a
+    // LARGE predicted turn -- ANY mode -- and before an explicitly armed council send
+    // (P3-T4). Covers auto council-first sends (Codex #110) and large chat turns with
+    // an expensive chairman (Codex #110 R2), not only the manual "Ask the council"
+    // override. Resolve the actual next mode: armed -> council; else the auto
+    // prediction (council on a council-default first turn, otherwise chat).
+    const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
+    if (!showCouncilConfirm) {
+      // Fetch the estimate for the mode that will actually run. Never blocks: a
+      // failed estimate resolves to null and the send proceeds.
       let estimate = null;
       if (conversation?.id) {
         try {
-          estimate = await api.getTurnEstimate(conversation.id, 'council');
+          estimate = await api.getTurnEstimate(conversation.id, resolvedSendMode);
         } catch {
           estimate = null;
         }
       }
-      // Confirm before an explicitly armed council send (P3-T4) or a LARGE predicted
-      // council turn (D3). A small auto council turn (estimate known and not large)
-      // dispatches without interruption.
+      // Confirm before an explicitly armed council send (P3-T4) or any LARGE predicted
+      // turn (D3). A turn whose estimate is known and not large dispatches uninterrupted.
       if (askCouncil || estimate?.is_large) {
         setTurnEstimate(estimate);
         setShowCouncilConfirm(true);
@@ -451,6 +463,12 @@ export default function ChatInterface({
       setShowBudgetSelector(true);
       return;
     }
+    // ponytail: the D3 pre-send estimate/confirm (§5.1) covers the primary compose->send
+    // path (handleSubmit). Editing/regenerating the FIRST message re-runs council but
+    // dispatches here without the estimate confirm -- an accepted residual (Codex #110
+    // audit P3): the edit flow carries its own saved-edit state and routing the shared
+    // confirm dialog through it is disproportionate for this rare edge case. Add a
+    // shared confirm gate here if edit-of-first-message warnings are later required.
 
     const submittedContent = editingContent;
     const submittedIndex = editingIndex;
@@ -846,7 +864,9 @@ export default function ChatInterface({
               className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-sm"
             >
               <span>
-                Council run uses every council model — costs more and takes 2–5 min.
+                {(askCouncil || nextMessageMode === 'council')
+                  ? 'Council run uses every council model — costs more and takes 2–5 min.'
+                  : 'This looks like a larger-than-usual turn.'}
                 {turnEstimate?.predicted_cost > 0 && (
                   <> Est. ~{formatCurrency(turnEstimate.predicted_cost)} (approximate).</>
                 )}
