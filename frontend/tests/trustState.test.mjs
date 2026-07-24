@@ -8,6 +8,8 @@ import {
   getBudgetTone,
   getBudgetWarningText,
   getBudgetCapBlockState,
+  resolveNotifyThresholds,
+  DEFAULT_NOTIFY_THRESHOLDS,
   buildBudgetPolicyUpdate,
   getPrivacyToggleDisabledReason,
   mergeConversationPrivacyUpdate,
@@ -34,6 +36,37 @@ test('budget tone follows 75, 85, and 100 percent thresholds', () => {
   assert.equal(getBudgetTone(0.85), 'warn');
   assert.equal(getBudgetTone(1), 'danger');
   assert.equal(getBudgetTone(1.2), 'danger');
+});
+
+test('D2: notify thresholds are single-sourced from the served policy', () => {
+  // absent / malformed -> historical default
+  assert.deepEqual(resolveNotifyThresholds(undefined), DEFAULT_NOTIFY_THRESHOLDS);
+  assert.deepEqual(resolveNotifyThresholds({}), DEFAULT_NOTIFY_THRESHOLDS);
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.5, 'x', 1] }), DEFAULT_NOTIFY_THRESHOLDS);
+  // served -> used (and sorted)
+  assert.deepEqual(resolveNotifyThresholds({ notify_thresholds: [0.9, 0.5, 0.7] }), [0.5, 0.7, 0.9]);
+});
+
+test('D2: budget tone/warning honor served thresholds, not hardcodes', () => {
+  const served = [0.5, 0.7, 0.9];
+  // a value that is "danger" under defaults (>=1) but tiers differently under served
+  assert.equal(getBudgetTone(0.72, served), 'warn');     // >=0.7 warn, <0.9 danger
+  assert.equal(getBudgetTone(0.9, served), 'danger');
+  assert.equal(getBudgetTone(0.55, served), 'caution');
+  assert.equal(getBudgetTone(0.49, served), 'neutral');
+  // warning label reflects the served warn threshold, not a hardcoded "85%"
+  assert.equal(getBudgetWarningText(0.72, served).label, '70% used');
+});
+
+test('D2: formatTrustRowState exposes and uses the served notify thresholds', () => {
+  const conversation = {
+    session_policy: { budget_usd: 10, notify_thresholds: [0.5, 0.7, 0.9] },
+    session_usage: { spent_usd: 7.5 },  // 75% spent
+  };
+  const state = formatTrustRowState({ conversation, settings: {}, attachmentCount: 0, zdrAvailable: true });
+  assert.deepEqual(state.budget.notifyThresholds, [0.5, 0.7, 0.9]);
+  // 0.75 spent is past the served warn (0.7) but below danger (0.9)
+  assert.equal(state.budget.tone, 'warn');
 });
 
 test('budget warning text includes non-color signals at each threshold', () => {
