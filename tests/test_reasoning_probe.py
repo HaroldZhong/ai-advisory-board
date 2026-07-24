@@ -55,6 +55,17 @@ def test_signal_explicit_zero_reasoning_tokens_is_definitive():
     assert probe.reasoning_signal(resp) == 0
 
 
+def test_signal_counts_think_tags_for_tags_mode_only():
+    probe = _probe()
+    # tags-mode model: reasoning arrives as a visible <think> block, no reasoning_tokens
+    resp = {"choices": [{"message": {"content": "<think>8-3=5, remove 3</think> The ball is $0.05."}}],
+            "usage": {"completion_tokens": 20}}
+    assert probe.reasoning_signal(resp, "tags") >= 1
+    # gated exactly like the runtime: field-mode / unknown must NOT count the markup
+    assert probe.reasoning_signal(resp, "field") == 0
+    assert probe.reasoning_signal(resp) == 0
+
+
 # --- classify_capability: surface from signals ------------------------------
 
 def test_classify_levels_when_signal_rises():
@@ -378,3 +389,30 @@ async def test_sweep_degrades_per_model_on_error():
     # one failing model does not abort the sweep; the good one still lands
     assert "bad" not in merged
     assert merged["good"]["control_surface"] == "levels"
+
+
+@pytest.mark.asyncio
+async def test_failed_reprobe_replaces_stale_row_with_unknown():
+    probe = _probe()
+    a, b = _entry("a"), _entry("b")
+    # 'a' has a fresh fingerprint but was measured for a DIFFERENT provider -> the
+    # requested 'azure' endpoint forces a re-probe; make only 'a' fail.
+    existing = {"a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a),
+                      "provider_pinned": "openai", "control_surface": "levels"}}
+
+    def handler(request):
+        body = json.loads(request.content.decode("utf-8"))
+        if body["model"] == "a":
+            return httpx.Response(500, json={"error": "boom"})
+        rt = {None: 0, "low": 10, "medium": 20, "high": 30}.get((body.get("reasoning") or {}).get("effort"), 0)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                                         "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": rt}}})
+
+    merged = await probe.run_probe_sweep(
+        [a, b], lambda m: "azure", "k", max_probe_usd=100.0, existing=existing,
+        transport=httpx.MockTransport(handler),
+    )
+    # the stale openai-measured row must NOT survive as authoritative -> unknown
+    assert merged["a"]["control_surface"] == "unknown"
+    assert not merged["a"].get("probed")
+    assert merged["b"]["control_surface"] == "levels"

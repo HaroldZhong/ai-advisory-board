@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -56,13 +57,19 @@ PROBE_PROMPT = (
 PROBE_MAX_TOKENS = 8000
 # Generous fixed size of PROBE_PROMPT for the per-call cost bound (tokens).
 PROBE_PROMPT_TOKENS_EST = 64
+# Same <think>/<thinking> markup the runtime (backend.openrouter.extract_reasoning)
+# treats as reasoning for tags-mode models -- kept in sync so the probe classifies
+# a tags-mode model the way runtime will actually read it.
+_THINK_TAG_RE = re.compile(r"<(think|thinking)>([\s\S]*?)</\1>")
 
 _probe_transport = None  # httpx.MockTransport injection point for tests; None = real net.
 
 
-def reasoning_signal(response: Dict[str, Any]) -> int:
+def reasoning_signal(response: Dict[str, Any], extraction_mode: Optional[str] = None) -> int:
     """Observed reasoning tokens for one response, in reliability order. Returns 0
-    when no reasoning is observed (the honest "did not reason" reading)."""
+    when no reasoning is observed (the honest "did not reason" reading). For
+    tags-mode models (extraction_mode == "tags"), a visible <think>/<thinking>
+    block counts as reasoning, mirroring runtime extraction."""
     usage = response.get("usage") or {}
     details = usage.get("completion_tokens_details") or {}
     rt = details.get("reasoning_tokens")
@@ -74,6 +81,12 @@ def reasoning_signal(response: Dict[str, Any]) -> int:
     message = ((response.get("choices") or [{}])[0] or {}).get("message") or {}
     if message.get("reasoning") or message.get("reasoning_details"):
         # Text present but no token count -> reasoning happened, magnitude unknown.
+        return 1
+
+    # Tags-mode models return reasoning as visible <think> blocks; count them (gated
+    # to tags mode exactly like the runtime, so a field-mode answer that merely
+    # mentions the markup is not misread as reasoning).
+    if extraction_mode == "tags" and _THINK_TAG_RE.search(message.get("content") or ""):
         return 1
 
     # No reliable reasoning signal. We deliberately do NOT infer reasoning from a
@@ -173,12 +186,13 @@ async def probe_model(
     model_id = model_entry["id"]
     tx = transport if transport is not None else _probe_transport
     levels = tuple(levels)
+    extraction = model_entry.get("reasoning_extraction")
 
-    baseline = reasoning_signal(await _post(model_id, provider_tag, api_key, None, tx))
+    baseline = reasoning_signal(await _post(model_id, provider_tag, api_key, None, tx), extraction)
     level_signals: Dict[str, int] = {}
     for level in levels:
         level_signals[level] = reasoning_signal(
-            await _post(model_id, provider_tag, api_key, level, tx)
+            await _post(model_id, provider_tag, api_key, level, tx), extraction
         )
 
     probed_at = (now or datetime.now(timezone.utc)).isoformat()
@@ -313,12 +327,19 @@ async def run_probe_sweep(
                 # Degrade per-model: a single failure must not abort the matrix.
                 return model_entry["id"], None
 
+    by_id = {m["id"]: m for m in needing}
     results = await asyncio.gather(*[_one(m) for m in needing])
     succeeded = 0
     for mid, rec in results:
         if rec is not None:
             merged[mid] = rec
             succeeded += 1
+        elif mid in merged:
+            # A REQUIRED re-probe (stale fingerprint or changed provider) failed, so
+            # the old record is no longer trustworthy -- runtime freshness only checks
+            # the fingerprint, so a kept stale-provider row would be used silently.
+            # Replace it with unknown rather than leaving the invalid record in place.
+            merged[mid] = unknown_record(mid, model_fingerprint(by_id[mid]))
     if needing and succeeded == 0:
         # Every probe failed -> systemic (bad key / exhausted quota / wrong endpoint
         # tags for all). Don't let the CLI save an all-skipped sidecar and exit 0.
