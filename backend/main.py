@@ -873,6 +873,7 @@ async def estimate_turn_endpoint(
         council_models=metadata.get("council_models"),
         chairman_model=chairman,
         rag_tokens=rag_tokens,
+        execution_mode=execution_mode,
     )
     return {
         "predicted_cost": predicted,

@@ -178,7 +178,6 @@ _TURN_TOKEN_ESTIMATES = {
     "council_stage1": {"input": 4000, "output": 1200},   # each member drafts a full answer
     "council_stage2": {"input": 5000, "output": 400},     # each member ranks the others
     "chairman_stage3": {"input": 8000, "output": 1500},   # chairman synthesizes everything
-    "chat": {"input": 4000, "output": 1000},              # a single chairman chat turn
 }
 
 
@@ -198,13 +197,16 @@ def estimate_turn_cost(
     council_models: Optional[list] = None,
     chairman_model: Optional[str] = None,
     rag_tokens: int = 0,
+    execution_mode: str = "standard",
 ) -> float:
     """Rough, conservative pre-send USD estimate for the next turn (APPROXIMATE).
 
-    Unlike ``estimate_message_cost`` (chairman-only), this accounts for the COUNCIL
-    fan-out -- each member runs stage 1 (draft) + stage 2 (rank), then the chairman
-    synthesizes (stage 3) -- so a council turn is not silently underestimated as a
-    single chat call (the honesty failure a chairman-only figure would introduce).
+    Chat: reuses the run planner's own pricing primitive ``estimate_message_cost``
+    with the resolved execution mode, so a research/standard/quick chat turn matches
+    what ``create_run_plan`` will actually price -- not a fixed heuristic that
+    under-estimates a research-mode chat turn (Codex #110). Council: accounts for the
+    COUNCIL fan-out (each member's stage 1 draft + stage 2 rank, then the chairman's
+    stage 3 synthesis), which the chairman-only ``estimate_message_cost`` would miss.
     Never authoritative: the billed total comes from usage.cost.
     """
     from .config import CHAIRMAN_MODEL, COUNCIL_MODELS
@@ -212,8 +214,8 @@ def estimate_turn_cost(
     chairman = chairman_model or CHAIRMAN_MODEL
 
     if mode != "council":
-        chat = _TURN_TOKEN_ESTIMATES["chat"]
-        return round(_model_call_cost(chairman, chat["input"] + rag_tokens, chat["output"]), 6)
+        exec_mode = execution_mode if execution_mode in ("quick", "standard", "research") else "standard"
+        return estimate_message_cost(exec_mode, rag_tokens, chairman)
 
     members = council_models or COUNCIL_MODELS
     stage1 = _TURN_TOKEN_ESTIMATES["council_stage1"]

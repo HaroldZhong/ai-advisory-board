@@ -77,6 +77,32 @@ async def test_estimate_endpoint_is_large_tracks_threshold(monkeypatch, tmp_path
     assert small["is_large"] is False
 
 
+def test_chat_estimate_mirrors_run_planner_pricing(monkeypatch):
+    """Codex #110 R4: a chat estimate reuses estimate_message_cost (the run planner's
+    own pricing) with the resolved execution mode, so a research-mode chat turn is
+    priced like the real turn -- not a fixed heuristic that under-estimates it."""
+    _main, br, config = import_modules(monkeypatch)
+    chairman = config.CHAIRMAN_MODEL
+    rag = 16000
+    standard = br.estimate_turn_cost("chat", None, chairman, rag_tokens=rag, execution_mode="standard")
+    research = br.estimate_turn_cost("chat", None, chairman, rag_tokens=rag, execution_mode="research")
+    assert research > standard  # research prices more base tokens
+    assert research == br.estimate_message_cost("research", rag, chairman)  # equals the planner primitive
+
+
+@pytest.mark.asyncio
+async def test_estimate_endpoint_flags_large_research_chat_turn(monkeypatch, tmp_path):
+    """Codex #110 R4: a research-mode chat turn with the default Opus chairman prices
+    above the $0.15 threshold, so the pre-send confirm is NOT skipped for it."""
+    main, _br, config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    research_chat = await main.estimate_turn_endpoint(conv_id, mode="chat", execution_mode="research")
+    assert research_chat["is_large"] is True
+
+
 @pytest.mark.asyncio
 async def test_estimate_endpoint_accounts_for_routing_overrides(monkeypatch, tmp_path):
     """D3 (Codex #110): the estimate reflects the per-send routing overrides that move
