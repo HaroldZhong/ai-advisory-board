@@ -80,6 +80,10 @@ export default function ChatInterface({
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
+  // D3: guards against a double-dispatch while the pre-send estimate is in flight.
+  // handleSubmit awaits getTurnEstimate before clearing the input / setting any
+  // disabled state, so without this a double-click could start two sends (Codex #110).
+  const estimatingRef = useRef(false);
 
   const [showBudgetSelector, setShowBudgetSelector] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
@@ -309,6 +313,9 @@ export default function ChatInterface({
       return;
     }
     if (composerDisabled) return;
+    // A pre-send estimate is already in flight for this composer -- ignore the repeat
+    // click/Enter so a double-tap during the await can't start two paid sends (Codex #110).
+    if (estimatingRef.current) return;
 
     // D3 (§5.1) soft seatbelt: warn with an APPROXIMATE pre-send estimate before a
     // LARGE predicted turn -- ANY mode -- and before an explicitly armed council send
@@ -319,13 +326,21 @@ export default function ChatInterface({
     const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
     if (!showCouncilConfirm) {
       // Fetch the estimate for the mode that will actually run. Never blocks: a
-      // failed estimate resolves to null and the send proceeds.
+      // failed estimate resolves to null and the send proceeds. The estimatingRef
+      // guard (above) makes this await re-entrancy-safe against a double-tap.
       let estimate = null;
       if (conversation?.id) {
+        estimatingRef.current = true;
         try {
-          estimate = await api.getTurnEstimate(conversation.id, resolvedSendMode);
+          estimate = await api.getTurnEstimate(conversation.id, resolvedSendMode, {
+            executionMode: settings.executionMode,
+            ragPreset: settings.ragPreset,
+            modelTier: settings.modelTier,
+          });
         } catch {
           estimate = null;
+        } finally {
+          estimatingRef.current = false;
         }
       }
       // Confirm before an explicitly armed council send (P3-T4) or any LARGE predicted

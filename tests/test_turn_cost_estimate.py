@@ -78,6 +78,25 @@ async def test_estimate_endpoint_is_large_tracks_threshold(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_estimate_endpoint_accounts_for_routing_overrides(monkeypatch, tmp_path):
+    """D3 (Codex #110): the estimate reflects the per-send routing overrides that move
+    cost -- a bigger RAG context (rag_preset='max' or execution_mode='research')
+    predicts a higher cost than the auto baseline, so a large research/high-context
+    turn is not silently under-estimated below the threshold."""
+    main, _br, _config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    baseline = await main.estimate_turn_endpoint(conv_id, mode="council")
+    max_rag = await main.estimate_turn_endpoint(conv_id, mode="council", rag_preset="max")
+    research = await main.estimate_turn_endpoint(conv_id, mode="council", execution_mode="research")
+
+    assert max_rag["predicted_cost"] > baseline["predicted_cost"]
+    assert research["predicted_cost"] > baseline["predicted_cost"]
+
+
+@pytest.mark.asyncio
 async def test_estimate_endpoint_404_for_missing_conversation(monkeypatch, tmp_path):
     main, _br, _config = import_modules(monkeypatch)
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))

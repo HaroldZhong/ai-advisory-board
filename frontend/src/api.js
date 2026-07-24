@@ -95,11 +95,17 @@ export const api = {
 
   /**
    * v1.3.0 D3 soft seatbelt: an APPROXIMATE pre-send cost estimate for the next
-   * turn. Returns { predicted_cost, approximate, threshold, is_large }.
+   * turn. Returns { predicted_cost, approximate, threshold, is_large }. Passes the
+   * per-send routing overrides (execution mode / RAG preset / model tier) so a
+   * research/high-context or premium-tier turn is not under-estimated.
    */
-  async getTurnEstimate(conversationId, mode = 'council') {
+  async getTurnEstimate(conversationId, mode = 'council', routing = {}) {
+    const params = new URLSearchParams({ mode });
+    if (routing.executionMode) params.set('execution_mode', routing.executionMode);
+    if (routing.ragPreset) params.set('rag_preset', routing.ragPreset);
+    if (routing.modelTier) params.set('model_tier', routing.modelTier);
     const response = await fetch(
-      `${API_BASE}/api/conversations/${conversationId}/estimate?mode=${encodeURIComponent(mode)}`
+      `${API_BASE}/api/conversations/${conversationId}/estimate?${params.toString()}`
     );
     if (!response.ok) {
       throw new Error('Failed to get turn estimate');

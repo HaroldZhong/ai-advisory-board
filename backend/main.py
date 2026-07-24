@@ -826,22 +826,53 @@ async def get_session_policy_endpoint(conversation_id: str):
 
 
 @app.get("/api/conversations/{conversation_id}/estimate")
-async def estimate_turn_endpoint(conversation_id: str, mode: str = "council"):
+async def estimate_turn_endpoint(
+    conversation_id: str,
+    mode: str = "council",
+    execution_mode: str = "auto",
+    rag_preset: str = "auto",
+    model_tier: str = "auto",
+):
     """v1.3.0 D3 soft seatbelt (§5.1): an APPROXIMATE pre-send cost estimate for the
     next turn. Never blocks -- the client uses ``is_large`` to decide whether to
     warn/confirm before dispatch. The honest billed total still comes from usage.cost.
+
+    Accounts for the per-send routing overrides that materially move cost (Codex
+    #110): the RAG context size (an explicit ``rag_preset``, else the ``execution_mode``
+    implied preset -- research retrieves more) and the chairman model (``model_tier``),
+    so a research/high-context or premium-tier turn is not silently under-estimated.
+    Token counts remain heuristics.
     """
     from .budget_router import estimate_turn_cost
+    from .execution_modes import select_chairman_for_tier
 
     conversation = storage.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     metadata = conversation.get("metadata", {})
+
+    # A non-auto model tier routes the turn to a different chairman.
+    chairman = metadata.get("chairman_model")
+    if model_tier and model_tier != "auto":
+        chairman = select_chairman_for_tier(model_tier, chairman)
+
+    # RAG context is the dominant per-send cost swing. An explicit non-auto rag_preset
+    # wins; otherwise the execution mode implies one (research -> more context).
+    # Conservative: never assume less context than the turn will actually retrieve.
+    rag_presets = config.RAG_SETTINGS["presets"]
+    mode_to_rag = {"research": "high", "standard": "medium", "quick": "low"}
+    if rag_preset in rag_presets and rag_preset != "auto":
+        rag_key = rag_preset
+    else:
+        rag_key = mode_to_rag.get(execution_mode, config.RAG_SETTINGS["default_preset"])
+    rag_tokens = rag_presets.get(rag_key, rag_presets[config.RAG_SETTINGS["default_preset"]])["tokens"]
+
     predicted = estimate_turn_cost(
         mode,
         council_models=metadata.get("council_models"),
-        chairman_model=metadata.get("chairman_model"),
+        chairman_model=chairman,
+        rag_tokens=rag_tokens,
     )
     return {
         "predicted_cost": predicted,
