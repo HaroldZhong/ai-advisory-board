@@ -97,6 +97,9 @@ export default function ChatInterface({
   const [showCouncilConfirm, setShowCouncilConfirm] = useState(false);
   // v1.3.0 D3: approximate pre-send cost estimate shown in the council confirm.
   const [turnEstimate, setTurnEstimate] = useState(null);
+  // v1.3.0 D3: true while the pre-send estimate is in flight -- disables the composer
+  // so edits can't be lost when a slow estimate resolves (Codex #110).
+  const [isEstimating, setIsEstimating] = useState(false);
   const { settings, updateSettings } = useSettings();
 
   const sessionPolicy = conversation?.session_policy || {};
@@ -127,7 +130,7 @@ export default function ChatInterface({
   // resolves zdr_enabled once per turn, so flipping the toggle mid-stream
   // would show "ZDR enforced" while the in-flight turn keeps its captured
   // (possibly non-ZDR) routing.
-  const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || budgetCapBlock.blocked;
+  const sendDisabled = isLoading || isUploading || isUpdatingPrivacy || isUpdatingThinkingEffort || isEstimating || budgetCapBlock.blocked;
   const attachDisabled = isUploading || isUpdatingPrivacy || budgetCapBlock.blocked;
   const composerDisabled = sendDisabled;
   const privacyDisabledReason = getPrivacyToggleDisabledReason({
@@ -317,6 +320,12 @@ export default function ChatInterface({
     // click/Enter so a double-tap during the await can't start two paid sends (Codex #110).
     if (estimatingRef.current) return;
 
+    // Snapshot the composer BEFORE any await so a slow estimate can't send stale content
+    // or let the later setInput('') wipe edits made during the await (Codex #110).
+    const submittedInput = input;
+    const submittedAttachments = attachments;
+    const attachmentIds = attachments.map(a => a.attachment_id);
+
     // D3 (§5.1) soft seatbelt: warn with an APPROXIMATE pre-send estimate before a
     // LARGE predicted turn -- ANY mode -- and before an explicitly armed council send
     // (P3-T4). Covers auto council-first sends (Codex #110) and large chat turns with
@@ -326,15 +335,16 @@ export default function ChatInterface({
     const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
     if (!showCouncilConfirm) {
       // Fetch the estimate for the mode that will actually run. Never blocks: a
-      // failed estimate resolves to null and the send proceeds. The estimatingRef
-      // guard (above) makes this await re-entrancy-safe against a double-tap.
+      // failed estimate resolves to null and the send proceeds. estimatingRef guards
+      // re-entry synchronously; isEstimating disables the composer so edits can't be lost.
       let estimate = null;
       if (conversation?.id) {
         estimatingRef.current = true;
+        setIsEstimating(true);
         try {
           estimate = await api.getTurnEstimate(conversation.id, {
-            content: input,
-            hasAttachments: attachments.length > 0,
+            content: submittedInput,
+            hasAttachments: submittedAttachments.length > 0,
             mode: resolvedSendMode,
             executionMode: settings.executionMode,
             ragPreset: settings.ragPreset,
@@ -344,6 +354,7 @@ export default function ChatInterface({
           estimate = null;
         } finally {
           estimatingRef.current = false;
+          setIsEstimating(false);
         }
       }
       // Confirm before an explicitly armed council send (P3-T4) or any LARGE predicted
@@ -355,10 +366,6 @@ export default function ChatInterface({
       }
     }
 
-    // Collect attachment IDs to send with the message
-    const attachmentIds = attachments.map(a => a.attachment_id);
-    const submittedInput = input;
-    const submittedAttachments = attachments;
     const sendOptions = askCouncil ? { mode: 'council' } : {};
 
     // Send message with attachment IDs (context built server-side)
