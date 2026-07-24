@@ -480,6 +480,12 @@ async def test_budget_warning_survives_a_billed_delta_after_the_base_crossing(mo
 
 
 # --- D1 reasoning-token accounting gate (v1.3.0 plan Phase D) ------------------
+# NOTE (correction #4): the authoritative TURN TOTAL is usage.cost (see the
+# "usage.cost is the authoritative turn total" tests above). The inside-vs-separate
+# classification below is REGRESSION + DISPLAY evidence -- "how much of the billed
+# cost was reasoning" -- NOT a recompute of the billed total. It never overrides
+# usage.cost.
+#
 # The load-bearing gate is test_reasoning_usage_fixture_billing_relationship: it
 # decides inside-vs-separate billing from a REAL captured usage payload, using
 # OpenRouter's billed `cost` as the authority (token containment can't tell them
@@ -538,6 +544,86 @@ def test_turn_cost_ignores_reasoning_token_field_today(monkeypatch):
         stage3_result={"model": "openai/gpt-4o-mini", "usage": usage_with_reasoning},
     )
     assert with_reasoning == pytest.approx(without)
+
+
+# --- D1: usage.cost is the authoritative turn total (correction #4) ------------
+# OpenRouter returns the billed per-request cost in usage.cost on every response.
+# calculate_cost prefers it, so the turn total is the amount actually charged;
+# registry token pricing is used ONLY when usage.cost is absent.
+
+
+def test_calculate_cost_prefers_billed_usage_cost(monkeypatch):
+    """When usage.cost is present it is authoritative -- NOT recomputed from
+    registry token pricing, even if the two disagree."""
+    main = import_main(monkeypatch)
+    # Registry would price this at 0.15 + 0.6 = 0.75; the billed cost differs.
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000, "cost": 0.884}
+    assert main.calculate_cost(usage, "openai/gpt-4o-mini") == pytest.approx(0.884)
+
+
+def test_calculate_cost_falls_back_to_registry_without_billed_cost(monkeypatch):
+    """No usage.cost -> registry token pricing (unchanged legacy behaviour)."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    assert main.calculate_cost(usage, "openai/gpt-4o-mini") == pytest.approx(0.15 + 0.6)
+
+
+def test_calculate_cost_billed_authoritative_without_registry_model(monkeypatch):
+    """usage.cost stands on its own -- a model absent from the registry (no
+    pricing) still yields the billed cost, not 0."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 10, "completion_tokens": 10, "cost": 0.0123}
+    assert main.calculate_cost(usage, "provider/not-in-registry") == pytest.approx(0.0123)
+
+
+def test_calculate_cost_zero_billed_cost_is_authoritative(monkeypatch):
+    """A genuinely free call reports cost 0.0; that is authoritative, not a
+    trigger to fall back to registry pricing."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000, "cost": 0.0}
+    assert main.calculate_cost(usage, "openai/gpt-4o-mini") == pytest.approx(0.0)
+
+
+def test_calculate_cost_ignores_anomalous_billed_cost(monkeypatch):
+    """A non-numeric or negative cost is anomalous, not a valid billed total, so
+    it falls back to registry pricing rather than corrupting the meter."""
+    main = import_main(monkeypatch)
+    base = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    for bad in (-1.0, "0.5", None, True):
+        assert main.calculate_cost({**base, "cost": bad}, "openai/gpt-4o-mini") == pytest.approx(0.75)
+
+
+def test_turn_cost_sums_authoritative_billed_costs(monkeypatch):
+    """A council turn whose every call reports usage.cost totals the sum of those
+    billed costs -- the authoritative turn total -- not the registry recompute."""
+    main = import_main(monkeypatch)
+    total = main.calculate_turn_cost(
+        mode="council",
+        stage1_results=[{"model": "openai/gpt-4o-mini",
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.10}}],
+        stage2_results=[{"model": "openai/gpt-4o-mini",
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.20}}],
+        stage3_result={"model": "openai/gpt-4o-mini",
+                       "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.30}},
+        extra_usage_records=[{"model": "perplexity/sonar",
+                              "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.05}}],
+    )
+    assert total == pytest.approx(0.10 + 0.20 + 0.30 + 0.05)
+
+
+def test_turn_cost_mixes_billed_and_registry_fallback(monkeypatch):
+    """Per-record: authoritative where usage.cost is present, registry fallback
+    where it is absent, summed into one turn total."""
+    main = import_main(monkeypatch)
+    total = main.calculate_turn_cost(
+        mode="council",
+        stage1_results=[{"model": "openai/gpt-4o-mini",
+                         "usage": {"prompt_tokens": 5, "completion_tokens": 5, "cost": 0.40}}],
+        # no usage.cost -> registry: 1M/1M @ gpt-4o-mini = 0.75
+        stage3_result={"model": "openai/gpt-4o-mini",
+                       "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}},
+    )
+    assert total == pytest.approx(0.40 + 0.75)
 
 
 def _billing_classifier():
