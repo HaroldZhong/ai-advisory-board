@@ -11,7 +11,7 @@ async def test_stage2_preserves_unavailable_evaluator_slots(monkeypatch):
         return {
             "model-a": {
                 "content": "FINAL RANKING:\n1. Response A\n2. Response B",
-                "usage": {"total_tokens": 10},
+                "usage": {"total_tokens": 10, "completion_tokens_details": {"reasoning_tokens": 55}},
             },
             "model-b": None,
         }
@@ -36,3 +36,7 @@ async def test_stage2_preserves_unavailable_evaluator_slots(monkeypatch):
     assert stage2[1]["status"] == "unavailable"
     assert stage2[1]["parsed_ranking"] == []
     assert "model-b did not return a Stage 2 evaluation" in stage2[1]["ranking"]
+    # B5: every emitted member result carries the actuals field. The available
+    # evaluator reports its real count; the unavailable one reports "not available".
+    assert stage2[0]["reasoning_tokens"] == 55
+    assert stage2[1]["reasoning_tokens"] is None

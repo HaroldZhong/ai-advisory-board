@@ -127,3 +127,34 @@ def test_truncation():
 
     assert len(reasoning) > 2000
     assert "truncated" in reasoning
+
+
+# --- B5: per-member post-turn reasoning actuals (honesty: tokens, never text) ---
+
+def test_reasoning_tokens_from_usage_reports_count_or_none():
+    from backend.openrouter import reasoning_tokens_from_usage
+    assert reasoning_tokens_from_usage({"completion_tokens_details": {"reasoning_tokens": 42}}) == 42
+    # explicit 0, absent, or non-numeric -> "not available" (None)
+    assert reasoning_tokens_from_usage({"completion_tokens_details": {"reasoning_tokens": 0}}) is None
+    assert reasoning_tokens_from_usage({}) is None
+    assert reasoning_tokens_from_usage(None) is None
+    assert reasoning_tokens_from_usage({"completion_tokens_details": {"reasoning_tokens": "x"}}) is None
+
+
+def test_build_stage1_result_keys_actuals_on_tokens_not_reasoning_text():
+    from backend.council import build_stage1_result
+    # the honesty trap: reasoning TEXT present but reasoning_tokens == 0 must still
+    # report "not available" (None), never inferred from the text.
+    trap = build_stage1_result("m/1", {
+        "content": "answer",
+        "reasoning_details": "I reasoned about it",
+        "usage": {"completion_tokens_details": {"reasoning_tokens": 0}},
+    })
+    assert trap["reasoning_tokens"] is None
+    assert trap.get("reasoning")  # the text is still carried separately (unchanged)
+    # real reasoning tokens -> the count is reported
+    real = build_stage1_result("m/2", {
+        "content": "answer",
+        "usage": {"completion_tokens_details": {"reasoning_tokens": 128}},
+    })
+    assert real["reasoning_tokens"] == 128

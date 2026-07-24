@@ -180,6 +180,19 @@ def model_supports_reasoning(model: str) -> bool:
     return registry_model is not None and registry_model.get("supports_reasoning") is True
 
 
+def reasoning_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> Optional[int]:
+    """The reasoning tokens a member actually spent this turn, or None when none
+    were reported (v1.3.0 B5 honesty, §3.3/§3.5). This is the ONLY reasoning signal
+    we report post-turn -- NEVER the presence of reasoning text, which can be
+    non-empty while `reasoning_tokens` is 0. So text-present-but-tokens-0 reads as
+    'reasoning not available' (None), the exact honesty trap."""
+    details = (usage or {}).get("completion_tokens_details") or {}
+    rt = details.get("reasoning_tokens")
+    if isinstance(rt, (int, float)) and not isinstance(rt, bool) and rt > 0:
+        return int(rt)
+    return None
+
+
 def extract_reasoning(content: str, message: Dict[str, Any], model: str) -> tuple[str, str]:
     """
     Extract reasoning from the response based on model capabilities.
