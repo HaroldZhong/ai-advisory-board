@@ -262,6 +262,26 @@ async def test_estimate_flags_high_effort_council_including_legacy_preset(monkey
 
 
 @pytest.mark.asyncio
+async def test_council_estimate_ignores_task_signal_rag(monkeypatch, tmp_path):
+    """Codex #110 R16: the council path runs no RAG retrieval (chat-only), so a council
+    estimate must not add the task-signal-derived RAG budget -- a research-keyword prompt
+    must not inflate a council estimate the way it (correctly) does for chat."""
+    main, _br, _config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    plain = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", content="hi")
+    )
+    research_kw = await main.estimate_turn_endpoint(
+        conv_id,
+        main.TurnEstimateRequest(mode="council", content="research and analyze and compare these papers in depth"),
+    )
+    assert research_kw["predicted_cost"] == plain["predicted_cost"]
+
+
+@pytest.mark.asyncio
 async def test_estimate_endpoint_404_for_missing_conversation(monkeypatch, tmp_path):
     main, _br, _config = import_modules(monkeypatch)
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))

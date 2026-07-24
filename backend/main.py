@@ -890,13 +890,15 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     thinking_effort = resolve_effective_thinking_effort(conversation, request)
 
     if request.mode == "council":
-        # Council fan-out on the planner's RESOLVED rag budget + chairman, at the
-        # turn's effort.
+        # Council fan-out on the tier-resolved chairman, at the turn's effort. The
+        # council path does NOT run the chat RAG retrieval (turn_pipeline retrieves only
+        # in the chat branch), so the planner's rag_max_tokens must not be added here --
+        # doing so inflated every member's prompt by 8k-16k phantom tokens (Codex #110).
         predicted = estimate_turn_cost(
             "council",
             council_models=metadata.get("council_models"),
             chairman_model=run_plan.chairman_model,
-            rag_tokens=run_plan.rag_max_tokens,
+            rag_tokens=0,
             thinking_effort=thinking_effort,
         )
     else:
