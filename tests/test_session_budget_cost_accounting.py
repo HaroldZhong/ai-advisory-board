@@ -1,9 +1,12 @@
 import importlib
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+
+FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "reasoning_usage_fixture.json")
 
 
 def import_main(monkeypatch):
@@ -473,3 +476,223 @@ async def test_budget_warning_survives_a_billed_delta_after_the_base_crossing(mo
     event_types = [e["type"] for e in events]
     assert event_types.index("budget_warning") < event_types.index("complete")
     assert event_types.index("budget_warning") == event_types.index("chat_response") - 1
+
+
+# --- D1 reasoning-token accounting gate (v1.3.0 plan Phase D) ------------------
+# The load-bearing gate is test_reasoning_usage_fixture_billing_relationship: it
+# decides inside-vs-separate billing from a REAL captured usage payload, using
+# OpenRouter's billed `cost` as the authority (token containment can't tell them
+# apart). The decision is PROVIDER-SPECIFIC, so the gate also requires the fixture
+# to record the route it is valid for.
+#
+# The classifier is single-sourced from scripts/capture_reasoning_usage_fixture.py
+# (`classify_billing`) -- capture and gate share one implementation of the
+# thresholds rather than each carrying a copy that can drift.
+#
+# The two characterization tests below describe CURRENT calculate_cost behaviour;
+# they do NOT assert the billing relationship from memory. The synthetic-case row
+# proves the gate is load-bearing without needing a live capture.
+
+
+def test_calculate_cost_ignores_reasoning_token_field_today(monkeypatch):
+    """Characterizes CURRENT behaviour: calculate_cost reads only
+    completion_tokens and ignores any completion_tokens_details.reasoning_tokens
+    field, so adding that field must not ACCIDENTALLY change the cost. This pins
+    the current arithmetic so any D1 change is deliberate. Whether the final
+    total SHOULD gain a separate reasoning line is decided by the captured
+    fixture (test_reasoning_usage_fixture_billing_relationship), not asserted
+    here."""
+    main = import_main(monkeypatch)
+    model = "openai/gpt-4o-mini"  # input $0.15/M, output $0.6/M
+    base = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    with_reasoning = {
+        "prompt_tokens": 1_000_000,
+        "completion_tokens": 1_000_000,
+        "completion_tokens_details": {"reasoning_tokens": 400_000},
+    }
+    assert main.calculate_cost(with_reasoning, model) == pytest.approx(
+        main.calculate_cost(base, model)
+    )
+    # Today's cost is the completion-token cost only.
+    assert main.calculate_cost(with_reasoning, model) == pytest.approx(0.15 + 0.6)
+
+
+def test_turn_cost_ignores_reasoning_token_field_today(monkeypatch):
+    """Same current-behaviour characterization at the turn level: a Stage-3
+    result carrying a reasoning-token field yields the same turn total as one
+    without, under today's calculate_cost. Not a claim about how reasoning is
+    billed -- that is the fixture's job."""
+    main = import_main(monkeypatch)
+    usage = {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+    usage_with_reasoning = {
+        **usage,
+        "completion_tokens_details": {"reasoning_tokens": 750_000},
+    }
+    without = main.calculate_turn_cost(
+        mode="council",
+        stage3_result={"model": "openai/gpt-4o-mini", "usage": usage},
+    )
+    with_reasoning = main.calculate_turn_cost(
+        mode="council",
+        stage3_result={"model": "openai/gpt-4o-mini", "usage": usage_with_reasoning},
+    )
+    assert with_reasoning == pytest.approx(without)
+
+
+def _billing_classifier():
+    """The single source of the inside/separate decision, imported from the
+    capture harness so gate and capture can never drift apart."""
+    return importlib.import_module("scripts.capture_reasoning_usage_fixture")
+
+
+def _synthetic_fixture(*, reasoning, cost, label, model="openai/gpt-4o-mini"):
+    """A fixture shaped like a real capture. openai/gpt-4o-mini is priced
+    input=$0.15/M, output=$0.6/M -> 1M/1M tokens is $0.75 completion-priced."""
+    return {
+        "_placeholder": False,
+        "model": model,
+        "provider_requested": "synthetic-provider",
+        "provider_served": "synthetic-provider",
+        "usage": {
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 1_000_000,
+            "completion_tokens_details": {"reasoning_tokens": reasoning},
+        },
+        "cost": cost,
+        "billing_relationship": label,
+    }
+
+
+def _assert_fixture_proves_inside_billing(main, fixture):
+    """Shared D1 gate policy applied to a fixture dict.
+
+    Raises AssertionError unless the fixture is provider-attributed, cost-bearing,
+    and shows a clear INSIDE billing relationship per the single-sourced
+    classifier. Returns the relationship on success."""
+    capture = _billing_classifier()
+    model = fixture["model"]
+    usage = fixture["usage"]
+    reported_cost = fixture.get("cost")
+    recorded = fixture.get("billing_relationship")
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+
+    # The D1 decision is provider-specific; a fixture that cannot name its route
+    # is not evidence for it.
+    if not (fixture.get("provider_requested") or fixture.get("provider_served")):
+        raise AssertionError(
+            "fixture records no provider route (provider_requested/provider_served); the "
+            "billing decision is provider-specific -- re-capture with a pinned provider"
+        )
+    if reported_cost is None:
+        raise AssertionError(
+            "capture must record OpenRouter's billed cost (usage.include=true) -- it is the authority"
+        )
+
+    model_meta = main.get_model_by_id(model)
+    if not model_meta or (model_meta.get("pricing") or {}).get("output") is None:
+        raise AssertionError(
+            f"{model} is not registry-priced; capture with a registry-priced model so "
+            "billed cost can be compared"
+        )
+    output_rate = model_meta["pricing"]["output"]
+    completion_priced = main.calculate_cost(usage, model)
+
+    relationship, detail = capture.classify_billing(
+        reasoning_tokens=reasoning,
+        completion_tokens=completion,
+        reported_cost=reported_cost,
+        completion_priced_cost=completion_priced,
+        output_rate=output_rate,
+    )
+
+    # The classifier is the authority; a recorded label that disagrees means the
+    # fixture was hand-edited or captured under different thresholds.
+    if recorded != relationship:
+        raise AssertionError(
+            f"fixture billing_relationship={recorded!r} disagrees with the classifier's "
+            f"{relationship!r} (surcharge={detail['surcharge']}, "
+            f"expected_separate={detail['expected_separate_surcharge']}, "
+            f"noise={detail['noise']}) -- re-capture rather than hand-editing the label"
+        )
+    if relationship != "inside":
+        raise AssertionError(
+            f"D1 gate not satisfied: billing_relationship={relationship!r}. "
+            f"{capture.CONCLUSIONS[relationship]}"
+        )
+    return relationship
+
+
+@pytest.mark.parametrize(
+    "case, reasoning, cost, label, should_pass",
+    [
+        # cost 0.75 == completion-priced -> no surcharge, signal large enough
+        ("inside/large", 400_000, 0.75, "inside", True),
+        # cost 0.99 == completion-priced + 400k*0.6/M -> clear separate charge
+        ("separate/large", 400_000, 0.99, "separate", False),
+        # a REAL separate charge too small to distinguish from noise: must be
+        # ambiguous, never a false 'inside' (the false-pass hole)
+        ("separate/small", 10_000, 0.756, "ambiguous", False),
+        # genuinely inside but signal too small to prove it -> ambiguous
+        ("inside/small", 10_000, 0.75, "ambiguous", False),
+        # label claims inside while cost shows separate -> mismatch rejected
+        ("mislabeled-inside", 400_000, 0.99, "inside", False),
+    ],
+)
+def test_d1_billing_gate_synthetic_cases(monkeypatch, case, reasoning, cost, label, should_pass):
+    """Proves the D1 gate is load-bearing WITHOUT a live capture, preserving the
+    five cases as runnable tests (they were previously only demonstrated ad-hoc by
+    swapping the fixture file in and out).
+
+    Only a clear, provider-attributed INSIDE reading may pass. Separate billing,
+    an indistinguishable surcharge, and a hand-edited label must all be rejected."""
+    main = import_main(monkeypatch)
+    fixture = _synthetic_fixture(reasoning=reasoning, cost=cost, label=label)
+
+    if should_pass:
+        assert _assert_fixture_proves_inside_billing(main, fixture) == "inside"
+    else:
+        with pytest.raises(AssertionError):
+            _assert_fixture_proves_inside_billing(main, fixture)
+
+
+def test_d1_billing_gate_requires_provider_evidence(monkeypatch):
+    """A fixture with no recorded route cannot support a provider-specific
+    billing decision, even when the numbers themselves read as 'inside'."""
+    main = import_main(monkeypatch)
+    fixture = _synthetic_fixture(reasoning=400_000, cost=0.75, label="inside")
+    fixture["provider_requested"] = None
+    fixture["provider_served"] = None
+
+    with pytest.raises(AssertionError, match="provider"):
+        _assert_fixture_proves_inside_billing(main, fixture)
+
+
+def test_reasoning_usage_fixture_billing_relationship(monkeypatch):
+    """D1 honesty gate (load-bearing once captured). Whether reasoning tokens
+    are billed INSIDE completion_tokens or SEPARATELY must come from a REAL
+    captured payload, decided by OpenRouter's billed `cost` -- NOT token
+    containment (reasoning<=completion holds either way). Passes only when the
+    fixture shows INSIDE billing (meter truthful as-is); FAILS on SEPARATE
+    billing, because current calculate_cost then under-charges and D1 must add a
+    provider-specific reasoning line. Capture with:
+
+        OPENROUTER_API_KEY=... uv run python scripts/capture_reasoning_usage_fixture.py <model_id>
+
+    Applies the same policy as test_d1_billing_gate_synthetic_cases, so the live
+    reading is judged by exactly the rules those cases prove. Skips until the
+    placeholder fixture is overwritten."""
+    with open(FIXTURE_PATH, encoding="utf-8") as fh:
+        fixture = json.load(fh)
+    if fixture.get("_placeholder"):
+        pytest.skip(
+            "real usage fixture not captured yet -- run "
+            "scripts/capture_reasoning_usage_fixture.py <model_id> [provider_slug] with a live key"
+        )
+
+    main = import_main(monkeypatch)
+    usage = fixture["usage"]
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+    assert reasoning > 0, "fixture must come from a real reasoning turn"
+
+    assert _assert_fixture_proves_inside_billing(main, fixture) == "inside"
