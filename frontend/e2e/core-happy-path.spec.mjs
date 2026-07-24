@@ -107,6 +107,7 @@ function createConversation(body) {
       thinking_effort: 'medium',
       chairman_model: MODEL_CLAUDE,
       council_models: [MODEL_GLM, MODEL_QWEN, MODEL_GPT_ZDR],
+      default_mode: body.default_mode ?? undefined,
     },
     session_policy: {
       budget_usd: body.budget_usd,
@@ -180,6 +181,17 @@ async function installMockApi(page) {
     }
 
     await route.fulfill(json({ detail: 'Unsupported conversation method' }, 405));
+  });
+
+  await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`), async (route) => {
+    // v1.3.0 D3 soft seatbelt: an approximate pre-send estimate. Flag a council
+    // turn as large so the confirm surfaces the cost.
+    await route.fulfill(json({
+      predicted_cost: 0.2038,
+      approximate: true,
+      threshold: 0.15,
+      is_large: true,
+    }));
   });
 
   await page.route(new RegExp(`${API_BASE}/api/conversations/${CONVERSATION_ID}$`), async (route) => {
@@ -486,6 +498,28 @@ test('editing the key mid-probe discards the stale connection result', async ({ 
   // Give the slow probe time to resolve; its result must be discarded, not shown.
   await page.waitForTimeout(500);
   await expect(page.getByText('Connected to OpenRouter.')).not.toBeVisible();
+});
+
+test('D3 soft seatbelt: the council confirm surfaces an approximate cost and is dismissible', async ({ page }) => {
+  // v1.3.0 D3 (§5.1): before an expensive (council) send, warn with an APPROXIMATE
+  // pre-send estimate -- never block. Dismissible so the user can proceed.
+  await completeSetupToNewConversation(page);
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+
+  // A chat-default conversation offers "Ask the council" on the first turn.
+  await page.getByRole('button', { name: 'Ask the council' }).click();
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Weigh the trade-offs.');
+  await page.getByRole('button', { name: 'Send message' }).click();
+
+  // The confirm appears with the approximate estimate (mocked is_large council turn).
+  const confirm = page.getByRole('alert');
+  await expect(confirm).toContainText('Est. ~$0.20 (approximate)');
+  await expect(confirm).toContainText('costs more');
+
+  // Dismissible: Cancel closes the confirm and no turn is dispatched.
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 test('reopening the budget dialog re-seeds the hard-cap toggle from the saved policy', async ({ page }) => {
