@@ -994,3 +994,61 @@ def test_enhance_attachment_zdr_not_blocked_on_openrouter(monkeypatch):
     assert response.status_code == 404
     _restore(monkeypatch)
     importlib.reload(main)
+
+
+def _probed_levels_records(openrouter, model_id):
+    from backend.reasoning_capability import model_fingerprint
+    entry = openrouter._lookup_registry_model(model_id)
+    return {model_id: {
+        "model_id": model_id, "probed": True, "fingerprint": model_fingerprint(entry),
+        "provider_pinned": "openai", "supports_reasoning": True,
+        "control_surface": "levels", "levels": ["low", "medium", "high"],
+    }}
+
+
+def _capturing_client(captured):
+    class FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, *a, **k):
+            captured.append(dict(k["json"]))
+            return _FakeResponse()
+    return FakeAsyncClient
+
+
+@pytest.mark.asyncio
+async def test_probed_endpoint_pin_only_sent_on_openrouter(monkeypatch):
+    """The probed record's provider.order/allow_fallbacks pin is OpenRouter-only; an
+    openai-compatible relay rejects `provider`, so the pin must be skipped there while
+    the reasoning object itself is still sent (the existing 400-retry protects it)."""
+    model_id = "openai/gpt-5.3-chat"
+
+    # OpenRouter default -> the pin IS sent
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
+    openrouter._reasoning_capabilities_cache = _probed_levels_records(openrouter, model_id)
+    captured_or = []
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", _capturing_client(captured_or))
+    await openrouter.query_model(model_id, [{"role": "user", "content": "hi"}], thinking_effort="high")
+    assert captured_or[0]["provider"] == {"order": ["openai"], "allow_fallbacks": False}
+    assert captured_or[0]["reasoning"] == {"effort": "high"}
+    _restore(monkeypatch)
+
+    # openai-compatible relay -> NO provider field, but reasoning still sent
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
+    openrouter._reasoning_capabilities_cache = _probed_levels_records(openrouter, model_id)
+    captured_oc = []
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", _capturing_client(captured_oc))
+    await openrouter.query_model(model_id, [{"role": "user", "content": "hi"}], thinking_effort="high")
+    assert "provider" not in captured_oc[0]
+    assert captured_oc[0]["reasoning"] == {"effort": "high"}
+    _restore(monkeypatch)

@@ -97,10 +97,12 @@ async def query_model(
     provider = {}
     if zdr_enabled:
         provider["zdr"] = True  # HARD: never weakened; a non-ZDR pin below yields no route, not a downgrade
-    if endpoint_pin:
+    if endpoint_pin and provider_is_openrouter():
         # Capabilities are provider-specific: route to the endpoint the shape was
         # learned on (probe pins the same way), so a probed reasoning object can't be
-        # mis-applied on a different endpoint.
+        # mis-applied on a different endpoint. `provider.order`/`allow_fallbacks` are
+        # OpenRouter-only -- an openai-compatible relay rejects `provider` (400), and
+        # the probe's endpoint tags don't apply there, so the pin is skipped off-OR.
         provider["order"] = [endpoint_pin]
         provider["allow_fallbacks"] = False
     if provider:
