@@ -4,6 +4,7 @@ import ReasoningSection from './ReasoningSection';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { getStageTabListClass } from "@/utils/responsiveChatLayout";
+import { formatReasoningActuals } from "@/utils/reasoningDisplay";
 
 function Stage1({ responses, messageKey = 'message', showReasoningByDefault = false }) {
   const [activeTab, setActiveTab] = useState(0);
@@ -51,6 +52,10 @@ function Stage1({ responses, messageKey = 'message', showReasoningByDefault = fa
         />
         <div className="prose max-w-none text-sm dark:prose-invert">
           <MarkdownRenderer>{activeResponse.response}</MarkdownRenderer>
+        </div>
+        {/* B5/E3 §3d: honest post-turn reasoning actuals, keyed on token count. */}
+        <div className="mt-3 text-xs text-muted-foreground">
+          {formatReasoningActuals(activeResponse.reasoning_tokens)}
         </div>
       </Card>
     </div>
