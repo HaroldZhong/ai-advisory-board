@@ -116,16 +116,34 @@ async def test_estimate_endpoint_accounts_for_routing_overrides(monkeypatch, tmp
     conv = await main.create_conversation(main.CreateConversationRequest())
     conv_id = conv["id"]
 
-    baseline = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="council"))
+    # Routing overrides apply to CHAT (council rejects them -- see the council test below).
+    baseline = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="chat"))
     max_rag = await main.estimate_turn_endpoint(
-        conv_id, main.TurnEstimateRequest(mode="council", rag_preset="max")
+        conv_id, main.TurnEstimateRequest(mode="chat", rag_preset="max")
     )
     research = await main.estimate_turn_endpoint(
-        conv_id, main.TurnEstimateRequest(mode="council", execution_mode="research")
+        conv_id, main.TurnEstimateRequest(mode="chat", execution_mode="research")
     )
 
     assert max_rag["predicted_cost"] > baseline["predicted_cost"]
     assert research["predicted_cost"] > baseline["predicted_cost"]
+
+
+@pytest.mark.asyncio
+async def test_council_estimate_ignores_chat_only_routing(monkeypatch, tmp_path):
+    """Codex #110 R10: council rejects execution_mode/rag_preset (the send path 400s on
+    them), so the council estimate must ignore stale chat-only settings -- passing
+    research/max must NOT inflate a council estimate above the plain council one."""
+    main, _br, _config = import_modules(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    conv = await main.create_conversation(main.CreateConversationRequest())
+    conv_id = conv["id"]
+
+    plain = await main.estimate_turn_endpoint(conv_id, main.TurnEstimateRequest(mode="council"))
+    with_chat_routing = await main.estimate_turn_endpoint(
+        conv_id, main.TurnEstimateRequest(mode="council", execution_mode="research", rag_preset="max")
+    )
+    assert with_chat_routing["predicted_cost"] == plain["predicted_cost"]
 
 
 @pytest.mark.asyncio

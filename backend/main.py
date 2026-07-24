@@ -860,13 +860,23 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     # chairman_model but runs on config.CHAIRMAN_MODEL, so pricing must use it (not the
     # $1/$5 fallback that create_run_plan applies for a None model).
     chairman_model = metadata.get("chairman_model") or config.CHAIRMAN_MODEL
+
+    # Council rejects the chat-only routing controls (validate_advanced_settings_for_mode),
+    # so a council estimate must ignore execution_mode/rag_preset -- otherwise it would
+    # price RAG/research cost the confirmed council turn will never incur (Codex #110).
+    execution_mode = request.execution_mode
+    rag_preset = request.rag_preset
+    if request.mode == "council":
+        execution_mode = "auto"
+        rag_preset = "auto"
+
     run_plan = create_run_plan(
         query=request.content,
         conversation_id=conversation_id,
         has_files=request.has_attachments,
         chairman_model=chairman_model,
-        execution_mode=request.execution_mode,
-        rag_preset=request.rag_preset,
+        execution_mode=execution_mode,
+        rag_preset=rag_preset,
         model_tier=request.model_tier,
     )
 
