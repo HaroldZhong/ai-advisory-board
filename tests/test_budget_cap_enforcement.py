@@ -1,4 +1,5 @@
 import importlib
+import inspect
 
 import pytest
 
@@ -160,3 +161,20 @@ async def test_default_flip_does_not_migrate_existing_conversations(monkeypatch,
     with pytest.raises(main.HTTPException) as exc:
         main.ensure_budget_allows_new_turn("conv-existing-hardcap")
     assert exc.value.status_code == 409
+
+
+def test_budget_path_raises_409_exactly_once_in_source(monkeypatch):
+    """D3 load-bearing SOURCE-LEVEL guard (plan §D3 Tests): after the overage
+    default flip, the hard 409 cap must remain a SINGLE opt-in enforcement point.
+
+    Behavioral tests all exercise the ONE current raise site, so a re-introduced
+    second enforcement branch (a new `raise HTTPException(status_code=409, ...)`)
+    would silently pass them. A source-level count catches that regression: at HEAD
+    the only 409 in backend/main.py is the budget cap (BUDGET_CAP_REACHED_DETAIL)."""
+    main = import_main(monkeypatch)
+    source = inspect.getsource(main)
+    count = source.count("status_code=409")
+    assert count == 1, (
+        f"expected exactly one status_code=409 (the opt-in budget cap) in backend/main.py, "
+        f"found {count} -- a re-introduced enforcement branch would revert the D3 default flip"
+    )
