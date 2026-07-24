@@ -13,17 +13,21 @@ def test_single_source_ladder_shape():
 
 
 def test_main_uses_the_single_source_ladder(monkeypatch):
-    """main imports the ladder from thinking_effort -- the same objects, not an
-    independent copy that can drift. (council retired its own ladder use in B3 when
-    the Stage-3 effort cap/floor was removed, so it no longer references the ladder.)"""
+    """main imports its ladder validation set from thinking_effort -- the same
+    object, not an independent copy that can drift.
+
+    B3 retired the per-preset effort cap, which was main's only consumer of the
+    ordinal THINKING_EFFORT_ORDER, so main now needs only VALID_THINKING_EFFORTS.
+    Neither main nor council may reintroduce a divergent effort-order ladder (main's
+    per-preset cap and council's Stage-3 cap/floor are both gone)."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     te = _te()
     main = importlib.import_module("backend.main")
     council = importlib.import_module("backend.council")
-    assert main.THINKING_EFFORT_ORDER is te.THINKING_EFFORT_ORDER
     assert main.VALID_THINKING_EFFORTS is te.VALID_THINKING_EFFORTS
-    # council no longer defines/imports an effort ladder (B3 retired the Stage-3
-    # cap/floor); guard against it silently reintroducing a divergent copy.
+    # Load-bearing for B3: the effort-order ladder is gone from both modules; guard
+    # against either silently reintroducing a divergent copy (a resurrected cap/floor).
+    assert not hasattr(main, "THINKING_EFFORT_ORDER")
     assert not hasattr(council, "THINKING_EFFORT_ORDER")
 
 
