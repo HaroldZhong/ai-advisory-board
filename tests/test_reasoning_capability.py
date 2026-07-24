@@ -73,6 +73,19 @@ def test_save_load_round_trip(tmp_path):
     assert "capabilities" in json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_save_accepts_loader_map_for_a2_round_trip(tmp_path):
+    """A2's natural flow: load -> mutate -> save. save_capabilities must accept the
+    model_id->record MAP that load_capabilities returns, not only a list."""
+    cap = _cap()
+    path = tmp_path / "sidecar.json"
+    cap.save_capabilities([_probed_record(cap, {"id": "m/1", "supports_reasoning": True, "reasoning_extraction": "field"})], path)
+    records = cap.load_capabilities(path)                    # -> a dict map
+    records["m/2"] = _probed_record(cap, {"id": "m/2", "supports_reasoning": True, "reasoning_extraction": "field"})
+    cap.save_capabilities(records, path)                     # passing the map back must not raise
+    reloaded = cap.load_capabilities(path)
+    assert set(reloaded) == {"m/1", "m/2"}
+
+
 def test_age_is_a_warning_not_runtime_invalidation():
     cap = _cap()
     entry = {"id": "m/1", "supports_reasoning": True, "reasoning_extraction": "field"}
