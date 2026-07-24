@@ -52,12 +52,18 @@ from pathlib import Path
 
 import httpx
 
-OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 ROOT = Path(__file__).resolve().parent.parent
 # scripts/ is not the repo root on sys.path when this runs as a script, so the
 # `backend` import below would fail. Tests import this module from the root where
 # it already resolves; this keeps `python scripts/...` working too.
 sys.path.insert(0, str(ROOT))
+
+# The BILLED route and the route we PRICE must be the same service, or
+# `price_authority` no longer proves anything about the call that was billed: with a
+# relay configured, pricing the relay while posting to openrouter.ai (or vice versa)
+# silently invalidates the fixture's verdict. Both therefore come from config
+# (audit 4.3: OPENROUTER_BASE_URL reroutes every OpenRouter URL).
+from backend.config import OPENROUTER_API_URL  # noqa: E402
 
 # Per-ENDPOINT pricing (public, no key). Rates differ between tags of the SAME
 # provider, so this is the only authority that can price a pinned route. Shared
