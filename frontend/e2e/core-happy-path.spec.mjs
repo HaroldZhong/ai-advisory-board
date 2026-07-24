@@ -449,7 +449,7 @@ test('first-run setup creates a private preset conversation and renders streamed
   // pre-send estimate (the main council-default path, not just manual "Ask the
   // council"). Confirm to dispatch.
   await expect(page.getByRole('alert')).toContainText('Est. ~$0.20 (approximate)');
-  await page.getByRole('button', { name: 'Confirm' }).click();
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
 
   await expect(page.getByText('Final Council Answer')).toBeVisible();
   // B5/E3 §3d: the chairman's honest post-turn reasoning actuals render from the count
@@ -525,7 +525,7 @@ test('D3 soft seatbelt: the council confirm surfaces an approximate cost and is 
   await expect(confirm).toContainText('costs more');
 
   // Dismissible: Cancel closes the confirm and no turn is dispatched.
-  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
@@ -547,7 +547,7 @@ test('D3 soft seatbelt: a large predicted CHAT turn also warns, not only council
   const confirm = page.getByRole('alert');
   await expect(confirm).toContainText('larger-than-usual turn');
   await expect(confirm).toContainText('Est. ~$0.30 (approximate)');
-  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
@@ -576,7 +576,7 @@ test('reopening the budget dialog re-seeds the hard-cap toggle from the saved po
 
   // Toggle the hard cap ON, then CANCEL without saving.
   await hardCap.check();
-  await page.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
   // Reopening must reflect the PERSISTED policy again, not the cancelled toggle.
   // Pre-fix the dialog kept allowOverage=false (checkbox stayed checked) and a later

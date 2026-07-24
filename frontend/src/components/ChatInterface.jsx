@@ -155,7 +155,7 @@ export default function ChatInterface({
   const thinkingDisabledReason = isUpdatingThinkingEffort
     ? 'Thinking effort update is being saved'
     : (isEstimating || showCouncilConfirm)
-      ? 'Confirm or cancel the pending send first'
+      ? 'Finish the pending turn first'
       : null;
 
   const handleBudgetConfirm = async (budgetUsd, allowOverage = true) => {
