@@ -219,6 +219,11 @@ def test_estimate_max_probe_cost_from_registry_pricing():
     assert one == pytest.approx(4 * (2.0 * probe.PROBE_PROMPT_TOKENS_EST + 180.0 * probe.PROBE_MAX_TOKENS) / 1_000_000)
     # an unpriced model can't be bounded -> None (caller must refuse)
     assert probe.estimate_max_probe_cost([{"id": "x"}], ("low",)) is None
+    # malformed INPUT price (prompt tokens still cost money) also can't be bounded
+    for bad_in in ({"output": 5.0}, {"output": 5.0, "input": -1}, {"output": 5.0, "input": "x"}):
+        assert probe.estimate_max_probe_cost([{"id": "x", "pricing": bad_in}], ("low",)) is None
+    # explicit free input (0) is valid, not malformed
+    assert probe.estimate_max_probe_cost([{"id": "x", "pricing": {"input": 0, "output": 5.0}}], ("low",)) is not None
 
 
 @pytest.mark.asyncio
@@ -327,15 +332,26 @@ async def test_sweep_is_resumable_skips_fresh_rows():
     probe = _probe()
     a, b = _entry("a"), _entry("b")
     existing = {"a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a),
-                      "control_surface": "onoff"}}
+                      "provider_pinned": "openai", "control_surface": "onoff"}}
     tx = _mock_transport({None: 0, "low": 10, "medium": 20, "high": 30})
     merged = await probe.run_probe_sweep(
         [a, b], lambda m: "openai", "k",
         max_probe_usd=1.00, existing=existing, transport=tx,
     )
-    # a is fresh -> untouched; b is newly probed
+    # a is fresh (fingerprint + provider match) -> untouched; b is newly probed
     assert merged["a"]["control_surface"] == "onoff"
     assert merged["b"]["control_surface"] == "levels"
+
+
+def test_models_needing_probe_reprobes_on_provider_change():
+    probe = _probe()
+    a = _entry("a")
+    existing = {"a": {"model_id": "a", "probed": True, "fingerprint": probe.model_fingerprint(a),
+                      "provider_pinned": "openai"}}
+    # same provider -> fresh -> skipped
+    assert probe.models_needing_probe([a], existing, lambda m: "openai") == []
+    # different requested endpoint -> row is stale -> re-probe
+    assert [m["id"] for m in probe.models_needing_probe([a], existing, lambda m: "azure")] == ["a"]
 
 
 @pytest.mark.asyncio

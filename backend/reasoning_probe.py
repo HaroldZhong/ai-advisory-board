@@ -193,16 +193,23 @@ async def probe_model(
 def models_needing_probe(
     registry_models: Iterable[Dict[str, Any]],
     existing: Dict[str, Dict[str, Any]],
+    provider_of: Optional[Callable[[Dict[str, Any]], str]] = None,
 ) -> List[Dict[str, Any]]:
     """Resumable set: skip models already probed whose stored fingerprint still
-    matches the registry entry (fresh); return the rest (unprobed or stale)."""
+    matches the registry entry (fresh); return the rest (unprobed or stale). When
+    `provider_of` is given, a fresh row whose `provider_pinned` differs from the
+    now-requested endpoint tag is ALSO re-probed -- probe results are
+    provider-specific, so a --provider-tag change must invalidate the old row."""
     needing: List[Dict[str, Any]] = []
     for m in registry_models:
         mid = m.get("id")
         if not mid:
             continue
         rec = existing.get(mid)
-        if rec and rec.get("probed") and rec.get("fingerprint") == model_fingerprint(m):
+        fresh = bool(rec and rec.get("probed") and rec.get("fingerprint") == model_fingerprint(m))
+        if fresh and provider_of is not None and rec.get("provider_pinned") != provider_of(m):
+            fresh = False  # a different endpoint was requested -> re-probe
+        if fresh:
             continue
         needing.append(m)
     return needing
@@ -214,12 +221,14 @@ def _per_call_cost_usd(model_entry: Dict[str, Any]) -> Optional[float]:
     Returns None when the model has no usable output price -- the caller must then
     refuse, since an unpriced model can't be bounded."""
     pricing = model_entry.get("pricing") or {}
+    # BOTH sides must be usable non-negative numbers: a probe call sends prompt
+    # tokens too, so a missing/negative/non-numeric input price can't be treated as
+    # free -- return None so the sweep refuses rather than under-bounding spend.
     out_price = pricing.get("output")
     in_price = pricing.get("input")
-    if not isinstance(out_price, (int, float)) or isinstance(out_price, bool) or out_price < 0:
-        return None
-    if not isinstance(in_price, (int, float)) or isinstance(in_price, bool) or in_price < 0:
-        in_price = 0
+    for price in (out_price, in_price):
+        if not isinstance(price, (int, float)) or isinstance(price, bool) or price < 0:
+            return None
     return (in_price * PROBE_PROMPT_TOKENS_EST + out_price * PROBE_MAX_TOKENS) / 1_000_000
 
 
@@ -261,7 +270,7 @@ async def run_probe_sweep(
     """
     levels = tuple(levels)
     merged = dict(existing or {})
-    needing = models_needing_probe(registry_models, merged)
+    needing = models_needing_probe(registry_models, merged, provider_of)
 
     if max_probe_usd is None:
         raise CeilingError(
