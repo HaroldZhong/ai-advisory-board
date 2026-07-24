@@ -374,18 +374,6 @@
       "reasoning_extraction": "field"
     },
     {
-      "id": "x-ai/grok-4.1-fast",
-      "name": "xAI: Grok 4.1 Fast",
-      "capabilities": ["fast", "long-context", "value"],
-      "type": "council",
-      "pricing": {"input": 0.2, "output": 0.5},
-      "context_length": 2000000,
-      "supports_zdr": false,
-      "supports_reasoning": true,
-      "available": true,
-      "reasoning_extraction": "field"
-    },
-    {
       "id": "perplexity/sonar",
       "name": "Perplexity: Sonar",
       "capabilities": ["web-search", "fast", "research"],

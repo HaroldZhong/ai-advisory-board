@@ -113,7 +113,7 @@ async def test_conversation_update_rejects_zdr_for_incompatible_models(monkeypat
         conversation_id,
         {
             "chairman_model": "openai/gpt-5.5",
-            "council_models": ["x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro", "qwen/qwen3-max-thinking"],
+            "council_models": ["mistralai/mistral-large-2512", "deepseek/deepseek-v4-pro", "qwen/qwen3-max-thinking"],
         },
     )
 

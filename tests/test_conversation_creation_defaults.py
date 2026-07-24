@@ -63,7 +63,7 @@ async def test_private_preset_rejects_non_zdr_model_overrides(monkeypatch, tmp_p
         ),
         main.CreateConversationRequest(
             preset_id="private",
-            council_members=["openai/gpt-5.4", "x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro"],
+            council_members=["openai/gpt-5.4", "mistralai/mistral-large-2512", "deepseek/deepseek-v4-pro"],
         ),
     ]:
         with pytest.raises(HTTPException) as exc:
@@ -98,7 +98,7 @@ async def test_create_conversation_rejects_utility_model_as_council_member(monke
 
     with pytest.raises(HTTPException) as exc:
         await main.create_conversation(main.CreateConversationRequest(
-            council_members=["openai/gpt-4o-mini", "google/gemini-2.5-flash", "x-ai/grok-4.1-fast"],
+            council_members=["openai/gpt-4o-mini", "google/gemini-2.5-flash", "mistralai/mistral-large-2512"],
         ))
 
     assert exc.value.status_code == 400
@@ -130,7 +130,7 @@ async def test_create_conversation_rejects_search_model_as_council_member(monkey
 
     with pytest.raises(HTTPException) as exc:
         await main.create_conversation(main.CreateConversationRequest(
-            council_members=["openai/gpt-4o-mini", "perplexity/sonar", "x-ai/grok-4.1-fast"],
+            council_members=["openai/gpt-4o-mini", "perplexity/sonar", "mistralai/mistral-large-2512"],
         ))
 
     assert exc.value.status_code == 400
@@ -147,12 +147,12 @@ async def test_create_conversation_accepts_normal_chairman_and_council_models(mo
 
     conversation = await main.create_conversation(main.CreateConversationRequest(
         chairman_model="openai/gpt-5.5",
-        council_members=["openai/gpt-4o-mini", "x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro"],
+        council_members=["openai/gpt-4o-mini", "mistralai/mistral-large-2512", "deepseek/deepseek-v4-pro"],
     ))
 
     assert conversation["metadata"]["chairman_model"] == "openai/gpt-5.5"
     assert conversation["metadata"]["council_models"] == [
-        "openai/gpt-4o-mini", "x-ai/grok-4.1-fast", "deepseek/deepseek-v4-pro",
+        "openai/gpt-4o-mini", "mistralai/mistral-large-2512", "deepseek/deepseek-v4-pro",
     ]
 
 
