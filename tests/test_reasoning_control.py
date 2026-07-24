@@ -100,3 +100,41 @@ def test_auto_omits_effort_for_non_onoff_surfaces(surface):
     rc = _rc()
     assert rc.translate_reasoning_control(_cap(surface), None) == {"kind": "auto"}
     assert rc.translate_reasoning_control(_cap(surface), "") == {"kind": "auto"}
+
+
+# --- B4: decision -> OpenRouter reasoning payload fragment ----------------------
+
+def test_render_effort_decision():
+    rc = _rc()
+    assert rc.decision_to_reasoning_payload({"kind": "effort", "effort": "high"}) == {"effort": "high"}
+
+
+def test_render_budget_decision():
+    rc = _rc()
+    assert rc.decision_to_reasoning_payload({"kind": "budget", "max_tokens": 8000}) == {"max_tokens": 8000}
+    # a budget model with no resolvable max -> omit
+    assert rc.decision_to_reasoning_payload({"kind": "budget", "max_tokens": None}) is None
+
+
+def test_render_onoff_decision_uses_enabled_toggle():
+    rc = _rc()
+    assert rc.decision_to_reasoning_payload({"kind": "onoff", "on": True}) == {"enabled": True}
+    assert rc.decision_to_reasoning_payload({"kind": "onoff", "on": False}) == {"enabled": False}
+
+
+@pytest.mark.parametrize("decision", [{"kind": "auto"}, {"kind": "drop", "reason": "x"}])
+def test_render_auto_and_drop_omit_reasoning(decision):
+    rc = _rc()
+    assert rc.decision_to_reasoning_payload(decision) is None
+
+
+def test_resolve_reasoning_payload_end_to_end():
+    rc = _rc()
+    # levels model at high -> {"effort": "high"}
+    assert rc.resolve_reasoning_payload(_cap("levels", levels=["low", "medium", "high"]), "high") == {"effort": "high"}
+    # onoff at Auto with native-default off -> {"enabled": False}
+    assert rc.resolve_reasoning_payload(_cap("onoff", native_default_on=False), None) == {"enabled": False}
+    # unknown capability -> omit (Auto-safe until the probe fills the sidecar)
+    assert rc.resolve_reasoning_payload(_cap("unknown"), "high") is None
+    # Auto on a levels model -> omit
+    assert rc.resolve_reasoning_payload(_cap("levels"), None) is None

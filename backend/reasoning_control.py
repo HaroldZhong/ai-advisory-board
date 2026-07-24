@@ -83,3 +83,39 @@ def translate_reasoning_control(
         return {"kind": "effort", "effort": _snap_to_supported(level, supported)}
     # "unknown" (un-probed) or anything unexpected: drop, but say it's unverified.
     return {"kind": "drop", "reason": "reasoning not verified"}
+
+
+# --- B4: render a B2 decision to the OpenRouter `reasoning` payload fragment ----
+# Verified against the OpenRouter reasoning-tokens docs (2026-07): the normalized
+# `reasoning` object supports `effort` (minimal..xhigh/none), `max_tokens`,
+# `enabled` (on/off), and `exclude`. Correction #1: prefer this normalized
+# interface; provider-native shapes are only for where a reproducible endpoint
+# test proves it insufficient (paid -- deferred).
+
+def decision_to_reasoning_payload(decision: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The value for `payload["reasoning"]`, or None to send no reasoning object.
+
+    auto/drop -> None (omit); effort -> {"effort": level}; budget ->
+    {"max_tokens": n}; onoff -> {"enabled": bool}.
+    """
+    kind = (decision or {}).get("kind")
+    if kind == "effort":
+        return {"effort": decision["effort"]}
+    if kind == "budget":
+        max_tokens = decision.get("max_tokens")
+        return {"max_tokens": max_tokens} if max_tokens is not None else None
+    if kind == "onoff":
+        return {"enabled": bool(decision["on"])}
+    # "auto" (Auto/native default) and "drop" (none/unknown) -> omit entirely.
+    return None
+
+
+def resolve_reasoning_payload(
+    capability: Optional[Dict[str, Any]],
+    level: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Full B2->B4 chain: translate the universal level for this model's surface,
+    then render the OpenRouter `reasoning` object (or None to omit). The runtime
+    wire boundary (openrouter.py) calls this once real capability data exists;
+    until then an unknown capability resolves to None (omit) -- Auto-safe."""
+    return decision_to_reasoning_payload(translate_reasoning_control(capability, level))
