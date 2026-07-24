@@ -825,6 +825,32 @@ async def get_session_policy_endpoint(conversation_id: str):
     return build_session_budget_state(conversation_id)
 
 
+@app.get("/api/conversations/{conversation_id}/estimate")
+async def estimate_turn_endpoint(conversation_id: str, mode: str = "council"):
+    """v1.3.0 D3 soft seatbelt (§5.1): an APPROXIMATE pre-send cost estimate for the
+    next turn. Never blocks -- the client uses ``is_large`` to decide whether to
+    warn/confirm before dispatch. The honest billed total still comes from usage.cost.
+    """
+    from .budget_router import estimate_turn_cost
+
+    conversation = storage.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    metadata = conversation.get("metadata", {})
+    predicted = estimate_turn_cost(
+        mode,
+        council_models=metadata.get("council_models"),
+        chairman_model=metadata.get("chairman_model"),
+    )
+    return {
+        "predicted_cost": predicted,
+        "approximate": True,
+        "threshold": config.LARGE_TURN_ESTIMATE_USD,
+        "is_large": predicted >= config.LARGE_TURN_ESTIMATE_USD,
+    }
+
+
 @app.put("/api/conversations/{conversation_id}/session-policy")
 async def update_session_policy_endpoint(conversation_id: str, update: SessionPolicyUpdate):
     """Persist a conversation's session budget policy."""

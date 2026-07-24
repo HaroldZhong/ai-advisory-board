@@ -169,3 +169,60 @@ def estimate_message_cost(mode: str, rag_tokens: int, chairman_model: str = None
     
     cost = (total_input / 1_000_000) * input_price + (total_output / 1_000_000) * output_price
     return round(cost, 6)
+
+
+# v1.3.0 D3 (§5.1): rough per-call token estimates for a pre-send TURN estimate.
+# Deliberately conservative and clearly APPROXIMATE -- these are heuristics, never
+# measured. The honest billed total always comes from usage.cost (D1/D2).
+_TURN_TOKEN_ESTIMATES = {
+    "council_stage1": {"input": 4000, "output": 1200},   # each member drafts a full answer
+    "council_stage2": {"input": 5000, "output": 400},     # each member ranks the others
+    "chairman_stage3": {"input": 8000, "output": 1500},   # chairman synthesizes everything
+    "chat": {"input": 4000, "output": 1000},              # a single chairman chat turn
+}
+
+
+def _model_call_cost(model_id: Optional[str], input_tokens: int, output_tokens: int) -> float:
+    """USD cost of one model call at CURATED_MODELS pricing (fallback $1/$5 per M tokens)."""
+    from .config import CURATED_MODELS
+
+    model = next((m for m in CURATED_MODELS if m.get("id") == model_id), None)
+    pricing = (model or {}).get("pricing", {})
+    input_price = pricing.get("input", 1.0)
+    output_price = pricing.get("output", 5.0)
+    return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
+
+
+def estimate_turn_cost(
+    mode: str,
+    council_models: Optional[list] = None,
+    chairman_model: Optional[str] = None,
+    rag_tokens: int = 0,
+) -> float:
+    """Rough, conservative pre-send USD estimate for the next turn (APPROXIMATE).
+
+    Unlike ``estimate_message_cost`` (chairman-only), this accounts for the COUNCIL
+    fan-out -- each member runs stage 1 (draft) + stage 2 (rank), then the chairman
+    synthesizes (stage 3) -- so a council turn is not silently underestimated as a
+    single chat call (the honesty failure a chairman-only figure would introduce).
+    Never authoritative: the billed total comes from usage.cost.
+    """
+    from .config import CHAIRMAN_MODEL, COUNCIL_MODELS
+
+    chairman = chairman_model or CHAIRMAN_MODEL
+
+    if mode != "council":
+        chat = _TURN_TOKEN_ESTIMATES["chat"]
+        return round(_model_call_cost(chairman, chat["input"] + rag_tokens, chat["output"]), 6)
+
+    members = council_models or COUNCIL_MODELS
+    stage1 = _TURN_TOKEN_ESTIMATES["council_stage1"]
+    stage2 = _TURN_TOKEN_ESTIMATES["council_stage2"]
+    stage3 = _TURN_TOKEN_ESTIMATES["chairman_stage3"]
+
+    total = 0.0
+    for member in members:
+        total += _model_call_cost(member, stage1["input"] + rag_tokens, stage1["output"])
+        total += _model_call_cost(member, stage2["input"], stage2["output"])
+    total += _model_call_cost(chairman, stage3["input"], stage3["output"])
+    return round(total, 6)
