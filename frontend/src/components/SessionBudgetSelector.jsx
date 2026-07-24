@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import {
     Dialog,
@@ -72,6 +72,18 @@ export default function SessionBudgetSelector({
     // the 409 hard cap. Hard cap is meaningless without a limit, so it's tied to
     // having a budget selected.
     const [allowOverage, setAllowOverage] = useState(currentAllowOverage);
+
+    // v1.3.0 D3: this dialog stays mounted across conversation switches and
+    // reopens, so re-seed the draft from the persisted policy every time it
+    // opens (and if the props change). Without this, a stale local toggle from
+    // another conversation or a cancelled edit would silently overwrite the
+    // saved hard cap on confirm -- downgrading a 409 hard cap to warn-only.
+    useEffect(() => {
+        if (isOpen) {
+            setSelectedBudget(currentBudget ?? BUDGET_PRESETS.find(p => p.default)?.value ?? null);
+            setAllowOverage(currentAllowOverage);
+        }
+    }, [isOpen, currentBudget, currentAllowOverage]);
 
     const handleConfirm = () => {
         onConfirm(selectedBudget, allowOverage);
