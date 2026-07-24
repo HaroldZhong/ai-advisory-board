@@ -454,8 +454,22 @@ def resolve_probe_call_bounds(
                 continue
             # EVERY endpoint must price, not just the priciest that happens to parse:
             # an endpoint we cannot price is one that could serve the call for an
-            # unknown amount, so the max over the rest would not bound it.
-            bound = max(probe_call_bound_usd(price_endpoint(url, e)) for e in endpoints)
+            # unknown amount, so the max over the rest would not bound it. Validate
+            # each bound BEFORE max(): float("NaN") parses fine and yields a NaN
+            # bound, and every comparison against NaN is False, so max() would
+            # silently keep an earlier finite value and the final check would pass a
+            # model with one unbounded routable endpoint.
+            per_endpoint = []
+            for endpoint in endpoints:
+                candidate = probe_call_bound_usd(price_endpoint(url, endpoint))
+                if not (isinstance(candidate, float) and math.isfinite(candidate) and candidate > 0):
+                    raise EndpointPricingError(
+                        f"endpoint {endpoint.get('tag')!r} priced to a non-positive/non-finite "
+                        f"bound {candidate!r}; it could still serve this call, so no maximum "
+                        f"over the others would bound it"
+                    )
+                per_endpoint.append(candidate)
+            bound = max(per_endpoint)
         except (EndpointPricingError, httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             unresolved.append(f"{model_id}: {exc}")
             continue

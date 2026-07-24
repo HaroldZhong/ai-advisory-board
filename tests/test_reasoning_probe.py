@@ -980,3 +980,21 @@ async def test_all_unattributable_records_abort_instead_of_publishing():
             transport=_mock_transport({None: 0, "low": 10, "medium": 20, "high": 30},
                                       served_provider=None),
         )
+
+
+def test_a_nan_priced_endpoint_cannot_hide_behind_max():
+    probe = _probe()
+    # float("NaN") parses, so probe_call_bound_usd returns NaN without raising, and
+    # every comparison against NaN is False -- so max() would silently keep an
+    # earlier finite bound and the final finiteness check would pass a model with one
+    # UNBOUNDED routable endpoint. Each endpoint must be validated before max().
+    def get(url, timeout=None):
+        return httpx.Response(200, json={"data": {"endpoints": [
+            {"tag": "ok", "provider_name": "OK",
+             "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+            {"tag": "nan", "provider_name": "Nan",
+             "pricing": {"prompt": "0.000001", "completion": "NaN"}},
+        ]}}, request=httpx.Request("GET", url))
+
+    with pytest.raises(probe.CeilingError, match="m/x"):
+        probe.resolve_probe_call_bounds([_entry("m/x")], get=get)

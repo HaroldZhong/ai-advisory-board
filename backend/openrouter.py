@@ -213,20 +213,32 @@ def reset_reasoning_capability_cache() -> None:
     _reasoning_capabilities_cache = None
 
 
-def model_supports_reasoning(model: str, capability_records: Optional[Dict[str, Any]] = None) -> bool:
+def model_supports_reasoning(
+    model: str,
+    capability_records: Optional[Dict[str, Any]] = None,
+    *,
+    zdr_enabled: bool = False,
+) -> bool:
     """Whether this model accepts reasoning controls, from the SINGLE capability
     authority (v1.3.0 correction #2). The probe-backed sidecar is authoritative once
     a model is probed; the registry's `supports_reasoning` is a DEPRECATED fallback
     used ONLY while the sidecar has no verified record for the model (it is removed
     outright once the probe covers every model). `capability_records` is injectable
-    for tests; runtime uses the cached sidecar load."""
+    for tests; runtime uses the cached sidecar load.
+
+    `zdr_enabled` bypasses the probe row for the same reason resolve_model_reasoning
+    does: the row describes whichever endpoint ORDINARY routing selected and says
+    nothing about the ZDR endpoint this request will reach. Consulting it would let a
+    `none` row silently suppress reasoning on a distinct ZDR route, and a positive row
+    enable it on an unverified one."""
     from .reasoning_capability import get_capability
 
     registry_model = _lookup_registry_model(model)
     # Probe rows are OpenRouter-endpoint-specific: only consult them when routing to
     # OpenRouter. Off-OpenRouter (a relay) the probed capability doesn't apply, so use
-    # the deprecated registry fallback (correction #2).
-    if provider_is_openrouter():
+    # the deprecated registry fallback (correction #2). A ZDR turn is the same case:
+    # the probed endpoint is not the endpoint this request reaches.
+    if provider_is_openrouter() and not zdr_enabled:
         records = capability_records if capability_records is not None else _reasoning_capability_records()
         cap = get_capability(records, model, registry_model)
         if cap.get("control_surface") != "unknown":
@@ -292,7 +304,9 @@ def resolve_model_reasoning(
             return reasoning, pin
     # Un-probed OR off-OpenRouter -> deprecated fallback: a plain effort object iff the
     # registry (via the single authority) says the model supports reasoning. No pin.
-    if thinking_effort and model_supports_reasoning(model, capability_records=capability_records):
+    if thinking_effort and model_supports_reasoning(
+        model, capability_records=capability_records, zdr_enabled=zdr_enabled
+    ):
         return {"effort": thinking_effort}, None
     return None, None
 
