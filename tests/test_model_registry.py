@@ -80,14 +80,18 @@ def test_presets_expose_expected_reasoning_effort_defaults(monkeypatch):
     assert by_id["private"]["default_reasoning_effort"] == "medium"
 
 
-def test_budget_preset_copy_explains_medium_effort_cap(monkeypatch):
+def test_budget_preset_copy_does_not_claim_an_effort_cap(monkeypatch):
+    """v1.3.0 B3: the Budget preset no longer caps thinking effort, so its served
+    copy must not tell users effort is 'capped' -- that would be a false trust claim
+    now that High/X-High are honored. It still conveys the lighter-by-default,
+    budget-conscious intent (the preset SUGGESTS low effort, never forces it)."""
     config = import_module_with_api_key(monkeypatch, "backend.config")
     by_id = {preset["id"]: preset for preset in config.MODEL_PRESETS}
 
     budget_description = by_id["budget"]["description"].lower()
 
-    assert "medium" in budget_description
-    assert "thinking" in budget_description
+    assert "capped" not in budget_description
+    assert "lighter" in budget_description
 
 
 def test_private_preset_only_uses_zdr_models(monkeypatch):

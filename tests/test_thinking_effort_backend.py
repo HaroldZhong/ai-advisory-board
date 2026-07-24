@@ -24,7 +24,9 @@ async def test_create_conversation_stores_preset_thinking_effort(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_create_conversation_caps_budget_thinking_effort(monkeypatch, tmp_path):
+async def test_create_conversation_honors_budget_thinking_effort_uncapped(monkeypatch, tmp_path):
+    # v1.3.0 B3: a preset is a SUGGESTION, never a cap. A Budget-preset user who
+    # explicitly picks X-High keeps X-High -- the old silent clamp to medium is gone.
     main = import_module_with_api_key(monkeypatch, "backend.main")
 
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
@@ -38,7 +40,7 @@ async def test_create_conversation_caps_budget_thinking_effort(monkeypatch, tmp_
     )
 
     assert conversation["metadata"]["preset_id"] == "budget"
-    assert conversation["metadata"]["thinking_effort"] == "medium"
+    assert conversation["metadata"]["thinking_effort"] == "xhigh"
 
 
 def test_resolve_effective_thinking_effort_precedence(monkeypatch):
@@ -62,20 +64,23 @@ def test_resolve_effective_thinking_effort_precedence(monkeypatch):
         {"metadata": {}},
         main.SendMessageRequest(content="Hi"),
     ) == "medium"
+    # v1.3.0 B3: the Budget preset no longer caps effort -- a stored or requested
+    # level above the (former) medium cap is honored unchanged.
     assert main.resolve_effective_thinking_effort(
         {"metadata": {"preset_id": "budget", "thinking_effort": "high"}},
         main.SendMessageRequest(content="Hi"),
-    ) == "medium"
+    ) == "high"
     assert main.resolve_effective_thinking_effort(
         {"metadata": {"preset_id": "budget", "thinking_effort": "low"}},
         main.SendMessageRequest(content="Hi", thinking_effort="xhigh"),
-    ) == "medium"
+    ) == "xhigh"
 
 
 @pytest.mark.asyncio
-async def test_update_conversation_caps_budget_thinking_effort(monkeypatch, tmp_path):
+async def test_update_conversation_honors_budget_thinking_effort_uncapped(monkeypatch, tmp_path):
+    # v1.3.0 B3: updating a Budget-preset conversation to High keeps High (no clamp).
     main = import_module_with_api_key(monkeypatch, "backend.main")
-    conversation_id = "conv-budget-effort-cap"
+    conversation_id = "conv-budget-effort-uncapped"
 
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
     main.storage.create_conversation(
@@ -88,7 +93,7 @@ async def test_update_conversation_caps_budget_thinking_effort(monkeypatch, tmp_
         main.ConversationUpdate(thinking_effort="high"),
     )
 
-    assert updated["metadata"]["thinking_effort"] == "medium"
+    assert updated["metadata"]["thinking_effort"] == "high"
 
 
 @pytest.mark.asyncio

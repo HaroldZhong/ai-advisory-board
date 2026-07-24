@@ -49,7 +49,7 @@
     {
       "id": "budget",
       "label": "Budget",
-      "description": "Lower-cost, fast panel for drafts and triage. Capped at Medium thinking for reliability.",
+      "description": "Lower-cost, fast panel for drafts and triage. Defaults to lighter thinking to keep costs down.",
       "chairman_model": "google/gemini-2.5-flash-lite",
       "council_models": [
         "deepseek/deepseek-v4-flash",

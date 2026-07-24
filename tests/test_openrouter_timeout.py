@@ -141,25 +141,23 @@ def test_query_model_timeout_default_is_120s_unchanged(monkeypatch):
 async def test_incident_config_stage3_timeout_degrades_cleanly(monkeypatch, tmp_path):
     """C1 retry/degradation regression (the incident config).
 
-    The v1.2.0 outage config: Budget preset (chairman google/gemini-2.5-flash-lite,
-    'Capped at Medium thinking for reliability') whose Stage-3 synthesis blew the
-    120s wall-clock. This is the DEGRADATION half of the C1 gate: it proves that
-    exact config degrades cleanly under the CURRENT guards — no 'Unable to
-    generate final synthesis' persisted, no failure turn, a retryable 500, spent
-    cost still recorded — carried by the already-existing per-member timeout + the
-    v1.2.0 clean-degradation path (retry-on-None).
+    The v1.2.0 outage config: Budget preset (chairman google/gemini-2.5-flash-lite)
+    whose Stage-3 synthesis blew the 120s wall-clock. This is the DEGRADATION half
+    of the C1 gate: it proves that exact config degrades cleanly under the CURRENT
+    guards — no 'Unable to generate final synthesis' persisted, no failure turn, a
+    retryable 500, spent cost still recorded — carried by the already-existing
+    per-member timeout + the v1.2.0 clean-degradation path (retry-on-None).
 
     A chairman that blows its per-member deadline surfaces to the caller as
     query_model -> None (the timeout is caught there), so we simulate the timeout
     by returning None from the Stage-3 query.
 
-    NOTE: the Stage-3 effort cap is STILL PRESENT today (council.py
-    STAGE3_THINKING_EFFORT_MAX_BY_MODEL, applied in resolve_stage3_thinking_effort),
-    so this proves clean degradation WITH the cap in place. The cap-DELETION half
-    is gated separately by test_stage3_effort_cap_and_floor_removed_after_b3,
-    which flips green when B3 removes the symbols. The two together give both
-    'degrades cleanly' and 'cap is gone' — this test alone does not prove the
-    latter."""
+    NOTE: the Stage-3 effort cap/floor (council.py) and the per-preset cap (main.py)
+    are BOTH removed as of B3, so this proves clean degradation with NO effort cap in
+    place — reliability rests on the per-member timeout + degradation, not on capping
+    effort. The cap-DELETION itself is gated separately: the council symbols by
+    test_stage3_effort_cap_and_floor_removed_after_b3, and the main.py per-preset cap
+    by the thinking-effort backend suite. This test proves only 'degrades cleanly'."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     main = importlib.import_module("backend.main")
     monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
@@ -251,9 +249,10 @@ async def test_stage3_high_effort_reaches_flash_lite_uncapped_after_b3(monkeypat
     symbol-name check can't catch an inline or renamed re-cap, so this exercises
     stage3_synthesize_final with the incident chairman (google/gemini-2.5-flash-lite)
     at HIGH effort and asserts the chairman's query_model call receives 'high'
-    UNCAPPED. Today the cap downgrades it to 'medium', so this SKIPS; once B3
-    removes the cap it becomes a hard assertion, so no inline/renamed downgrade
-    can silently pass. Green here is a prerequisite for the B3 merge (plan: B3
+    UNCAPPED. With B3 landed the legacy cap/floor symbols are gone, so this
+    hard-asserts (the structural skip below is a historical fallback that no longer
+    fires); an inline or renamed re-cap after B3 fails the assertion rather than
+    silently passing. Green here was a prerequisite for the B3 merge (plan: B3
     gated on C1)."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 

@@ -5,7 +5,7 @@ import { cn } from '@/lib/utils';
 import { getTrustRowCostTileClass, getTrustRowGridClass } from '@/utils/responsiveChatLayout';
 import { formatTrustRowState, getEffectiveBudgetWarning } from '@/utils/trustState';
 import {
-  getThinkingEffortLevelsForConversation,
+  THINKING_EFFORT_LEVELS,
   getThinkingEffortOption,
 } from '@/utils/thinkingEffort';
 
@@ -102,7 +102,8 @@ export default function TrustRow({
   const warningTone = warning?.level === 'danger' ? 'danger' : warning?.level === 'warn' ? 'warn' : 'caution';
   const privacyIcon = state.privacy.effectiveZdr ? Shield : ShieldOff;
   const thinkingCanUpdate = Boolean(conversation?.id && onUpdateThinkingEffort) && !thinkingDisabled;
-  const selectableThinkingEfforts = getThinkingEffortLevelsForConversation(conversation);
+  // v1.3.0 B3: every conversation can select every level -- the preset no longer caps.
+  const selectableThinkingEfforts = THINKING_EFFORT_LEVELS;
 
   const handlePrivacyToggle = () => {
     if (state.privacy.locked || privacyDisabled || !onUpdateConversationPrivacy) return;
@@ -172,7 +173,7 @@ export default function TrustRow({
               <div className="px-2 pb-2">
                 <div className="text-xs font-semibold">Thinking effort</div>
                 <div className="text-[11px] text-muted-foreground">
-                  Applies to future turns on supported models. Stage 3 always uses at least Medium.
+                  Applies to future turns on supported models.
                 </div>
               </div>
               <div className="space-y-1">

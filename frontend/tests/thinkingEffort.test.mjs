@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
   THINKING_EFFORT_LEVELS,
   formatThinkingEffortLabel,
-  getThinkingEffortLevelsForConversation,
   getThinkingEffortOption,
   getThinkingEffortTone,
   isValidThinkingEffort,
@@ -49,14 +48,12 @@ test('thinking effort resolver prefers conversation metadata over preset default
   assert.equal(resolveEffectiveThinkingEffort(null), 'medium');
 });
 
-test('budget preset caps effective and selectable thinking effort at medium', () => {
+test('v1.3.0 B3: the budget preset no longer caps thinking effort', () => {
+  // A Budget-preset conversation that stored High keeps High -- the preset is a
+  // suggestion, never a cap (the silent clamp to medium is gone).
   assert.equal(resolveEffectiveThinkingEffort({
     metadata: { preset_id: 'budget', thinking_effort: 'high' },
-  }), 'medium');
-  assert.deepEqual(
-    getThinkingEffortLevelsForConversation({ metadata: { preset_id: 'budget' } }),
-    ['minimal', 'low', 'medium'],
-  );
+  }), 'high');
 });
 
 test('thinking effort options include honest relative cost hints', () => {
@@ -101,7 +98,8 @@ test('local thinking effort metadata update only applies to the active conversat
     'conversation-1',
     'xhigh',
   );
-  assert.equal(budgetUpdated.metadata.thinking_effort, 'medium');
+  // v1.3.0 B3: no preset cap -- X-High is stored as X-High for a Budget conversation.
+  assert.equal(budgetUpdated.metadata.thinking_effort, 'xhigh');
 
   assert.equal(
     setConversationThinkingEffortMetadata(current, 'conversation-2', 'high'),
