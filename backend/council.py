@@ -3,7 +3,6 @@
 from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
 from .openrouter import query_models_parallel, query_models_as_completed, query_model
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, UTILITY_MODEL
-from .thinking_effort import THINKING_EFFORT_ORDER
 from .logger import logger
 from .tools.types import EvidencePack, UsageLimits
 from .tools.registry import ToolRegistry
@@ -13,34 +12,11 @@ import uuid
 import json
 
 
-STAGE3_THINKING_EFFORT_MAX_BY_MODEL = {
-    # Release smoke showed high-effort Stage 3 synthesis can exceed the practical
-    # streaming window for the lightweight Budget chairman, while medium completes.
-    "google/gemini-2.5-flash-lite": "medium",
-}
-
-
-def ensure_minimum_thinking_effort(effort: str = None, minimum: str = "medium") -> str:
-    """Raise effort to the minimum level required for a stage."""
-    if effort is None:
-        return minimum
-    return effort if THINKING_EFFORT_ORDER.get(effort, 0) >= THINKING_EFFORT_ORDER[minimum] else minimum
-
-
-def cap_thinking_effort(effort: str, maximum: str) -> str:
-    """Lower effort to a model-specific maximum when needed."""
-    if THINKING_EFFORT_ORDER.get(effort, 0) <= THINKING_EFFORT_ORDER[maximum]:
-        return effort
-    return maximum
-
-
-def resolve_stage3_thinking_effort(model: str, effort: str = None) -> str:
-    """Resolve chairman synthesis effort: at least Medium, with per-model safety caps."""
-    resolved = ensure_minimum_thinking_effort(effort, "medium")
-    maximum = STAGE3_THINKING_EFFORT_MAX_BY_MODEL.get(model)
-    if maximum:
-        return cap_thinking_effort(resolved, maximum)
-    return resolved
+# v1.3.0 B3: the Stage-3 per-model effort cap/floor is retired -- the user's
+# requested effort reaches the chairman uncapped and unfloored (they own their
+# effort/spend, correction #7/#10). If uncapped high-effort synthesis on a
+# lightweight chairman proves to exceed the streaming window, the contingency is
+# C2 (correction #11), not a silent preemptive downgrade here.
 
 
 def build_stage1_result(model: str, response: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -389,10 +365,8 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     logger.info(f"[STAGE3] Requesting synthesis from {target_chairman}...")
     query_kwargs = {"zdr_enabled": zdr_enabled}
     if thinking_effort is not None:
-        query_kwargs["thinking_effort"] = resolve_stage3_thinking_effort(
-            target_chairman,
-            thinking_effort,
-        )
+        # B3: pass the requested effort straight through -- no Stage-3 cap/floor.
+        query_kwargs["thinking_effort"] = thinking_effort
     response = await query_model(target_chairman, messages, **query_kwargs)
     if response is None:
         logger.warning("[STAGE3] Chairman call returned None; retrying once")

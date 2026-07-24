@@ -12,16 +12,19 @@ def test_single_source_ladder_shape():
     assert te.THINKING_EFFORT_ORDER == {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
 
 
-def test_main_and_council_share_the_single_source(monkeypatch):
-    """main and council import the ladder from thinking_effort -- same objects, not
-    independent copies that can drift."""
+def test_main_uses_the_single_source_ladder(monkeypatch):
+    """main imports the ladder from thinking_effort -- the same objects, not an
+    independent copy that can drift. (council retired its own ladder use in B3 when
+    the Stage-3 effort cap/floor was removed, so it no longer references the ladder.)"""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     te = _te()
     main = importlib.import_module("backend.main")
     council = importlib.import_module("backend.council")
     assert main.THINKING_EFFORT_ORDER is te.THINKING_EFFORT_ORDER
     assert main.VALID_THINKING_EFFORTS is te.VALID_THINKING_EFFORTS
-    assert council.THINKING_EFFORT_ORDER is te.THINKING_EFFORT_ORDER
+    # council no longer defines/imports an effort ladder (B3 retired the Stage-3
+    # cap/floor); guard against it silently reintroducing a divergent copy.
+    assert not hasattr(council, "THINKING_EFFORT_ORDER")
 
 
 def test_to_reasoning_effort_maps_levels_and_omits_auto():
