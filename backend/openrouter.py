@@ -93,10 +93,22 @@ async def query_model(
         "model": model,
         "messages": messages,
     }
+    reasoning_payload, endpoint_pin = resolve_model_reasoning(model, thinking_effort)
+    provider = {}
     if zdr_enabled:
-        payload["provider"] = {"zdr": True}
-    if thinking_effort and model_supports_reasoning(model):
-        payload["reasoning"] = {"effort": thinking_effort}
+        provider["zdr"] = True  # HARD: never weakened; a non-ZDR pin below yields no route, not a downgrade
+    if endpoint_pin and provider_is_openrouter():
+        # Capabilities are provider-specific: route to the endpoint the shape was
+        # learned on (probe pins the same way), so a probed reasoning object can't be
+        # mis-applied on a different endpoint. `provider.order`/`allow_fallbacks` are
+        # OpenRouter-only -- an openai-compatible relay rejects `provider` (400), and
+        # the probe's endpoint tags don't apply there, so the pin is skipped off-OR.
+        provider["order"] = [endpoint_pin]
+        provider["allow_fallbacks"] = False
+    if provider:
+        payload["provider"] = provider
+    if reasoning_payload:
+        payload["reasoning"] = reasoning_payload
 
     try:
         async with httpx.AsyncClient(
@@ -174,10 +186,96 @@ def _lookup_registry_model(model: str) -> Optional[Dict[str, Any]]:
     return next((candidate for candidate in CURATED_MODELS if candidate["id"] == model), None)
 
 
-def model_supports_reasoning(model: str) -> bool:
-    """Return whether the curated registry says a model accepts reasoning controls."""
+_reasoning_capabilities_cache = None
+
+
+def _reasoning_capability_records() -> Dict[str, Any]:
+    """Cached load of the probe-backed capability sidecar. Read-only at runtime --
+    the probe is a separate maintainer process, so a running app loads the sidecar
+    once (a fresh probe is picked up on restart). Tests reset via
+    reset_reasoning_capability_cache()."""
+    global _reasoning_capabilities_cache
+    if _reasoning_capabilities_cache is None:
+        from .reasoning_capability import load_capabilities
+        _reasoning_capabilities_cache = load_capabilities()
+    return _reasoning_capabilities_cache
+
+
+def reset_reasoning_capability_cache() -> None:
+    """Drop the cached sidecar (test seam; also lets a long-running process re-read
+    after a probe if a caller chooses to)."""
+    global _reasoning_capabilities_cache
+    _reasoning_capabilities_cache = None
+
+
+def model_supports_reasoning(model: str, capability_records: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether this model accepts reasoning controls, from the SINGLE capability
+    authority (v1.3.0 correction #2). The probe-backed sidecar is authoritative once
+    a model is probed; the registry's `supports_reasoning` is a DEPRECATED fallback
+    used ONLY while the sidecar has no verified record for the model (it is removed
+    outright once the probe covers every model). `capability_records` is injectable
+    for tests; runtime uses the cached sidecar load."""
+    from .reasoning_capability import get_capability
+
     registry_model = _lookup_registry_model(model)
+    # Probe rows are OpenRouter-endpoint-specific: only consult them when routing to
+    # OpenRouter. Off-OpenRouter (a relay) the probed capability doesn't apply, so use
+    # the deprecated registry fallback (correction #2).
+    if provider_is_openrouter():
+        records = capability_records if capability_records is not None else _reasoning_capability_records()
+        cap = get_capability(records, model, registry_model)
+        if cap.get("control_surface") != "unknown":
+            # Probed -> the sidecar decides (a "none" surface correctly reports False).
+            return bool(cap.get("supports_reasoning"))
+    # Un-probed / off-OpenRouter -> DEPRECATED registry fallback (correction #2).
     return registry_model is not None and registry_model.get("supports_reasoning") is True
+
+
+def resolve_model_reasoning(
+    model: str,
+    thinking_effort: Optional[str],
+    capability_records: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    """Return `(reasoning_object, endpoint_pin)` for this model from the single
+    capability authority (correction #2 + the B4 wire boundary).
+
+    A PROBED model uses the B2/B4 per-surface translation -- `levels` snaps to the
+    nearest supported effort, `onoff` -> {"enabled": ...}, `budget` ->
+    {"max_tokens": ...}, `none`/Auto -> omit -- and, when a shape IS sent, returns
+    the record's `provider_pinned` endpoint tag as `endpoint_pin`: capabilities are
+    provider-specific (the probe pins `provider.order` and re-probes on a provider
+    change), so the caller MUST route to that endpoint or the shape can be silently
+    dropped/mis-applied on a different one. An UN-PROBED model falls back to a plain
+    {"effort": ...} object iff the DEPRECATED registry supports_reasoning says so
+    (today's behavior, until the probe runs), with no pin.
+    `reasoning_object` is None to send no reasoning object."""
+    from .reasoning_capability import get_capability
+    from .reasoning_control import resolve_reasoning_payload
+
+    registry_model = _lookup_registry_model(model)
+    # Probe rows are OpenRouter-endpoint-specific: only apply them when routing to
+    # OpenRouter. Off-OpenRouter (a relay) a probed row must not suppress/reshape
+    # reasoning -- fall through to the deprecated registry fallback below.
+    if provider_is_openrouter():
+        records = capability_records if capability_records is not None else _reasoning_capability_records()
+        cap = get_capability(records, model, registry_model)
+        if cap.get("control_surface") != "unknown":
+            reasoning = resolve_reasoning_payload(cap, thinking_effort)
+            # Only send a shape the runtime can also PARSE. A probed record can flip a
+            # model to reasoning-supported, but extract_reasoning() still needs a known
+            # extraction mode (registry `reasoning_extraction`); without one we'd burn
+            # reasoning tokens while dropping the returned reasoning TEXT. Omit until the
+            # extraction mode is known (a probe that records it -> the follow-up).
+            if reasoning is not None and (registry_model or {}).get("reasoning_extraction") not in ("field", "tags"):
+                return None, None
+            # Pin only when we actually send a probed shape (nothing to mis-route otherwise).
+            pin = cap.get("provider_pinned") if reasoning is not None else None
+            return reasoning, pin
+    # Un-probed OR off-OpenRouter -> deprecated fallback: a plain effort object iff the
+    # registry (via the single authority) says the model supports reasoning. No pin.
+    if thinking_effort and model_supports_reasoning(model, capability_records=capability_records):
+        return {"effort": thinking_effort}, None
+    return None, None
 
 
 def reasoning_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> Optional[int]:

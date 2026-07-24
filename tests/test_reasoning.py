@@ -158,3 +158,101 @@ def test_build_stage1_result_keys_actuals_on_tokens_not_reasoning_text():
         "usage": {"completion_tokens_details": {"reasoning_tokens": 128}},
     })
     assert real["reasoning_tokens"] == 128
+
+
+# --- correction #2: single capability authority (sidecar-first, registry fallback) ---
+
+def test_model_supports_reasoning_single_authority():
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+
+    model_id = "openai/gpt-5.3-chat"  # a real registry model
+    entry = openrouter._lookup_registry_model(model_id)
+    assert entry is not None
+    registry_verdict = entry.get("supports_reasoning") is True
+
+    # 1. UN-PROBED (empty sidecar) -> DEPRECATED registry fallback (non-regressing)
+    assert openrouter.model_supports_reasoning(model_id, capability_records={}) is registry_verdict
+
+    # 2. a PROBED record OVERRIDES the registry -- levels surface -> True
+    probed_true = {"model_id": model_id, "probed": True,
+                   "fingerprint": model_fingerprint(entry),
+                   "control_surface": "levels", "supports_reasoning": True}
+    assert openrouter.model_supports_reasoning(model_id, capability_records={model_id: probed_true}) is True
+
+    # 3. a PROBED "none" surface -> False, overriding the registry the other way
+    probed_none = {"model_id": model_id, "probed": True,
+                   "fingerprint": model_fingerprint(entry),
+                   "control_surface": "none", "supports_reasoning": False}
+    assert openrouter.model_supports_reasoning(model_id, capability_records={model_id: probed_none}) is False
+
+    # 4. STALE fingerprint -> not authoritative -> registry fallback again
+    stale = {**probed_true, "fingerprint": "STALE"}
+    assert openrouter.model_supports_reasoning(model_id, capability_records={model_id: stale}) is registry_verdict
+
+
+def test_model_supports_reasoning_runtime_path_uses_cached_sidecar():
+    # The runtime call (no explicit records) reads the checked-in sidecar (empty
+    # scaffold today), so it falls back to the registry -- proving the rewire is
+    # non-regressing until the probe populates the sidecar.
+    from backend import openrouter
+    openrouter.reset_reasoning_capability_cache()
+    model_id = "openai/gpt-5.3-chat"
+    entry = openrouter._lookup_registry_model(model_id)
+    assert openrouter.model_supports_reasoning(model_id) is (entry.get("supports_reasoning") is True)
+
+
+def test_resolve_model_reasoning_uses_probed_surface_and_pins_endpoint():
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+    model_id = FIELD_MODEL  # registry reasoning_extraction == "field" -> runtime CAN parse
+    entry = openrouter._lookup_registry_model(model_id)
+    fp = model_fingerprint(entry)
+
+    def rec(**kw):
+        base = {"model_id": model_id, "probed": True, "fingerprint": fp,
+                "provider_pinned": "google", "supports_reasoning": True}
+        base.update(kw)
+        return {model_id: base}
+
+    # each probed surface yields its correct shape AND pins the endpoint it was learned on
+    for surface_kw, expected in (
+        (dict(control_surface="levels", levels=["low", "medium", "high"]), {"effort": "high"}),
+        (dict(control_surface="onoff", native_default_on=False), {"enabled": True}),
+        (dict(control_surface="budget", budget={"min": 1000, "max": 10000}), {"max_tokens": 8000}),
+    ):
+        payload, pin = openrouter.resolve_model_reasoning(model_id, "high", capability_records=rec(**surface_kw))
+        assert payload == expected and pin == "google"
+    # none -> omit entirely; no shape sent -> no pin needed
+    payload, pin = openrouter.resolve_model_reasoning(
+        model_id, "high", capability_records=rec(control_surface="none", supports_reasoning=False))
+    assert payload is None and pin is None
+
+
+def test_resolve_model_reasoning_omits_shape_the_runtime_cannot_extract():
+    # The sidecar can flip a model to reasoning-supported, but if the runtime has no
+    # extraction mode for it (registry reasoning_extraction unset) it would burn
+    # reasoning tokens while dropping the text -> omit the shape instead.
+    from backend import openrouter
+    from backend.reasoning_capability import model_fingerprint
+    model_id = NON_REASONING_MODEL  # registry reasoning_extraction is unset
+    entry = openrouter._lookup_registry_model(model_id)
+    assert entry.get("reasoning_extraction") not in ("field", "tags")  # precondition
+    probed = {model_id: {"model_id": model_id, "probed": True, "fingerprint": model_fingerprint(entry),
+                         "provider_pinned": "openai", "supports_reasoning": True,
+                         "control_surface": "levels", "levels": ["low", "medium", "high"]}}
+    assert openrouter.resolve_model_reasoning(model_id, "high", capability_records=probed) == (None, None)
+
+
+def test_resolve_model_reasoning_unprobed_fallback_is_non_regressing():
+    from backend import openrouter
+    model_id = "openai/gpt-5.3-chat"
+    entry = openrouter._lookup_registry_model(model_id)
+    registry_supported = entry.get("supports_reasoning") is True
+    # un-probed + effort -> plain effort object iff registry supports it; NO pin (default routing)
+    payload, pin = openrouter.resolve_model_reasoning(model_id, "high", capability_records={})
+    assert payload == ({"effort": "high"} if registry_supported else None)
+    assert pin is None
+    # Auto (no effort) + un-probed -> no reasoning object at all
+    payload, pin = openrouter.resolve_model_reasoning(model_id, None, capability_records={})
+    assert payload is None and pin is None

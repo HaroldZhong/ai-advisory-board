@@ -994,3 +994,86 @@ def test_enhance_attachment_zdr_not_blocked_on_openrouter(monkeypatch):
     assert response.status_code == 404
     _restore(monkeypatch)
     importlib.reload(main)
+
+
+def _probed_levels_records(openrouter, model_id):
+    from backend.reasoning_capability import model_fingerprint
+    entry = openrouter._lookup_registry_model(model_id)
+    return {model_id: {
+        "model_id": model_id, "probed": True, "fingerprint": model_fingerprint(entry),
+        "provider_pinned": "openai", "supports_reasoning": True,
+        "control_surface": "levels", "levels": ["low", "medium", "high"],
+    }}
+
+
+def _capturing_client(captured):
+    class FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def post(self, *a, **k):
+            captured.append(dict(k["json"]))
+            return _FakeResponse()
+    return FakeAsyncClient
+
+
+@pytest.mark.asyncio
+async def test_probed_endpoint_pin_only_sent_on_openrouter(monkeypatch):
+    """The probed record's provider.order/allow_fallbacks pin is OpenRouter-only; an
+    openai-compatible relay rejects `provider`, so the pin must be skipped there while
+    the reasoning object itself is still sent (the existing 400-retry protects it)."""
+    model_id = "google/gemini-3.1-pro-preview"  # registry reasoning_extraction == "field" (parseable)
+
+    # OpenRouter default -> the pin IS sent
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
+    openrouter._reasoning_capabilities_cache = _probed_levels_records(openrouter, model_id)
+    captured_or = []
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", _capturing_client(captured_or))
+    await openrouter.query_model(model_id, [{"role": "user", "content": "hi"}], thinking_effort="high")
+    assert captured_or[0]["provider"] == {"order": ["openai"], "allow_fallbacks": False}
+    assert captured_or[0]["reasoning"] == {"effort": "high"}
+    _restore(monkeypatch)
+
+    # openai-compatible relay -> NO provider field, but reasoning still sent
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
+    openrouter._reasoning_capabilities_cache = _probed_levels_records(openrouter, model_id)
+    captured_oc = []
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", _capturing_client(captured_oc))
+    await openrouter.query_model(model_id, [{"role": "user", "content": "hi"}], thinking_effort="high")
+    assert "provider" not in captured_oc[0]
+    assert captured_oc[0]["reasoning"] == {"effort": "high"}
+    _restore(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_offrouter_ignores_probed_row_and_uses_registry_fallback(monkeypatch):
+    """Probe rows are OpenRouter-specific: off-OpenRouter a probed 'none' row must NOT
+    suppress reasoning for a model the registry supports -- the relay still gets the
+    registry fallback {"effort": ...}, not the OpenRouter-learned suppression."""
+    from backend.reasoning_capability import model_fingerprint
+    model_id = "google/gemini-3.1-pro-preview"  # registry supports_reasoning True
+
+    monkeypatch.setenv("LLM_PROVIDER_KIND", "openai-compatible")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    _config, openrouter, _client, _pdf = _reload_provider_modules(monkeypatch)
+    entry = openrouter._lookup_registry_model(model_id)
+    assert entry.get("supports_reasoning") is True  # precondition
+    # a probed 'none' row that WOULD suppress reasoning if wrongly applied off-OR
+    openrouter._reasoning_capabilities_cache = {model_id: {
+        "model_id": model_id, "probed": True, "fingerprint": model_fingerprint(entry),
+        "provider_pinned": "google", "supports_reasoning": False, "control_surface": "none"}}
+    captured = []
+    monkeypatch.setattr(openrouter.httpx, "AsyncClient", _capturing_client(captured))
+    await openrouter.query_model(model_id, [{"role": "user", "content": "hi"}], thinking_effort="high")
+    assert captured[0]["reasoning"] == {"effort": "high"}  # registry fallback, not suppressed
+    assert "provider" not in captured[0]
+    _restore(monkeypatch)
