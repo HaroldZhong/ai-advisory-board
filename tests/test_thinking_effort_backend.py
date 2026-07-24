@@ -223,11 +223,15 @@ async def test_council_stage_calls_pass_thinking_effort(monkeypatch):
     )
 
     assert [call["thinking_effort"] for call in parallel_calls] == ["low", "low"]
-    assert [call["thinking_effort"] for call in single_calls] == ["medium"]
+    # v1.3.0 B3: Stage-3 no longer floors effort to medium -- the requested "low"
+    # reaches the chairman unchanged (user owns their effort).
+    assert [call["thinking_effort"] for call in single_calls] == ["low"]
 
 
 @pytest.mark.asyncio
-async def test_stage3_caps_budget_chairman_thinking_effort_at_medium(monkeypatch):
+async def test_stage3_passes_requested_effort_uncapped_after_b3(monkeypatch):
+    # v1.3.0 B3: the Stage-3 per-model effort cap is retired. High effort now reaches
+    # EVERY chairman -- including the formerly-capped lightweight flash-lite -- unchanged.
     council = import_module_with_api_key(monkeypatch, "backend.council")
     captured = []
 
@@ -266,7 +270,7 @@ async def test_stage3_caps_budget_chairman_thinking_effort_at_medium(monkeypatch
     )
 
     assert captured == [
-        {"model": "google/gemini-2.5-flash-lite", "thinking_effort": "medium"},
+        {"model": "google/gemini-2.5-flash-lite", "thinking_effort": "high"},
         {"model": "anthropic/claude-opus-4.7", "thinking_effort": "high"},
     ]
 
