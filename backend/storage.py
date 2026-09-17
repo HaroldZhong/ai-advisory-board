@@ -138,6 +138,7 @@ def add_user_message(
     content: str,
     attachment_ids: Optional[List[str]] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     """
     Add a user message to a conversation.
@@ -159,6 +160,8 @@ def add_user_message(
             message["attachment_ids"] = attachment_ids
         if attachments:
             message["attachments"] = attachments
+        if metadata:
+            message["metadata"] = metadata
 
         conversation["messages"].append(message)
 

@@ -4,7 +4,7 @@ from typing import AsyncIterator, List, Dict, Any, Optional, Tuple
 from .openrouter import query_models_parallel, query_models_as_completed, query_model, reasoning_tokens_from_usage
 from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, UTILITY_MODEL
 from .logger import logger
-from .evidence import historical_citations
+from .evidence import CITATION, historical_citations
 from .tools.types import EvidencePack, UsageLimits
 from .tools.registry import ToolRegistry
 from .tools.router import ToolRouter
@@ -985,6 +985,10 @@ async def rewrite_query(
     from .config import ENABLE_QUERY_REWRITE
     
     if not ENABLE_QUERY_REWRITE:
+        return query
+
+    # Explicit current excerpt references already identify the subject.
+    if CITATION.search(query):
         return query
     
     # Heuristic: skip if query looks self-contained (>10 words)

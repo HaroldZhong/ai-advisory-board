@@ -82,3 +82,32 @@ test('failed send rollback does not mutate a newly active conversation', () => {
     activeConversation,
   );
 });
+
+
+test('an interrupted unsaved prompt restores persisted history without registering draft attachments', () => {
+  const scope = { conversationId: 'a', requestId: 'request-a', runId: 'run-a', reason: 'Stop requested' };
+  const user = { role: 'user', content: 'Unsaved edit', client_request_id: 'request-a', attachments: [{ attachment_id: 'new' }] };
+  const assistant = { role: 'assistant', content: 'Draft', client_request_id: 'request-a', loading: { chat: true } };
+  const optimistic = { id: 'a', messages: [user, assistant] };
+  const persisted = { id: 'a', messages: [{ role: 'user', content: 'Original', attachment_ids: ['old'] }] };
+  assert.deepEqual(reconcileInterruptedRun(optimistic, persisted, scope).messages, persisted.messages);
+  assert.deepEqual(reconcileInterruptedRun(optimistic, { id: 'a', messages: [] }, scope).messages, []);
+  // The separately retained answer still preserves its content when no prompt was saved.
+  const draft = reconcileInterruptedRun({ id: 'a', messages: [assistant] }, persisted, scope).messages[0];
+  assert.equal(draft.content, 'Draft');
+  assert.equal(draft.unconfirmed, true);
+  // A failed reconciliation read cannot establish what was persisted.
+  assert.equal(reconcileInterruptedRun(optimistic, null, scope).messages[0], user);
+  const newer = { id: 'a', messages: [...optimistic.messages, { role: 'user', client_request_id: 'newer' }] };
+  assert.equal(reconcileInterruptedRun(newer, persisted, scope), newer);
+});
+
+test('interruption keeps the user message actually saved for this run', () => {
+  const scope = { conversationId: 'a', requestId: 'request-a', runId: 'run-a', reason: 'Connection lost' };
+  const user = { role: 'user', content: 'Question', client_request_id: 'request-a', attachments: [{ attachment_id: 'new' }] };
+  const assistant = { role: 'assistant', content: 'Draft', client_request_id: 'request-a' };
+  const savedUser = { role: 'user', content: 'Question', attachment_ids: ['new'], metadata: { run_id: 'run-a' } };
+  const result = reconcileInterruptedRun({ id: 'a', messages: [user, assistant] }, { id: 'a', messages: [savedUser] }, scope);
+  assert.deepEqual(result.messages[0], { ...savedUser, client_request_id: 'request-a' });
+  assert.equal(result.messages[1].unconfirmed, true);
+});

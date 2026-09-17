@@ -101,6 +101,7 @@ export function useStreamingConversation({
     try {
       const userMessage = {
         role: 'user',
+        client_request_id: request.id,
         content,
         attachments: attachmentMetadata,
       };

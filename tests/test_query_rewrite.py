@@ -40,3 +40,15 @@ async def test_llm_failure_falls_back_to_original(monkeypatch):
     history = [{"role": "user", "content": "How does RAG work?"},
                {"role": "assistant", "content": "..."}]
     assert await council.rewrite_query("what about it?", history) == "what about it?"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('query', ['Explain [S1.1]', '比较[S1.1]和[S2.3]。'])
+async def test_explicit_current_citations_skip_rewrite(monkeypatch, query):
+    from unittest.mock import AsyncMock
+    rewrite = AsyncMock(return_value={'content': query})
+    monkeypatch.setattr(council, 'query_model', rewrite)
+    history = [{'role': 'user', 'content': 'Old topic'},
+               {'role': 'assistant', 'content': 'Different old excerpt [S1.1]'}]
+    assert await council.rewrite_query(query, history) == query
+    rewrite.assert_not_awaited()

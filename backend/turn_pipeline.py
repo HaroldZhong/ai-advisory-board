@@ -222,6 +222,7 @@ async def _run_turn(
             request.content,
             attachment_ids=request.attachment_ids,
             attachments=message_attachments,
+            metadata={"run_id": run_id},
         )
 
         sources = main.resolve_request_sources(current_conversation, request)

@@ -205,6 +205,7 @@ async def test_regeneration_applies_selection_after_prefix_validation(materials,
     assert [s['source_id'] for s in pack.material_snapshot['sources']] == expected
     assert [s['source_id'] for s in result['metadata']['evidence_snapshot']['sources']] == expected
     saved = storage.get_conversation('edit-scope')['messages']
+    assert saved[-2]['metadata']['run_id'] == result['metadata']['run_id']
     assert len(saved) == 4
     assert saved[-1]['metadata']['evidence_snapshot'] == result['metadata']['evidence_snapshot']
 
