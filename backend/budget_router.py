@@ -143,8 +143,6 @@ def estimate_message_cost(mode: str, rag_tokens: int, chairman_model: str = None
     
     This is intentionally conservative (overestimates).
     """
-    from .config import CURATED_MODELS
-    
     # Base token estimates by mode
     mode_estimates = {
         "quick": {"input": 2000, "output": 500},
@@ -156,19 +154,7 @@ def estimate_message_cost(mode: str, rag_tokens: int, chairman_model: str = None
     total_input = estimate["input"] + rag_tokens
     total_output = estimate["output"]
     
-    # Get pricing for chairman model
-    input_price = 1.0  # Default $/M
-    output_price = 5.0
-    
-    if chairman_model:
-        model_config = next((m for m in CURATED_MODELS if m["id"] == chairman_model), None)
-        if model_config:
-            pricing = model_config.get("pricing", {})
-            input_price = pricing.get("input", 1.0)
-            output_price = pricing.get("output", 5.0)
-    
-    cost = (total_input / 1_000_000) * input_price + (total_output / 1_000_000) * output_price
-    return round(cost, 6)
+    return round(_model_call_cost(chairman_model, total_input, total_output), 6)
 
 
 # v1.3.0 D3 (§5.1): rough per-call token estimates for a pre-send TURN estimate.
@@ -199,13 +185,15 @@ _REASONING_OUTPUT_TOKENS = {
 
 
 def _model_call_cost(model_id: Optional[str], input_tokens: int, output_tokens: int) -> float:
-    """USD cost of one model call at CURATED_MODELS pricing (fallback $1/$5 per M tokens)."""
-    from .config import CURATED_MODELS
+    """Provider or curated estimate; unknown rates retain the $1/$5 heuristic."""
+    from .openrouter_client import get_model_metadata
 
-    model = next((m for m in CURATED_MODELS if m.get("id") == model_id), None)
+    model = get_model_metadata(model_id)
     pricing = (model or {}).get("pricing", {})
-    input_price = pricing.get("input", 1.0)
-    output_price = pricing.get("output", 5.0)
+    input_price = pricing.get("input")
+    output_price = pricing.get("output")
+    if input_price is None: input_price = 1.0
+    if output_price is None: output_price = 5.0
     return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
 
 

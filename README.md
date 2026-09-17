@@ -1,6 +1,6 @@
 # AI Advisory Board
 
-A desktop AI assistant powered by a **multi-LLM deliberative council** — multiple AI models debate, rank, and synthesize answers to deliver higher-quality responses than any single model alone. Features **reasoning-based persistent memory**, **web search**, **document processing**, and **custom personas**.
+A desktop AI assistant with a **multi-LLM deliberative council**. Models independently answer, rank responses, and synthesize their perspectives. Compare results against single-model Chat to assess quality, latency, and cost for your task. Features **reasoning-based persistent memory**, **web search**, **document processing**, and **custom personas**.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -12,7 +12,7 @@ A desktop AI assistant powered by a **multi-LLM deliberative council** — multi
 
 ### Council Process (3-Stage Deliberation)
 
-- **Stage 1 — Collect**: 5+ LLMs independently answer your question
+- **Stage 1 — Collect**: The configured council models independently answer your question
 - **Stage 2 — Rank**: Models anonymously evaluate and rank all responses
 - **Stage 3 — Synthesize**: Chairman model creates a final answer based on rankings and deliberation, with a confidence score (HIGH/MEDIUM/LOW)
 
@@ -42,8 +42,12 @@ A desktop AI assistant powered by a **multi-LLM deliberative council** — multi
 - **Chat Export**: Export conversations to Markdown
 - **Session Budgets**: Set spending limits ($1/$2/$5/unlimited) with graceful degradation
 - **Cost Tracking**: Real-time per-conversation and per-model cost analytics
-- **40+ Models**: Curated registry from OpenAI, Anthropic, Google, xAI, DeepSeek, Mistral, and more
+- **Provider Model Discovery**: Refresh the configured provider's model catalog, search by name or ID, and explicitly replace unavailable selections
 - **Folder Organization**: Group conversations into color-coded folders
+
+### Research Workspace
+
+Keep conversation files in the desktop **Materials** sidebar, choose the next answer's sources, and inspect saved citations in **Answer sources**. Call **Ask the council** within the same conversation, stop a run, and distinguish generated text, saved answers, and memory indexing.
 
 ---
 
@@ -152,8 +156,8 @@ Display to user
 
 | Mode | When | What Happens |
 |------|------|--------------|
-| **Council** | First message | Full 3-stage deliberation with all council models |
-| **Chat** | Follow-ups | Quick response from Chairman with RAG context |
+| **Chat** | Chat-mode conversations and ordinary follow-ups | One selected model answers with the permitted materials and memory context |
+| **Council** | First turn of a Council-mode conversation, or **Ask the council** | Full 3-stage deliberation in the same conversation; subsequent ordinary turns return to Chat |
 
 ---
 
@@ -190,10 +194,10 @@ defaults:
 
 Users change models via the in-app Model Selector rather than editing
 `config.py` — pick one of the built-in presets (Balanced, Research, Budget,
-Private) or override the chairman/council picks directly. The curated
-registry (`CURATED_MODELS`, also sourced from `model_registry.json`) lists
-40+ models across providers. On an OpenAI-compatible provider (not
-OpenRouter), a free-text custom model id is also accepted — see
+Private) or override the chairman/council picks directly. The configured provider's
+`/models` catalog supplies available IDs and metadata; the curated registry adds
+recommended roles and presets. Refreshing never silently replaces a saved selection.
+On an OpenAI-compatible provider, a free-text custom model id is also accepted; see
 `docs/installation.md` → "Using another OpenAI-compatible provider".
 
 ### In-App Settings

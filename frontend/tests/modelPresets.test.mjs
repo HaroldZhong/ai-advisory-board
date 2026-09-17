@@ -183,3 +183,17 @@ test('isSelectableModelId rejects empty/whitespace ids regardless of provider ki
   assert.equal(isSelectableModelId('   ', models, 'openai-compatible'), false);
   assert.equal(isSelectableModelId(undefined, models, 'openai-compatible'), false);
 });
+
+test('catalog unknown prices never render as free; explicit zero is valid', () => {
+  assert.equal(estimateSelectionCost({ chairman: { pricing: { input: null, output: 0 } } }), null);
+  assert.equal(estimateSelectionCost({ chairman: { pricing: {} } }), null);
+  assert.equal(estimateSelectionCost({ chairman: { pricing: { input: 0, output: 0 } } }), 0);
+});
+
+test('removed and non-text catalog entries cannot be newly selected', () => {
+  const entries = [{ id: 'removed', type: 'both', available: false }, { id: 'image', type: 'other' }];
+  assert.equal(isSelectableModelId('removed', entries, 'openai-compatible'), false);
+  assert.equal(isSelectableModelId('image', entries, 'openrouter'), false);
+  assert.deepEqual(filterModelsForRole(entries, 'chairman', false), []);
+  assert.equal(canStartPresetWithZdr({ chairman_model: 'removed', council_models: [] }, entries, false), false);
+});

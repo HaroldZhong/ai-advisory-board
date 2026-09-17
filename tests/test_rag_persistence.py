@@ -3897,3 +3897,26 @@ async def test_chat_turn_skips_running_cost_patch_when_its_own_message_was_repla
     # The replacement value from inside the fake survives untouched.
     assert conversation["messages"][-1]["running_cost"] == pytest.approx(999.0)
     assert any("update_message_running_cost" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['chat', 'council'])
+@pytest.mark.parametrize('condition,expected', [('normal', 'indexed'), ('disabled', 'skipped'), ('zdr', 'skipped'), ('disk', 'failed')])
+async def test_index_outcome_reports_actual_persistence(tmp_path, monkeypatch, mode, condition, expected):
+    monkeypatch.setattr(storage, 'DATA_DIR', str(tmp_path / 'conversations'))
+    monkeypatch.setattr(rag_module, 'get_conversation', storage.get_conversation)
+    storage.create_conversation('outcome', {'zdr_enabled': condition == 'zdr'})
+    rag = CouncilRAG(persist_path=str(tmp_path / 'index'))
+    if condition == 'disabled':
+        rag.enabled = False
+    elif condition == 'disk':
+        def fail(*args, **kwargs):
+            raise OSError('full')
+        monkeypatch.setattr(rag_module, 'write_text_atomic', fail)
+    outcome = {}
+    if mode == 'chat':
+        await rag.index_chat_turn('outcome', 'q', 'answer', ['topic'], index_outcome=outcome)
+    else:
+        await rag.index_session('outcome', 'q', [], [], {'response': 'answer'}, ['topic'], {}, index_outcome=outcome)
+    assert outcome == {'state': expected}
+    assert (tmp_path / 'index' / 'pageindex_memory.json').exists() == (expected == 'indexed')

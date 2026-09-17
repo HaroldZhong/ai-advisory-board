@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, BrainCircuit, Check, DollarSign, FileText, Globe, Settings, Shield, ShieldOff, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { getTrustRowCostTileClass, getTrustRowGridClass } from '@/utils/responsiveChatLayout';
 import { formatTrustRowState, getEffectiveBudgetWarning } from '@/utils/trustState';
@@ -33,21 +34,21 @@ function TrustTile({
       type={onClick ? 'button' : undefined}
       onClick={disabled ? undefined : onClick}
       disabled={onClick ? disabled : undefined}
-      title={title}
+      title={title ? `${title}. ${detail}` : detail}
       aria-label={title || `${label}: ${detail}`}
       className={cn(
-        'min-h-[52px] rounded-md border px-3 py-2 text-left transition-colors',
+        'relative flex h-8 min-w-0 max-w-[190px] items-center overflow-hidden rounded-md border px-2 text-left transition-colors',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         toneClasses[tone] || toneClasses.neutral,
         onClick && !disabled && 'hover:border-primary/50 hover:bg-muted/60',
         disabled && 'cursor-not-allowed opacity-70',
       )}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <Icon className="h-4 w-4 shrink-0" />
         <div className="min-w-0">
           <div className="truncate text-xs font-semibold">{label}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{detail}</div>
+          <div className={children ? 'text-[10px] leading-3 text-muted-foreground' : 'sr-only'}>{detail}</div>
         </div>
       </div>
       {children}
@@ -60,7 +61,9 @@ function BudgetProgress({ spentPct, tone }) {
   const width = `${Math.min(Math.max(spentPct, 0), 1) * 100}%`;
 
   return (
-    <div className="mt-2 h-1.5 rounded-full bg-background/80">
+    <div role="progressbar" aria-label="Session budget used" aria-valuemin={0} aria-valuemax={100}
+      aria-valuenow={Math.round(Math.min(Math.max(spentPct, 0), 1) * 100)} aria-valuetext={`${Math.round(spentPct * 100)}% used`}
+      className="absolute inset-x-0 bottom-0 h-0.5 bg-background/80">
       <div
         className={cn(
           'h-full rounded-full',
@@ -124,7 +127,7 @@ export default function TrustRow({
       <div className={getTrustRowGridClass()}>
         <TrustTile
           icon={Users}
-          label={state.council.label}
+          label={state.council.label === 'Chat' ? state.council.detail.split('/').pop() : state.council.label}
           detail={state.council.detail}
           title={`${state.council.label}: ${state.council.detail}`}
         />
@@ -147,7 +150,7 @@ export default function TrustRow({
 
         <TrustTile
           icon={DollarSign}
-          label={state.budget.label}
+          label={state.budget.budgetUsd == null ? `${state.cost.value} · No limit` : state.budget.label}
           detail={state.budget.detail}
           onClick={onOpenBudget}
           tone={state.budget.tone}
@@ -156,20 +159,16 @@ export default function TrustRow({
           <BudgetProgress spentPct={state.budget.spentPct} tone={state.budget.tone} />
         </TrustTile>
 
-        <div className="relative">
-          <TrustTile
-            icon={BrainCircuit}
-            label="Thinking"
-            detail={`${state.thinking.label} · ${state.thinking.detail}`}
-            onClick={() => setIsThinkingMenuOpen((current) => !current)}
-            disabled={!thinkingCanUpdate}
-            tone={state.thinking.tone}
-            title={thinkingDisabled
-              ? thinkingDisabledReason || 'Thinking effort changes are temporarily disabled'
-              : 'Change thinking effort for this conversation'}
-          />
-          {isThinkingMenuOpen && thinkingCanUpdate && (
-            <div className="absolute bottom-full left-0 z-20 mb-2 w-[min(92vw,360px)] min-w-[280px] rounded-md border bg-popover p-2 text-popover-foreground shadow-lg">
+        <Popover open={isThinkingMenuOpen && thinkingCanUpdate} onOpenChange={setIsThinkingMenuOpen}>
+          <PopoverTrigger asChild>
+            <button type="button" disabled={!thinkingCanUpdate}
+              aria-label={`Thinking: ${state.thinking.label}`}
+              title={thinkingDisabled ? thinkingDisabledReason : state.thinking.detail}
+              className={cn('flex h-8 items-center gap-2 rounded-md border px-2 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-70', toneClasses[state.thinking.tone] || toneClasses.neutral)}>
+              <BrainCircuit className="h-4 w-4" />{state.thinking.label}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent side="top" align="start" className="w-[340px] p-2">
               <div className="px-2 pb-2">
                 <div className="text-xs font-semibold">Thinking effort</div>
                 <div className="text-[11px] text-muted-foreground">
@@ -203,13 +202,12 @@ export default function TrustRow({
                   );
                 })}
               </div>
-            </div>
-          )}
-        </div>
+          </PopoverContent>
+        </Popover>
 
         <div
           className={cn(
-            'min-h-[52px] rounded-md border px-3 py-2 transition-colors',
+            'flex h-8 items-center gap-1 rounded-md border px-2 transition-colors',
             toneClasses[state.tools.webEnabled ? 'caution' : 'neutral'],
           )}
         >
@@ -227,13 +225,13 @@ export default function TrustRow({
             )}
             <div className="min-w-0">
               <div className="truncate text-xs font-semibold">{state.tools.label}</div>
-              <div className="truncate text-[11px] text-muted-foreground">{state.tools.detail}</div>
+              <div className="sr-only">{state.tools.detail}</div>
             </div>
           </button>
           {state.tools.webEnabled && (
             <button
               type="button"
-              className="mt-1 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground hover:bg-background/80 hover:text-foreground"
+              className="rounded px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted-foreground hover:bg-background/80 hover:text-foreground"
               onClick={onToggleWebDepth}
               title={`Currently ${state.tools.webDepth}. Click to toggle depth.`}
             >
@@ -243,30 +241,17 @@ export default function TrustRow({
         </div>
 
         <div className={getTrustRowCostTileClass()}>
-          <div className="text-[11px] text-muted-foreground">{state.cost.label}</div>
-          <div className="font-mono text-sm font-semibold">{state.cost.value}</div>
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 lg:hidden"
+            className="h-7 w-7"
             onClick={onOpenAdvancedSettings}
             title="Advanced settings"
+            aria-label="Advanced settings"
           >
             <Settings className="h-3.5 w-3.5" />
           </Button>
         </div>
-      </div>
-
-      <div className="hidden justify-end lg:flex">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={onOpenAdvancedSettings}
-        >
-          <Settings className="mr-1 h-3.5 w-3.5" />
-          Advanced
-        </Button>
       </div>
 
       {warning && (

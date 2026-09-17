@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Check, Lock, Plus, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Check, Lock, Plus, RefreshCw, SlidersHorizontal, Sparkles, Users, X } from 'lucide-react';
 
 import { api } from '../api';
 import { Button } from '@/components/ui/button';
@@ -99,12 +99,18 @@ export default function ModelSelector({
   defaultBudgetUsd = null,
   zdrAvailable = true,
   providerKind = 'openrouter',
+  configureCouncil = false,
+  initialZdrEnabled = false,
 }) {
   const { settings } = useSettings();
   const [models, setModels] = useState([]);
   const [presets, setPresets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [catalog, setCatalog] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const refreshCatalog = useRef(() => {});
   // Pre-populate from the last saved selection (P3-T8 item 1). The lazy
   // initializer only runs on first mount; the isOpen effect below re-reads
   // it on every reopen too, since this dialog stays mounted and toggles via
@@ -128,20 +134,34 @@ export default function ModelSelector({
 
     setLoading(true);
     setError(null);
+    setSearch('');
+    let active = true;
+    let inFlight = false;
+    let initialized = false;
     const saved = readModelSelectorSelection();
-    setConversationMode(saved.conversationMode);
+    setConversationMode(configureCouncil ? 'council' : saved.conversationMode);
     setCustomRole('council');
     setActiveProvider('all');
-    setZdrEnabled(resolveInitialZdrPreference(settings));
+    setZdrEnabled(configureCouncil ? initialZdrEnabled : resolveInitialZdrPreference(settings));
     setCustomChairmanInput('');
     setCustomCouncilInput('');
 
-    api.getModels()
+    const loadCatalog = (refresh = false) => {
+      if (inFlight) return;
+      inFlight = true;
+      setRefreshing(true);
+      return api.getModels({ refresh })
       .then((data) => {
+        if (!active) return;
         const loadedModels = data.models || [];
         const loadedPresets = data.presets || [];
         setModels(loadedModels);
         setPresets(loadedPresets);
+        setCatalog(data.catalog || null);
+        setError(null);
+        // The first successful load may be a retry. Later refreshes keep choices.
+        if (initialized) return;
+        initialized = true;
 
         const defaultPreset = loadedPresets.find((preset) => preset.id === saved.selectedPresetId)
           || loadedPresets.find((preset) => preset.id === 'balanced')
@@ -150,10 +170,9 @@ export default function ModelSelector({
         setSelectedPresetId(initialPresetId);
 
         const presetSelection = resolvePresetModels(defaultPreset, loadedModels, false);
-        const savedCouncilStillValid = saved.selectedCouncil.length > 0
-          && saved.selectedCouncil.every((id) => isSelectableModelId(id, loadedModels, providerKind));
-        const savedChairmanStillValid = saved.selectedChairman
-          && isSelectableModelId(saved.selectedChairman, loadedModels, providerKind);
+        // Preserve user choices when a provider removes a model; require an explicit replacement.
+        const savedCouncilStillValid = saved.selectedCouncil.length > 0;
+        const savedChairmanStillValid = Boolean(saved.selectedChairman);
 
         setSelectedChairman(
           initialChairman
@@ -169,12 +188,9 @@ export default function ModelSelector({
               ? saved.selectedCouncil
               : presetSelection.council.map((model) => model.id),
         );
-        // Only actually land on the Custom tab if its saved ids still
-        // resolve to real models — an initialCouncil/initialChairman prop
-        // from the caller means "start on custom" too, otherwise a stale
-        // custom selection falls back to Presets rather than showing empty.
+        // Keep saved custom choices visible, including models needing replacement.
         setActiveTab(
-          initialCouncil.length > 0 || initialChairman
+          configureCouncil || initialCouncil.length > 0 || initialChairman
             ? 'custom'
             : saved.activeTab === 'custom' && (savedCouncilStillValid || savedChairmanStillValid)
               ? 'custom'
@@ -182,11 +198,23 @@ export default function ModelSelector({
         );
       })
       .catch((err) => {
-        setError('Failed to load models');
+        if (!active) return;
+        if (!initialized) setError('Failed to load models');
+        else setCatalog((previous) => ({ ...previous, stale: true, error: 'Refresh failed. Keeping the previous catalog.' }));
         console.error(err);
       })
-      .finally(() => setLoading(false));
-  }, [isOpen, initialChairman, initialCouncil, providerKind, settings.defaultZdrEnabled, settings.zdrEnabled]);
+      .finally(() => {
+        inFlight = false;
+        if (active) { setLoading(false); setRefreshing(false); }
+      });
+    };
+    refreshCatalog.current = () => loadCatalog(true);
+    loadCatalog();
+    const checkCatalog = () => { if (!document.hidden) loadCatalog(); };
+    const timer = window.setInterval(checkCatalog, 60_000);
+    window.addEventListener('focus', checkCatalog);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', checkCatalog); };
+  }, [isOpen, initialChairman, initialCouncil, providerKind, configureCouncil, initialZdrEnabled, settings.defaultZdrEnabled, settings.zdrEnabled]);
 
   const byId = useMemo(() => modelById(models), [models]);
   const selectedPreset = useMemo(
@@ -208,8 +236,8 @@ export default function ModelSelector({
   // Custom model ids (openai-compatible only) aren't in the registry at all,
   // so byId.get() misses — build a minimal display stub instead of losing
   // the selection. Pricing/type are unknown for these; cost estimate and
-  // ZDR badge naturally show as 0/absent, which is the honest answer.
-  const toDisplayModel = (id) => byId.get(id) || (id ? { id, name: id, pricing: {} } : null);
+  // ZDR badge stay unknown/absent until the provider reports them.
+  const toDisplayModel = (id) => byId.get(id) || (id ? { id, name: id, pricing: {}, available: showCustomModelInput ? undefined : false } : null);
   const customChairman = toDisplayModel(selectedChairman);
   const customCouncil = selectedCouncil.map(toDisplayModel).filter(Boolean);
   const activeChairman = conversationMode === 'chat'
@@ -221,11 +249,12 @@ export default function ModelSelector({
   const selectedPresetAvailable = activeTab !== 'presets'
     || (canStartPresetWithProvider(selectedPreset, zdrAvailable)
       && canStartPresetWithZdr(selectedPreset, models, effectivePresetZdr));
-  const zdrToggleLocked = conversationMode === 'council' && activeTab === 'presets' && selectedPreset?.requires_zdr;
+  const zdrToggleLocked = configureCouncil || (conversationMode === 'council' && activeTab === 'presets' && selectedPreset?.requires_zdr);
   const estimatedCost = estimateSelectionCost({ chairman: activeChairman, council: activeCouncil });
   const roleModels = useMemo(
-    () => filterModelsForRole(models, conversationMode === 'chat' ? 'chairman' : customRole, effectiveZdrEnabled),
-    [models, conversationMode, customRole, effectiveZdrEnabled],
+    () => filterModelsForRole(models, conversationMode === 'chat' ? 'chairman' : customRole, effectiveZdrEnabled)
+      .filter((model) => `${model.name} ${model.id}`.toLowerCase().includes(search.trim().toLowerCase())),
+    [models, conversationMode, customRole, effectiveZdrEnabled, search],
   );
   const groupedModels = useMemo(() => groupModelsByProvider(roleModels), [roleModels]);
   const providers = useMemo(() => ['all', ...groupedModels.map(([provider]) => provider)], [groupedModels]);
@@ -235,17 +264,10 @@ export default function ModelSelector({
       : groupedModels.filter(([provider]) => provider === activeProvider)
   ), [activeProvider, groupedModels]);
 
-  useEffect(() => {
-    const editingCustomSelection = conversationMode === 'chat' || activeTab === 'custom';
-    if (!effectiveZdrEnabled || models.length === 0 || !editingCustomSelection) return;
-    const compatibleIds = new Set(models.filter((model) => model.supports_zdr).map((model) => model.id));
-    setSelectedCouncil((prev) => prev.filter((id) => compatibleIds.has(id)));
-    setSelectedChairman((prev) => {
-      if (!prev || compatibleIds.has(prev)) return prev;
-      const fallback = models.find((model) => model.supports_zdr && ['chairman', 'both'].includes(model.type));
-      return fallback?.id || '';
-    });
-  }, [activeTab, conversationMode, models, effectiveZdrEnabled]);
+  const selectionUsable = [activeChairman, ...activeCouncil].every((model) => (
+    model && isSelectableModelId(model.id, models, providerKind)
+    && (!effectivePresetZdr || model.supports_zdr === true)
+  ));
 
   const applyPresetToCustom = (preset) => {
     const resolved = resolvePresetModels(preset, models, effectiveZdrEnabled || preset.requires_zdr);
@@ -280,6 +302,11 @@ export default function ModelSelector({
 
   const handleConfirm = () => {
     if (!canConfirm) return;
+    if (configureCouncil) {
+      onConfirm({ councilMembers: activeCouncil.map((model) => model.id), chairmanModel: activeChairman.id });
+      onClose();
+      return;
+    }
 
     // Remember this selection for next time (P3-T8 item 1) — no API key or
     // other sensitive value is ever part of this record, see
@@ -316,7 +343,7 @@ export default function ModelSelector({
     onClose();
   };
 
-  const canConfirm = conversationMode === 'chat'
+  const canConfirm = selectionUsable && (conversationMode === 'chat'
     ? Boolean(customChairman) && !loading && !error
     : canConfirmModelSelection({
       chairman: activeChairman,
@@ -325,7 +352,7 @@ export default function ModelSelector({
       loading,
       error,
       minCouncilSize: MIN_COUNCIL_SIZE,
-    });
+    }));
 
   const renderPresetCard = (preset) => {
     const presetZdr = getEffectivePresetZdr(preset, effectiveZdrEnabled);
@@ -337,7 +364,7 @@ export default function ModelSelector({
     const disabledReason = !availableForProvider
       ? 'Requires OpenRouter'
       : !availableForZdr
-        ? 'Contains models that do not support ZDR'
+        ? 'A model is unavailable or does not support ZDR'
         : null;
 
     return (
@@ -430,6 +457,9 @@ export default function ModelSelector({
           isSelected ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'hover:border-primary/50',
           isDisabled && 'cursor-not-allowed opacity-50',
         )}
+        onKeyDown={(event) => {
+          if (!isDisabled && ['Enter', ' '].includes(event.key)) { event.preventDefault(); event.currentTarget.click(); }
+        }}
         onClick={() => {
           if (isDisabled) return;
           if (isChairman) setSelectedChairman(model.id);
@@ -438,9 +468,13 @@ export default function ModelSelector({
       >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{getShortName(model.name)}</div>
+            <div className="truncate text-sm font-medium" title={model.name}>{getShortName(model.name)}</div>
+            <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={model.id}>{model.id}</div>
             <div className="mt-1 text-xs text-muted-foreground">
-              ${model.pricing.input}/M in / ${model.pricing.output}/M out
+              {estimateSelectionCost({ chairman: model, council: [] }) == null
+                ? 'Price not reported'
+                : `$${model.pricing.input}/M in / $${model.pricing.output}/M out`}
+              {model.pricing_source === 'curated' && ' · fallback estimate'}
             </div>
           </div>
           <div className={cn(
@@ -453,6 +487,9 @@ export default function ModelSelector({
         </div>
         <div className="mt-3 flex flex-wrap gap-1">
           {model.supports_zdr && <StatPill tone="green">ZDR</StatPill>}
+          {model.context_length > 0 && <StatPill>{Math.round(model.context_length / 1000)}k context</StatPill>}
+          {model.supported_parameters?.includes('tools') && <StatPill>Tools</StatPill>}
+          {model.architecture?.input_modalities?.includes('image') && <StatPill>Image input</StatPill>}
           {(model.capabilities || []).slice(0, 3).map((capability) => (
             <StatPill key={capability}>{capability}</StatPill>
           ))}
@@ -462,7 +499,7 @@ export default function ModelSelector({
   };
 
   // Free-text custom model entry, openai-compatible providers only (PR2):
-  // no live catalog, no capability editing — just an id the provider might
+  // discovery may be unsupported; allow explicit IDs, no capability editing — just an id the provider might
   // serve. `forRole` picks chairman (single, replaces) vs council (list, add/remove).
   const renderCustomModelInput = (forRole) => (
     <div className="space-y-2 rounded border p-3">
@@ -494,23 +531,6 @@ export default function ModelSelector({
       <p className="text-xs text-muted-foreground">
         Custom models: capabilities unknown — reasoning display and pricing unavailable.
       </p>
-      {forRole === 'council' && selectedCouncil.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pt-1">
-          {selectedCouncil.map((id) => (
-            <span key={id} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs">
-              <span className="max-w-[16rem] truncate">{byId.get(id)?.name || id}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${id}`}
-                className="text-muted-foreground hover:text-foreground"
-                onClick={() => setSelectedCouncil((prev) => prev.filter((existing) => existing !== id))}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
     </div>
   );
 
@@ -522,10 +542,10 @@ export default function ModelSelector({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <DialogTitle className="flex items-center gap-2">
                 <Sparkles className="h-5 w-5 text-primary" />
-                New conversation
+                {configureCouncil ? 'Configure council' : 'New conversation'}
               </DialogTitle>
               <DialogDescription className="sr-only">
-                Choose a preset or customize the chairman, council members, routing privacy, and estimated cost for a new conversation.
+                {configureCouncil ? 'Choose the chairman and members for Council runs in this conversation. Existing privacy settings stay in effect.' : 'Choose a preset or customize the chairman, council members, routing privacy, and estimated cost for a new conversation.'}
               </DialogDescription>
               {zdrAvailable && (
                 <Tooltip>
@@ -562,6 +582,7 @@ export default function ModelSelector({
                 size="sm"
                 variant={conversationMode === 'chat' ? 'default' : 'outline'}
                 aria-pressed={conversationMode === 'chat'}
+                disabled={configureCouncil}
                 onClick={() => setConversationMode('chat')}
               >
                 Chat
@@ -586,6 +607,7 @@ export default function ModelSelector({
                   type="button"
                   size="sm"
                   variant={activeTab === 'presets' ? 'default' : 'outline'}
+                  disabled={configureCouncil}
                   onClick={() => setActiveTab('presets')}
                 >
                   Presets
@@ -602,6 +624,22 @@ export default function ModelSelector({
             </div>
           )}
 
+          <div className="shrink-0 space-y-2 border-b px-6 py-3">
+            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+              <span role="status">{catalog?.error || (catalog?.last_fetched
+                ? `${models.length} models · ${catalog.stale ? 'Cached' : 'Updated'} ${new Date(catalog.last_fetched * 1000).toLocaleTimeString()}`
+                : 'Recommended models · provider catalog not loaded')}</span>
+              <Button type="button" variant="ghost" size="sm" disabled={refreshing} aria-busy={refreshing} onClick={() => refreshCatalog.current()}>
+                <RefreshCw className={cn('mr-2 h-3.5 w-3.5', refreshing && 'animate-spin')} />Refresh models
+              </Button>
+            </div>
+            {catalog?.refresh_cooldown_seconds && <p className="text-xs text-muted-foreground">
+              Provider checks run at most once every {catalog.refresh_cooldown_seconds} seconds.
+              {catalog.next_refresh_at && ` Next check available after ${new Date(catalog.next_refresh_at * 1000).toLocaleTimeString()}.`}
+            </p>}
+            {(conversationMode === 'chat' || activeTab === 'custom') && <Input aria-label="Search models" placeholder="Search models by name or ID…" value={search} onChange={(event) => setSearch(event.target.value)} />}
+            {!loading && !selectionUsable && <p className="text-xs text-amber-700 dark:text-amber-300">A selected model is unavailable or incompatible with this privacy setting. Choose a replacement.</p>}
+          </div>
           <div className={getResponsiveModalBodyClass()}>
             <ScrollArea className="h-full px-4 py-4 sm:px-6">
               {loading ? (
@@ -693,6 +731,32 @@ export default function ModelSelector({
 
                   {showCustomModelInput && renderCustomModelInput(customRole)}
 
+                  <div role="group" aria-label="Selected council models" className="space-y-3 rounded-md border p-3">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="text-muted-foreground">Chairman</span>
+                      <ModelChip model={customChairman} />
+                      <Button type="button" variant="ghost" size="sm" onClick={() => {
+                        setCustomRole('chairman');
+                        setActiveProvider('all');
+                        setSearch('');
+                      }}>Change chairman</Button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedCouncil.map((id) => (
+                        <span key={id} className="inline-flex min-w-0 items-center gap-1 rounded border pl-2 text-xs" title={id}>
+                          <span className="max-w-[16rem] truncate">{byId.get(id)?.name || id}</span>
+                          {(!isSelectableModelId(id, models, providerKind) || (effectiveZdrEnabled && !byId.get(id)?.supports_zdr)) && (
+                            <span className="text-amber-700 dark:text-amber-300">Needs replacement</span>
+                          )}
+                          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`Remove ${id}`}
+                            onClick={() => setSelectedCouncil((prev) => prev.filter((existing) => existing !== id))}>
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {providers.map((provider) => {
                       const count = provider === 'all'
@@ -752,7 +816,7 @@ export default function ModelSelector({
               <div className="flex gap-2">
                 <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
                 <Button type="button" onClick={handleConfirm} disabled={!canConfirm}>
-                  Start conversation
+                  {configureCouncil ? 'Use these models' : 'Start conversation'}
                 </Button>
               </div>
             </div>

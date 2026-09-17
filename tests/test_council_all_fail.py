@@ -10,6 +10,27 @@ from backend.tools.types import EvidencePack, UsageLimits
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("registered", [None, "unavailable", "web.search"])
+async def test_empty_usable_registry_never_sends_steward_request(monkeypatch, registered):
+    from backend.tools.types import ToolDefinition
+    definitions = {} if registered is None else {
+        registered: ToolDefinition(name=registered, description="Test", args_schema={}),
+    }
+    monkeypatch.setattr(council.ToolRegistry, "_tools", definitions)
+    # A definition without an implementation is not a usable tool.
+    monkeypatch.setattr(council.ToolRegistry, "_implementations", {"unavailable": lambda: None})
+
+    async def unexpected_request(*args, **kwargs):
+        pytest.fail("Empty usable tool set must not send a paid model request")
+
+    monkeypatch.setattr(council, "query_model", unexpected_request)
+    pack, usage = await council.run_tool_steward_phase("hello", "empty-tools")
+    assert pack.run_id == "empty-tools"
+    assert pack.tools_used == []
+    assert usage == {}
+
+
+@pytest.mark.asyncio
 async def test_run_full_council_all_models_fail_returns_five_tuple(monkeypatch):
     async def all_fail_parallel(models, messages, **kwargs):
         return {m: None for m in models}

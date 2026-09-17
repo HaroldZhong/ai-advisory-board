@@ -185,10 +185,10 @@ async def query_model(
 
 
 def _lookup_registry_model(model: str) -> Optional[Dict[str, Any]]:
-    """Look up a model's curated registry entry by id, or None if not found."""
-    from .config import CURATED_MODELS
+    """Shared provider metadata plus curated/probed compatibility policy."""
+    from .openrouter_client import get_model_metadata
 
-    return next((candidate for candidate in CURATED_MODELS if candidate["id"] == model), None)
+    return get_model_metadata(model)
 
 
 _reasoning_capabilities_cache = None

@@ -236,6 +236,7 @@ def add_chat_message(
     content: str,
     running_cost: float = None,
     reasoning: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ):
     """
     Add a simple chat message (from assistant) to a conversation.
@@ -258,10 +259,26 @@ def add_chat_message(
             message["running_cost"] = running_cost
         if reasoning:
             message["reasoning"] = reasoning
+        if metadata is not None:
+            message["metadata"] = metadata
 
         conversation["messages"].append(message)
 
         save_conversation(conversation)
+
+
+def update_turn_metadata(conversation_id: str, run_id: str, updates: Dict[str, Any]) -> bool:
+    """Update only the still-present run; a late tail cannot patch a replacement."""
+    with ConversationLock.get_lock(conversation_id):
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            return False
+        for message in conversation.get("messages", []):
+            if message.get("role") == "assistant" and (message.get("metadata") or {}).get("run_id") == run_id:
+                message["metadata"].update(updates)
+                save_conversation(conversation)
+                return True
+        return False
 
 
 def update_conversation_title(conversation_id: str, title: str):

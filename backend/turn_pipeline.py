@@ -11,9 +11,13 @@ main module keep working.
 """
 import asyncio
 import uuid
+import time
+from contextlib import aclosing
 from typing import Any, AsyncIterator, Dict
 
 from .logger import logger
+from .evidence import build_evidence_snapshot, validate_citations, revalidate_evidence
+from .tools.types import EvidencePack
 from .openrouter_client import OPENROUTER_NETWORK_HINT
 
 # Kept in sync with council.run_full_council's all-fail early return.
@@ -115,7 +119,20 @@ def _source_turn_missing(main, conversation_id: str, expected_anchor: int, answe
     return not source_turn_intact(conversation, expected_anchor, answer_text, question)
 
 
-async def run_turn(
+async def run_turn(conversation_id, request, **kwargs):
+    """Observe the shared pipeline without retaining raw events or replaying work."""
+    from .eval_trace import record_turn_event
+    started = time.monotonic()
+    run_id = None
+    async with aclosing(_run_turn(conversation_id, request, **kwargs)) as turn:
+        async for event in turn:
+            if event.get("type") == "turn_state":
+                run_id = event["data"]["run_id"]
+            record_turn_event(event, run_id=run_id, mode=kwargs["mode"], elapsed_ms=(time.monotonic() - started) * 1000)
+            yield event
+
+
+async def _run_turn(
     conversation_id: str,
     request: Any,
     *,
@@ -135,33 +152,22 @@ async def run_turn(
     from . import main  # late import: honors monkeypatched seams + avoids import cycle
     from . import config
 
+    run_id = str(uuid.uuid4())
+    state = {"run_id": run_id, "generation": "pending", "persistence": "pending", "memory": "pending"}
+    turn_metadata = {"schema_version": 1, "run_id": run_id}
+
+    def state_event():
+        turn_metadata.update({f"{name}_state": state[name] for name in ("generation", "persistence", "memory")})
+        return {"type": "turn_state", "data": dict(state), "metadata": dict(turn_metadata)}
+
+    title_task = None
+    stage1_stream = None
     try:
+        yield state_event()
         current_conversation = conversation
 
-        # Build attachment context if attachment_ids provided
         attachment_context = ""
-        has_attachments = bool(request.attachment_ids)
-        if has_attachments:
-            attachment_context = main.build_llm_context(request.attachment_ids)
-            logger.info(f"[ATTACH] Built context from {len(request.attachment_ids)} attachments ({len(attachment_context)} chars)")
-            # Index documents into PageIndex for cross-conversation retrieval.
-            # Skip for effective-turn ZDR (audit §12, Decision #5): covers the
-            # per-message flag, which isn't visible in conversation metadata
-            # and so can't be checked by rag.py's write barrier below. This is
-            # a cheap early skip, not the authoritative guard against a
-            # metadata flip racing this turn -- CouncilRAG.index_document's
-            # own write barrier re-checks CURRENT metadata synchronously
-            # immediately before it mutates the store, closing that race at
-            # the root regardless of how many awaits happen in between.
-            if not zdr_enabled:
-                for att_id in request.attachment_ids:
-                    att_text = main.get_attachment_text(att_id)
-                    if att_text:
-                        await main.rag_system.index_document(conversation_id, att_id, att_text)
-
-        # Combine user content with attachment context and custom instructions
-        # for the LLM. User sees only their message, LLM sees the composed content.
-        llm_content = _compose_llm_content(request.content, attachment_context, request.custom_instructions)
+        llm_content = _compose_llm_content(request.content, "", request.custom_instructions)
 
         extra_usage_records = []
 
@@ -218,10 +224,28 @@ async def run_turn(
             attachments=message_attachments,
         )
 
+        sources = main.resolve_request_sources(current_conversation, request)
+        material_snapshot = build_evidence_snapshot(sources, conversation_id=conversation_id)
+        has_attachments = any(source["version_id"] for source in sources)
+        material_pack = EvidencePack(run_id=run_id, query=request.content, material_snapshot=material_snapshot)
+        turn_metadata["evidence_snapshot"] = material_snapshot
+        yield state_event()
+
+        # Only newly submitted attachments enter document memory; inherited reads do not append again.
+        if not zdr_enabled:
+            for att_id in request.attachment_ids:
+                att_text = main.get_attachment_text(att_id)
+                if att_text:
+                    await main.rag_system.index_document(conversation_id, att_id, att_text)
+
         # Get model configuration from conversation metadata
-        metadata = current_conversation.get("metadata", {})
-        council_models = metadata.get("council_models")
-        chairman_model = main.resolve_chairman_model_for_request(
+        # A confirmed roster uses the same snapshot checked before any edits or awaits.
+        model_conversation = conversation if (
+            request.expected_council_models is not None or request.expected_chairman_model is not None
+        ) else current_conversation
+        metadata = model_conversation.get("metadata", {})
+        council_models = request.expected_council_models if request.expected_council_models is not None else metadata.get("council_models")
+        chairman_model = request.expected_chairman_model or main.resolve_chairman_model_for_request(
             metadata.get("chairman_model"),
             request,
         )
@@ -276,8 +300,6 @@ async def run_turn(
                     llm_content = f"[Web Search Results]\n{web_context}\n\n[User Query]\n{llm_content}"
 
             # Stage 0b: Tool Steward
-            run_id = str(uuid.uuid4())
-
             yield {"type": "steward_start"}
             evidence_pack, steward_usage = await main.run_tool_steward_phase(
                 council_query,
@@ -285,6 +307,7 @@ async def run_turn(
                 chairman_model=chairman_model,
                 zdr_enabled=zdr_enabled,
             )
+            evidence_pack.material_snapshot = material_snapshot
             if steward_usage:
                 extra_usage_records.append({
                     "model": chairman_model or config.CHAIRMAN_MODEL,
@@ -298,13 +321,15 @@ async def run_turn(
             yield {"type": "stage1_start"}
             stage1_results = []
             stage1_failure_kinds = []
-            async for kind, index, result in main.stage1_collect_responses_progressive(
+            stage1_stream = main.stage1_collect_responses_progressive(
                 llm_content,
                 models=council_models,
                 evidence_pack=evidence_pack,
                 zdr_enabled=zdr_enabled,
                 thinking_effort=thinking_effort,
-            ):
+            )
+            revalidate_evidence(material_snapshot, conversation_id)
+            async for kind, index, result in stage1_stream:
                 if kind == "complete":
                     stage1_results = index  # (kind, stage1_results, None)
                     stage1_failure_kinds = (result or {}).get("failure_kinds", [])
@@ -332,16 +357,21 @@ async def run_turn(
                 stage3_result = dict(ALL_FAIL_STAGE3)
                 if stage1_failure_kinds and all(kind == "network" for kind in stage1_failure_kinds):
                     stage3_result["response"] = OPENROUTER_NETWORK_HINT
+                state["generation"] = "failed" if stage3_result.get("error") else "complete"
+                turn_metadata["citation_checks"] = validate_citations(stage3_result.get("response", ""), material_snapshot)
+                yield state_event()
                 yield {"type": "stage3_complete", "data": stage3_result}
             else:
                 # Stage 2: Collect rankings
                 yield {"type": "stage2_start"}
+                revalidate_evidence(material_snapshot, conversation_id)
                 stage2_results, label_to_model = await main.stage2_collect_rankings(
                     council_query,
                     stage1_results,
                     models=council_models,
                     zdr_enabled=zdr_enabled,
                     thinking_effort=thinking_effort,
+                    **({"evidence_pack": evidence_pack} if sources or request.evidence_source_ids == [] else {}),
                 )
                 for index, result in enumerate(stage2_results):
                     for event in main.build_reasoning_stream_events(
@@ -362,6 +392,7 @@ async def run_turn(
 
                 # Stage 3: Synthesize final answer with confidence
                 yield {"type": "stage3_start"}
+                revalidate_evidence(material_snapshot, conversation_id)
                 stage3_result = await main.stage3_synthesize_final(
                     council_query,
                     stage1_results,
@@ -371,6 +402,7 @@ async def run_turn(
                     chairman_model=chairman_model,
                     zdr_enabled=zdr_enabled,
                     thinking_effort=thinking_effort,
+                    **({"evidence_pack": evidence_pack} if sources or request.evidence_source_ids == [] else {}),
                 )
                 for event in main.build_reasoning_stream_events(
                     stage3_result,
@@ -380,6 +412,9 @@ async def run_turn(
                     content_key="response",
                 ):
                     yield event
+                state["generation"] = "failed" if stage3_result.get("error") else "complete"
+                turn_metadata["citation_checks"] = validate_citations(stage3_result.get("response", ""), material_snapshot)
+                yield state_event()
                 yield {"type": "stage3_complete", "data": stage3_result}
 
             if stage3_result.get("error"):
@@ -402,6 +437,8 @@ async def run_turn(
                         },
                     }
                 await _cancel_title_task(title_task)
+                state.update(persistence="unknown", memory="skipped")
+                yield state_event()
                 yield {
                     "type": "error",
                     "message": stage3_result.get("response")
@@ -415,6 +452,8 @@ async def run_turn(
 
             # Save complete assistant message with metadata for analytics
             council_metadata = {
+                **turn_metadata,
+                "persistence_state": "saved",
                 "label_to_model": label_to_model,
                 "aggregate_rankings": aggregate_rankings,
                 "steward_usage": steward_usage,
@@ -442,6 +481,7 @@ async def run_turn(
             # index_session as expected_anchor so it can detect (and skip)
             # indexing a turn whose source messages got truncated away in
             # that window, instead of stamping a wrong/stale anchor.
+            state["persistence"] = "saved"
             expected_anchor = len(main.storage.get_conversation(conversation_id)["messages"])
 
             # Codex round 10 (P2): record the BASE cost immediately, right
@@ -476,6 +516,8 @@ async def run_turn(
                 logger.info(f"[BUDGET] Emitting warning at {base_warning_pct}% for conversation {conversation_id}")
                 yield {"type": "budget_warning", "data": {"threshold": base_warning_level, "percentage": base_warning_pct}}
 
+            yield state_event()
+
             # Index for RAG with enhanced metadata. Skip when the council
             # produced no result: error text must not become a memory. Also
             # skip for effective-turn ZDR (audit §12, Decision #5): covers the
@@ -488,6 +530,7 @@ async def run_turn(
             # before it mutates the store, closing that race at the root
             # regardless of how many awaits happen in between.
             delta_cost = 0.0
+            state["memory"] = "skipped"
             if (
                 stage3_result.get("model") != "error"
                 and not zdr_enabled
@@ -505,6 +548,7 @@ async def run_turn(
                 # memory-indexing failure here must never turn a successful
                 # turn into an error event.
                 try:
+                    state["memory"] = "unknown"
                     logger.info("[PHASE1] Indexing turn for conversation %s", conversation_id)
 
                     # Extract topics from question + final answer. Codex round 6:
@@ -525,6 +569,7 @@ async def run_turn(
                     # Index session with enhanced metadata. May return usage from
                     # a P5-T5 summary-compression call if this conversation's
                     # turn count just crossed the compression threshold.
+                    index_outcome = {}
                     summary_usage = await main.rag_system.index_session(
                         conversation_id,
                         request.content,
@@ -534,7 +579,9 @@ async def run_turn(
                         topics,
                         quality_metrics,
                         expected_anchor=expected_anchor,
+                        index_outcome=index_outcome,
                     )
+                    state["memory"] = index_outcome.get("state", "unknown")
                     if summary_usage:
                         delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                     logger.info("[PHASE1] Session indexed successfully")
@@ -549,6 +596,7 @@ async def run_turn(
                     # raised. Zeroing it discarded real spend from the
                     # billed total. Keep whatever accrued before the
                     # failure; only what never ran contributes nothing.
+                    state["memory"] = "failed"
                     logger.exception("[PHASE1] memory indexing failed; answer already delivered")
 
             # Codex round 10 (P2): topics/compression usage discovered during
@@ -664,20 +712,16 @@ async def run_turn(
             try:
                 logger.info(f"[CHAT] Calling chairman with query: {request.content[:50]}...")
 
-                # Combine RAG context with attachment context and web search
-                combined_context = rag_context
-                if attachment_context:
-                    combined_context = f"{attachment_context}\n\n{rag_context}" if rag_context else attachment_context
-                if chat_web_context:
-                    combined_context = f"[Web Search Results]\n{chat_web_context}\n\n{combined_context}" if combined_context else f"[Web Search Results]\n{chat_web_context}"
-
+                revalidate_evidence(material_snapshot, conversation_id)
                 response_dict = await main.chat_with_chairman(
-                    request.content,  # Original query to Chairman
+                    _compose_llm_content(request.content, "", request.custom_instructions),
                     updated_conversation["messages"],
-                    combined_context,
+                    rag_context,
                     chairman_model=effective_chairman_model,
                     zdr_enabled=zdr_enabled,
                     thinking_effort=thinking_effort,
+                    **({"evidence_pack": material_pack} if sources or request.evidence_source_ids == [] else {}),
+                    **({"web_context": chat_web_context} if chat_web_context else {}),
                 )
                 logger.info("[CHAT] Chairman response received")
             except Exception as e:
@@ -688,6 +732,9 @@ async def run_turn(
                     "error": True,
                 }
 
+            state["generation"] = "failed" if response_dict.get("error") else "complete"
+            turn_metadata["citation_checks"] = validate_citations(response_dict.get("content", ""), material_snapshot)
+            yield state_event()
             for event in main.build_reasoning_stream_events(
                 response_dict,
                 scope="chat",
@@ -714,12 +761,14 @@ async def run_turn(
                 response_dict["content"],
                 running_cost=turn_cost,
                 reasoning=response_dict.get("reasoning"),
+                metadata={**turn_metadata, "persistence_state": "saved"},
             )
             # Codex round 17 (P1): see the council branch's identical
             # comment -- the message count right after THIS turn's own
             # persistence, before any later await can race an edit/
             # regenerate against it. Passed to index_chat_turn as
             # expected_anchor.
+            state["persistence"] = "saved"
             expected_anchor = len(main.storage.get_conversation(conversation_id)["messages"])
 
             # Codex round 10 (P2): record the BASE cost immediately, right
@@ -759,6 +808,7 @@ async def run_turn(
             # above) -- only memory bookkeeping remains, which is optional
             # and best-effort (see the try/except below).
             yield {"type": "chat_response", "data": response_dict}
+            yield state_event()
             logger.info("[CHAT] Chat response sent to client")
 
             # Chat turns previously left no memory (P5-T5 feature 2). Skip
@@ -772,6 +822,7 @@ async def run_turn(
             # not become cross-conversation memory -- mirrors the council
             # branch's stage3_result.get("model") != "error" guard above.
             delta_cost = 0.0
+            state["memory"] = "skipped"
             if (
                 not zdr_enabled
                 and not response_dict.get("error")
@@ -786,6 +837,7 @@ async def run_turn(
                 # (topics extraction, index_chat_turn, compression) must
                 # never turn a successful turn into an error event.
                 try:
+                    state["memory"] = "unknown"
                     from .council import extract_topics_with_usage
                     combined_text = request.content + " " + response_dict.get("content", "")
                     chat_topics, chat_topics_usage = await extract_topics_with_usage(
@@ -800,13 +852,16 @@ async def run_turn(
                     # so concurrent chat turns for this conversation can't
                     # collide and compaction can't cause a number to be
                     # reused.
+                    index_outcome = {}
                     summary_usage = await main.rag_system.index_chat_turn(
                         conversation_id,
                         request.content,
                         response_dict.get("content", ""),
                         chat_topics,
                         expected_anchor=expected_anchor,
+                        index_outcome=index_outcome,
                     )
+                    state["memory"] = index_outcome.get("state", "unknown")
                     if summary_usage:
                         delta_cost += main.calculate_cost(summary_usage, config.UTILITY_MODEL)
                     main.rag_system.refresh_hybrid_index()
@@ -817,6 +872,7 @@ async def run_turn(
                     # index_chat_turn raised. Keep whatever accrued before
                     # the failure; see the council branch's identical
                     # comment.
+                    state["memory"] = "failed"
                     logger.exception("[CHAT] memory indexing failed; answer already delivered")
 
             # Codex round 10 (P2): same incremental delta-billing as the
@@ -854,6 +910,13 @@ async def run_turn(
             logger.info(f"[BUDGET] Emitting warning at {warning_pct}% for conversation {conversation_id}")
             yield {"type": "budget_warning", "data": {"threshold": tail_warning_level, "percentage": warning_pct}}
 
+        state_event()
+        try:
+            main.storage.update_turn_metadata(conversation_id, run_id, turn_metadata)
+        except Exception:
+            logger.exception("[TURN] Tail metadata save failed; answer remains saved")
+        yield state_event()
+
         # Get updated total cost
         updated_conv = main.storage.get_conversation(conversation_id)
         total_cost = updated_conv.get("total_cost", 0.0)
@@ -865,5 +928,16 @@ async def run_turn(
         yield {"type": "complete", "data": {"turn_cost": turn_cost, "total_cost": total_cost, "session_usage": budget_state["usage"], "budget_spent_pct": spent_pct}}
 
     except Exception as e:
+        if state["generation"] == "pending":
+            state["generation"] = "failed"
+        if state["persistence"] == "pending":
+            state["persistence"] = "failed"
+        yield state_event()
         # Send error event
         yield {"type": "error", "message": str(e)}
+    finally:
+        try:
+            if stage1_stream is not None:
+                await stage1_stream.aclose()
+        finally:
+            await _cancel_title_task(title_task)

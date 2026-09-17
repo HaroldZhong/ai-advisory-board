@@ -38,8 +38,12 @@ import {
 } from './utils/trustState';
 import { toast } from './hooks/use-toast';
 import { useStreamingConversation } from './hooks/useStreamingConversation';
+import { UnconfirmedDrafts } from './components/EvidencePanel';
+
+const EMPTY_COUNCIL = [];
 
 function ConversationView({
+  onRetainDraft,
   conversations,
   onConversationsChange,
   availableModels,
@@ -65,6 +69,7 @@ function ConversationView({
 
   const [currentConversation, setCurrentConversation] = useState(null);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
+  const [isCouncilSelectorOpen, setIsCouncilSelectorOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [budgetWarning, setBudgetWarning] = useState(null);
   const { settings } = useSettings();
@@ -198,11 +203,12 @@ function ConversationView({
     }
   };
 
-  const { sendMessage: handleSendMessage, isLoading } = useStreamingConversation({
+  const { sendMessage: handleSendMessage, stopMessage, isLoading, streamStatus } = useStreamingConversation({
     conversationId,
     currentConversation,
     setCurrentConversation,
     setBudgetWarning,
+    onRetainDraft,
     availableModels,
     loadConversations,
     settings,
@@ -296,8 +302,19 @@ function ConversationView({
     onMoveConversation,
   };
 
+  const handleCouncilModelConfirm = async ({ councilMembers, chairmanModel }) => {
+    const targetId = currentConversation?.id;
+    if (!targetId || isLoading) return;
+    try {
+      const updated = await api.updateConversation(targetId, { council_models: councilMembers, chairman_model: chairmanModel });
+      setCurrentConversation((prev) => prev?.id === targetId ? { ...prev, metadata: updated.metadata } : prev);
+    } catch (error) {
+      toast({ title: 'Council configuration failed', description: error.message, variant: 'destructive' });
+    }
+  };
+
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
+    <div className="flex h-full w-full overflow-hidden bg-background text-foreground">
       {/* Mobile Navigation Drawer */}
       <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
         <SheetTrigger asChild>
@@ -321,19 +338,35 @@ function ConversationView({
       {/* Desktop Sidebar */}
       <Sidebar {...sidebarProps} />
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden relative">
+      <main className="min-w-0 flex-1 flex flex-col h-full overflow-hidden relative">
         <ChatInterface
           conversation={currentConversation}
           onSendMessage={handleSendMessage}
+          onStopMessage={stopMessage}
+          streamStatus={streamStatus}
           onUpdateSessionPolicy={handleUpdateSessionPolicy}
           onUpdateConversationPrivacy={handleUpdateConversationPrivacy}
           onUpdateThinkingEffort={handleUpdateThinkingEffort}
+          onConfigureCouncil={() => setIsCouncilSelectorOpen(true)}
           budgetWarning={budgetWarning}
           onDismissBudgetWarning={() => setBudgetWarning(null)}
           isLoading={isLoading}
           zdrAvailable={isZdrAvailableForProvider(providerKind)}
         />
       </main>
+
+      {isCouncilSelectorOpen && (
+        <ModelSelector
+          isOpen configureCouncil
+          onClose={() => setIsCouncilSelectorOpen(false)}
+          onConfirm={handleCouncilModelConfirm}
+          initialChairman={currentConversation?.metadata?.chairman_model || ''}
+          initialCouncil={currentConversation?.metadata?.council_models || EMPTY_COUNCIL}
+          initialZdrEnabled={currentConversation?.metadata?.zdr_enabled === true}
+          zdrAvailable={isZdrAvailableForProvider(providerKind)}
+          providerKind={providerKind}
+        />
+      )}
 
       <ModelSelector
         isOpen={isModelSelectorOpen}
@@ -352,6 +385,8 @@ function ConversationView({
 }
 
 function AppContent() {
+  const [unconfirmedDrafts, setUnconfirmedDrafts] = useState([]);
+  const retainDraft = (draft) => setUnconfirmedDrafts((current) => [...current.filter((item) => item.id !== draft.id), draft]);
   const [conversations, setConversations] = useState([]);
   const [folders, setFolders] = useState([]);
   const [availableModels, setAvailableModels] = useState([]);
@@ -369,10 +404,17 @@ function AppContent() {
   const isAppRoute = location.pathname === '/app' || location.pathname.startsWith('/c/');
   const landingOnly = isLandingOnly();
 
-  // Load models on mount for pricing
+  // Refresh catalog/pricing while this desktop workspace is active.
   useEffect(() => {
     if (landingOnly) return;
-    api.getModels().then(data => setAvailableModels(data.models)).catch(console.error);
+    let active = true;
+    const refresh = () => {
+      if (!document.hidden) api.getModels().then(data => { if (active) setAvailableModels(data.models); }).catch(console.error);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener('focus', refresh);
+    return () => { active = false; window.clearInterval(timer); window.removeEventListener('focus', refresh); };
   }, [landingOnly]);
 
   useEffect(() => {
@@ -500,7 +542,8 @@ function AppContent() {
   };
 
   return (
-    <>
+    <div className="flex h-dvh w-full flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden">
       <Routes>
         <Route
           path="/"
@@ -514,6 +557,7 @@ function AppContent() {
               path="/app"
               element={
                 <ConversationView
+                  onRetainDraft={retainDraft}
                   conversations={conversations}
                   onConversationsChange={setConversations}
                   availableModels={availableModels}
@@ -538,6 +582,7 @@ function AppContent() {
               path="/c/:conversationId"
               element={
                 <ConversationView
+                  onRetainDraft={retainDraft}
                   conversations={conversations}
                   onConversationsChange={setConversations}
                   availableModels={availableModels}
@@ -561,6 +606,8 @@ function AppContent() {
           </>
         )}
       </Routes>
+      </div>
+      <UnconfirmedDrafts drafts={unconfirmedDrafts} onDiscard={(id) => setUnconfirmedDrafts((current) => current.filter((draft) => draft.id !== id))} />
       {!landingOnly && isAppRoute && !configStatus.loading && showFirstRunSetup && (
         <FirstRunSetup
           isOpen={showFirstRunSetup}
@@ -569,7 +616,7 @@ function AppContent() {
           providerKind={configStatus.providerKind}
         />
       )}
-    </>
+    </div>
   );
 }
 

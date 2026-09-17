@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import os
@@ -10,8 +10,10 @@ from typing import List, Dict, Any, Optional
 import uuid
 import json
 import asyncio
+from contextlib import aclosing
 
 from . import app_paths, config, storage
+from .evidence import resolve_source_scope, validate_new_attachment_ids
 from .thinking_effort import VALID_THINKING_EFFORTS
 from .council import generate_conversation_title, stage1_collect_responses, stage1_collect_responses_progressive, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, chat_with_chairman, run_tool_steward_phase
 from .turn_pipeline import run_turn
@@ -57,14 +59,16 @@ def calculate_cost(usage: Dict[str, Any], model_id: str) -> float:
     if not model_id:
         return 0.0
 
-    from .config import AVAILABLE_MODELS
-    model_config = next((m for m in AVAILABLE_MODELS if m['id'] == model_id), None)
+    from .openrouter_client import get_model_metadata
+    model_config = get_model_metadata(model_id)
     pricing = model_config.get('pricing', {}) if model_config else None
     if not pricing:
         return 0.0
 
-    input_price = pricing.get('input', 0.0)
-    output_price = pricing.get('output', 0.0)
+    input_price = pricing.get('input')
+    output_price = pricing.get('output')
+    if input_price is None or output_price is None:
+        return 0.0  # Existing accounting contract; no known fallback charge.
 
     prompt_tokens = usage.get('prompt_tokens', 0)
     completion_tokens = usage.get('completion_tokens', 0)
@@ -177,6 +181,83 @@ class CreateConversationRequest(BaseModel):
     default_mode: Optional[str] = None
 
 
+class TurnHTTPException(HTTPException):
+    def __init__(self, detail, turn_state):
+        super().__init__(status_code=500, detail=detail)
+        self.turn_state = turn_state
+
+
+@app.exception_handler(TurnHTTPException)
+async def turn_error_response(request, exc):
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "turn_state": exc.turn_state})
+
+
+def validate_model_selection(council_members, chairman_model):
+    """Shared validation for conversation creation and Council configuration."""
+    from .openrouter_client import get_model_metadata
+    requested_ids = [*(council_members or []), chairman_model]
+    models_by_id = {model_id: model for model_id in requested_ids
+                    if (model := get_model_metadata(model_id)) is not None}
+    unavailable = [model_id for model_id, model in models_by_id.items()
+                   if model.get('available') is False or model.get('type') == 'other']
+    if unavailable:
+        raise HTTPException(status_code=400, detail=f'Models unavailable for text chat: {unavailable}')
+    # Off-OpenRouter, a provider (local server, relay) can serve models the
+    # curated registry has never heard of — accept any non-empty id it isn't
+    # in the registry for. Registry HITS still go through the existing
+    # type checks below on every provider kind, and empty/whitespace ids are
+    # rejected everywhere via the `m not in models_by_id` / falsy checks.
+    allow_unregistered = not config.provider_is_openrouter()
+
+    # Validate council members
+    if council_members:
+        invalid = [
+            m for m in council_members
+            if m not in models_by_id and not (allow_unregistered and m.strip())
+        ]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid council models: {invalid}"
+            )
+        # utility-type models (e.g. the RAG extraction model) and search-type
+        # models (e.g. perplexity/sonar) exist only for internal cost
+        # accounting and dedicated web-search calls, and are never
+        # user-selectable as chairman or council.
+        utility = [m for m in council_members if models_by_id.get(m, {}).get("type") == "utility"]
+        if utility:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid council models (internal utility model, not selectable): {utility}",
+            )
+        search = [m for m in council_members if models_by_id.get(m, {}).get("type") == "search"]
+        if search:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid council models (internal search model, not selectable): {search}",
+            )
+
+    # Validate chairman model
+    if chairman_model:
+        known_chairman = models_by_id.get(chairman_model)
+        if known_chairman is None and not (allow_unregistered and chairman_model.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid chairman model: {chairman_model}"
+            )
+        if known_chairman is not None and known_chairman.get("type") == "utility":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid chairman model (internal utility model, not selectable): {chairman_model}",
+            )
+        if known_chairman is not None and known_chairman.get("type") == "search":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid chairman model (internal search model, not selectable): {chairman_model}",
+            )
+
+
+
 @app.post("/api/conversations")
 async def create_conversation(request: CreateConversationRequest):
     """Create a new conversation."""
@@ -242,61 +323,10 @@ async def create_conversation(request: CreateConversationRequest):
             allow_overage=request.budget_allow_overage,
         ))
 
-    models_by_id = {m['id']: m for m in config.AVAILABLE_MODELS}
-    # Off-OpenRouter, a provider (local server, relay) can serve models the
-    # curated registry has never heard of — accept any non-empty id it isn't
-    # in the registry for. Registry HITS still go through the existing
-    # type checks below on every provider kind, and empty/whitespace ids are
-    # rejected everywhere via the `m not in models_by_id` / falsy checks.
-    allow_unregistered = not config.provider_is_openrouter()
-
-    # Validate council members
+    validate_model_selection(council_members, chairman_model)
     if council_members:
-        invalid = [
-            m for m in council_members
-            if m not in models_by_id and not (allow_unregistered and m.strip())
-        ]
-        if invalid:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid council models: {invalid}"
-            )
-        # utility-type models (e.g. the RAG extraction model) and search-type
-        # models (e.g. perplexity/sonar) exist only for internal cost
-        # accounting and dedicated web-search calls, and are never
-        # user-selectable as chairman or council.
-        utility = [m for m in council_members if models_by_id.get(m, {}).get("type") == "utility"]
-        if utility:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid council models (internal utility model, not selectable): {utility}",
-            )
-        search = [m for m in council_members if models_by_id.get(m, {}).get("type") == "search"]
-        if search:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid council models (internal search model, not selectable): {search}",
-            )
         metadata["council_models"] = council_members
-
-    # Validate chairman model
     if chairman_model:
-        known_chairman = models_by_id.get(chairman_model)
-        if known_chairman is None and not (allow_unregistered and chairman_model.strip()):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid chairman model: {chairman_model}"
-            )
-        if known_chairman is not None and known_chairman.get("type") == "utility":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid chairman model (internal utility model, not selectable): {chairman_model}",
-            )
-        if known_chairman is not None and known_chairman.get("type") == "search":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid chairman model (internal search model, not selectable): {chairman_model}",
-            )
         metadata["chairman_model"] = chairman_model
 
     if metadata.get("zdr_enabled") is True:
@@ -314,6 +344,9 @@ class SendMessageRequest(BaseModel):
     content: str
     mode: str = "auto"  # "auto", "council", or "chat"
     attachment_ids: List[str] = []  # List of attachment IDs to include
+    evidence_source_ids: Optional[List[str]] = None
+    expected_council_models: Optional[List[str]] = None
+    expected_chairman_model: Optional[str] = None
     web_search_enabled: bool = False  # Enable Stage 0 web search
     web_search_depth: str = "fast"  # "fast" (sonar) or "deep" (sonar-pro)
     custom_instructions: str = ""  # Custom persona/instructions from user
@@ -331,8 +364,9 @@ VALID_MODEL_TIERS = {"auto", "budget", "mid", "premium"}
 
 
 def get_model_by_id(model_id: str) -> Optional[Dict[str, Any]]:
-    """Return curated model metadata for a registry id."""
-    return next((model for model in config.CURATED_MODELS if model["id"] == model_id), None)
+    """Return provider metadata with the recommended model policy overlay."""
+    from .openrouter_client import get_model_metadata
+    return get_model_metadata(model_id)
 
 
 def ensure_zdr_compatible_models(
@@ -466,6 +500,7 @@ def prepare_message_attachments(
     if not attachment_ids:
         return []
 
+    validate_new_attachment_ids(conversation_id, attachment_ids)
     attachments = link_attachments_to_conversation(attachment_ids, conversation_id)
     return [attachment.model_dump() for attachment in attachments]
 
@@ -651,6 +686,8 @@ class FolderUpdate(BaseModel):
     color: Optional[str] = None
 
 class ConversationUpdate(BaseModel):
+    council_models: Optional[List[str]] = None
+    chairman_model: Optional[str] = None
     title: Optional[str] = None
     folder_id: Optional[str] = None
     zdr_enabled: Optional[bool] = None
@@ -664,14 +701,15 @@ async def health_check():
 
 
 @app.get("/api/models")
-async def get_models():
-    """Get list of available models with live pricing from OpenRouter."""
+async def get_models(refresh: bool = False):
+    """Discover models from the configured provider, with explicit freshness status."""
     from .config import CHAIRMAN_MODEL, COUNCIL_MODELS, CURATED_MODELS, MODEL_PRESETS
-    from .openrouter_client import get_enriched_models
-    
-    enriched = await get_enriched_models(CURATED_MODELS)
+    from .openrouter_client import get_enriched_models, catalog_status
+
+    enriched = await get_enriched_models(CURATED_MODELS, force=True) if refresh else await get_enriched_models(CURATED_MODELS)
     return {
         "models": enriched,
+        "catalog": catalog_status(),
         "defaults": {
             "chairman": CHAIRMAN_MODEL,
             "council": COUNCIL_MODELS,
@@ -830,6 +868,9 @@ class TurnEstimateRequest(BaseModel):
     can run the SAME task-signal routing as the real send path."""
     content: str = ""
     has_attachments: bool = False
+    attachment_ids: Optional[List[str]] = None
+    evidence_source_ids: Optional[List[str]] = None
+    edit_index: int = -1
     mode: str = "council"  # UI mode: "chat" | "council"
     execution_mode: str = "auto"
     rag_preset: str = "auto"
@@ -874,7 +915,9 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     run_plan = create_run_plan(
         query=request.content,
         conversation_id=conversation_id,
-        has_files=request.has_attachments,
+        has_files=any(source["version_id"] for source in resolve_request_sources(conversation, request)) or (
+            request.attachment_ids is None and request.evidence_source_ids is None and request.has_attachments
+        ),
         chairman_model=chairman_model,
         execution_mode=execution_mode,
         rag_preset=rag_preset,
@@ -924,6 +967,8 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
     return {
         "predicted_cost": predicted,
         "approximate": True,
+        "council_models": (metadata.get("council_models") or config.COUNCIL_MODELS) if request.mode == "council" else [],
+        "chairman_model": run_plan.chairman_model,
         "threshold": config.LARGE_TURN_ESTIMATE_USD,
         "is_large": is_large,
     }
@@ -948,8 +993,24 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    model_updates = {}
+    if updates.council_models is not None:
+        if not updates.council_models or len(set(updates.council_models)) != len(updates.council_models):
+            raise HTTPException(status_code=400, detail="Choose a non-empty Council with distinct model IDs")
+        model_updates["council_models"] = updates.council_models
+    if updates.chairman_model is not None:
+        if not updates.chairman_model.strip():
+            raise HTTPException(status_code=400, detail="Chairman model is required")
+        model_updates["chairman_model"] = updates.chairman_model.strip()
+    selection = {**(conv.get("metadata") or {}), **model_updates}
+    if model_updates:
+        validate_model_selection(selection.get("council_models"), selection.get("chairman_model"))
+        effective_zdr = updates.zdr_enabled if updates.zdr_enabled is not None else selection.get("zdr_enabled")
+        if effective_zdr:
+            ensure_zdr_compatible_models(selection.get("chairman_model"), selection.get("council_models"))
+
     if "zdr_enabled" in updates_dict and updates.zdr_enabled is not None:
-        metadata = conv.get("metadata", {})
+        metadata = selection
         preset_id = metadata.get("preset_id")
         preset = next(
             (candidate for candidate in config.MODEL_PRESETS if candidate["id"] == preset_id),
@@ -966,6 +1027,9 @@ async def update_conversation(conversation_id: str, updates: ConversationUpdate)
             )
     if "thinking_effort" in updates_dict and updates.thinking_effort is not None:
         validate_thinking_effort(updates.thinking_effort)
+
+    if model_updates:
+        storage.update_conversation_metadata(conversation_id, model_updates)
 
     if "title" in updates_dict and updates.title is not None:
         storage.update_conversation_title(conversation_id, updates.title)
@@ -1006,6 +1070,17 @@ async def delete_conversation(conversation_id: str):
     # Purge PageIndex memories for this conversation
     await rag_system.delete_conversation_memories(conversation_id)
     return {"success": True, "attachments": attachment_cleanup}
+
+
+def resolve_request_sources(conversation, request):
+    try:
+        return resolve_source_scope(
+            conversation, request.attachment_ids or [], request.evidence_source_ids, request.edit_index,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def prepare_turn(conversation_id: str, request: SendMessageRequest):
@@ -1054,7 +1129,22 @@ def prepare_turn(conversation_id: str, request: SendMessageRequest):
             # this rule: council on the effectively-first turn, chat after.
             mode = "council" if effective_message_count == 0 else "chat"
     validate_advanced_settings_for_mode(mode, request)
+    if mode != "council" and (
+        request.expected_council_models is not None or request.expected_chairman_model is not None
+    ):
+        raise HTTPException(status_code=412, detail="Council mode changed. Review the turn and confirm again.")
+    if mode == "council":
+        metadata = conversation.get("metadata", {})
+        members = metadata.get("council_models") or config.COUNCIL_MODELS
+        chairman = resolve_chairman_model_for_request(metadata.get("chairman_model"), request) or config.CHAIRMAN_MODEL
+        if (
+            request.expected_council_models is not None and request.expected_council_models != members
+        ) or (
+            request.expected_chairman_model is not None and request.expected_chairman_model != chairman
+        ):
+            raise HTTPException(status_code=412, detail="Council models changed. Review the new estimate and confirm again.")
     ensure_budget_allows_new_turn(conversation_id, conversation)
+    resolve_request_sources(conversation, request)
 
     return conversation, mode, zdr_enabled, thinking_effort, is_first_message
 
@@ -1073,7 +1163,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     )
 
     collected: Dict[str, Any] = {}
-    async for event in run_turn(
+    async with aclosing(run_turn(
         conversation_id,
         request,
         conversation=conversation,
@@ -1081,27 +1171,31 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         zdr_enabled=zdr_enabled,
         thinking_effort=thinking_effort,
         is_first_message=is_first_message,
-    ):
-        event_type = event.get("type")
-        data = event.get("data")
-        if event_type == "error":
-            raise HTTPException(status_code=500, detail=event.get("message") or "Turn failed")
-        if event_type == "steward_complete":
-            collected["evidence"] = data
-            collected["steward_usage"] = event.get("usage")
-        elif event_type == "stage1_complete":
-            collected["stage1"] = data
-        elif event_type == "stage2_complete":
-            collected["stage2"] = data
-            collected["stage2_metadata"] = event.get("metadata") or {}
-        elif event_type == "stage3_complete":
-            collected["stage3"] = data
-        elif event_type == "run_plan":
-            collected["run_plan"] = data
-        elif event_type == "chat_response":
-            collected["chat_response"] = data
-        elif event_type == "complete":
-            collected["complete"] = data
+    )) as turn:
+        async for event in turn:
+            event_type = event.get("type")
+            data = event.get("data")
+            if event_type == "error":
+                raise TurnHTTPException(event.get("message") or "Turn failed", collected.get("turn_state"))
+            if event_type == "turn_state":
+                collected["turn_state"] = data
+                collected["turn_metadata"] = event.get("metadata") or {}
+            elif event_type == "steward_complete":
+                collected["evidence"] = data
+                collected["steward_usage"] = event.get("usage")
+            elif event_type == "stage1_complete":
+                collected["stage1"] = data
+            elif event_type == "stage2_complete":
+                collected["stage2"] = data
+                collected["stage2_metadata"] = event.get("metadata") or {}
+            elif event_type == "stage3_complete":
+                collected["stage3"] = data
+            elif event_type == "run_plan":
+                collected["run_plan"] = data
+            elif event_type == "chat_response":
+                collected["chat_response"] = data
+            elif event_type == "complete":
+                collected["complete"] = data
 
     complete = collected.get("complete", {})
 
@@ -1112,6 +1206,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
             request,
         )
         metadata = {
+            **collected.get("turn_metadata", {}),
             "label_to_model": stage2_metadata.get("label_to_model", {}),
             "aggregate_rankings": stage2_metadata.get("aggregate_rankings", []),
             "steward_usage": collected.get("steward_usage"),
@@ -1119,6 +1214,7 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
         }
         return {
             "type": "council",
+            "turn_state": collected.get("turn_state"),
             "stage1": collected.get("stage1", []),
             "stage2": collected.get("stage2", []),
             "stage3": collected.get("stage3", {}),
@@ -1133,6 +1229,8 @@ async def send_message(conversation_id: str, request: SendMessageRequest):
     response_dict = collected.get("chat_response", {})
     return {
         "type": "chat",
+        "turn_state": collected.get("turn_state"),
+        "metadata": collected.get("turn_metadata", {}),
         "content": response_dict.get("content", ""),
         "reasoning": response_dict.get("reasoning"),
         "turn_cost": complete.get("turn_cost", 0.0),
@@ -1153,7 +1251,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     )
 
     async def event_generator():
-        async for event in run_turn(
+        async with aclosing(run_turn(
             conversation_id,
             request,
             conversation=conversation,
@@ -1161,8 +1259,9 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             zdr_enabled=zdr_enabled,
             thinking_effort=thinking_effort,
             is_first_message=is_first_message,
-        ):
-            yield encode_sse_event(event)
+        )) as turn:
+            async for event in turn:
+                yield encode_sse_event(event)
 
     return StreamingResponse(
         event_generator(),
@@ -1199,6 +1298,17 @@ async def create_attachment_endpoint(
     
     # Create attachment record (stores raw file)
     attachment = create_attachment(content, file.filename, mime_type)
+    if attachment.conversation_ids:
+        # Re-upload proves possession of the bytes. Reuse extraction, not another
+        # conversation's source identity; old shared sources remain untouched.
+        cached = attachment
+        attachment = create_attachment(content, file.filename, mime_type, reuse_cache=False)
+        cached_text = get_attachment_text(cached.attachment_id)
+        if cached.status in ("success", "partial") and cached_text:
+            save_attachment_text(attachment.attachment_id, cached_text)
+            update_attachment_status(attachment.attachment_id, cached.status, method=cached.method,
+                                     warning=cached.warning, error=cached.error, stats=cached.stats.model_dump())
+            attachment = get_attachment(attachment.attachment_id)
     
     # Check if this was a cache hit (already processed)
     if attachment.status in ("success", "partial"):

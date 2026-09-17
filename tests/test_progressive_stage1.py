@@ -193,3 +193,25 @@ async def test_query_models_as_completed_cancels_pending_on_early_close(monkeypa
     await asyncio.sleep(0)
 
     assert cancelled == ["model-slow"]
+
+
+@pytest.mark.asyncio
+async def test_stage1_close_reaches_pending_provider_calls(monkeypatch):
+    pending_started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def query(model, messages, **kwargs):
+        if model == "fast":
+            await pending_started.wait()
+            return {"content": "first answer", "usage": {}}
+        pending_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(openrouter, "query_model", query)
+    responses = council.stage1_collect_responses_progressive("q", ["fast", "slow"])
+    await responses.__anext__()
+    await responses.aclose()
+    assert cancelled.is_set()

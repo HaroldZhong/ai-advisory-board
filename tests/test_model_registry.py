@@ -180,7 +180,7 @@ def test_enriched_models_expose_zdr_and_availability_metadata(monkeypatch):
     assert enriched[1]["available"] is False
     assert enriched[1]["supports_zdr"] is True
     assert enriched[2]["available"] is True
-    assert enriched[2]["supports_zdr"] is True
+    assert enriched[2]["supports_zdr"] is None  # Live unknown must not become a privacy guarantee.
 
 
 def test_models_endpoint_returns_registry_defaults(monkeypatch):

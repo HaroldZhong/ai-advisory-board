@@ -98,7 +98,8 @@ function Stage2({
 
       {aggregateRankings && aggregateRankings.length > 0 && (
         <div className="space-y-4">
-          <h4 className="text-sm font-semibold">Aggregate Rankings (Street Cred)</h4>
+          <h4 className="text-sm font-semibold">Peer preferences</h4>
+          <p className="text-xs text-muted-foreground">Rankings reflect model opinions, not factual verification.</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {aggregateRankings.map((agg, index) => (
               <Card key={index} className="p-3 flex items-center gap-3">

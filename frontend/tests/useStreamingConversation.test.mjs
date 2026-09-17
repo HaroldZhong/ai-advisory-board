@@ -27,10 +27,12 @@ test('the beforeunload handler uses the standard browser-native guard idiom', ()
   assert.match(source, /event\.returnValue = ''/);
 });
 
-test('stream errors reload the persisted conversation instead of keeping a phantom assistant', () => {
+test('stream interruption reconciles the matching run and keeps AbortError out of rollback', () => {
   const source = readHookSource();
   assert.match(source, /eventType === 'error'/);
-  assert.match(source, /api\.getConversation\(targetConversationId\)/);
-  assert.match(source, /prev\?\.id === targetConversationId \? persisted : prev/);
-  assert.match(source, /\.finally\(\(\) => \{\s*setIsLoading\(false\);/);
+  assert.match(source, /api\.getConversation\(targetConversationId, \{ signal: AbortSignal\.timeout/);
+  assert.match(source, /reconcileInterruptedRun\(prev, persisted, scope\)/);
+  assert.match(source, /error\?\.name === 'AbortError'/);
+  assert.match(source, /if \(stopped \|\| sawEvent \|\| error\?\.status == null\)/);
+  assert.match(source, /latestRequest\.current === request/);
 });

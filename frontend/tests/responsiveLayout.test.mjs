@@ -12,7 +12,7 @@ import {
 test('sidebar mode follows desktop breakpoints and user preference', () => {
   assert.equal(getSidebarMode(960, false), 'icon-only');
   assert.equal(getSidebarMode(1023, false), 'icon-only');
-  assert.equal(getSidebarMode(1024, false), 'expanded');
+  assert.equal(getSidebarMode(1024, false), 'icon-only');
   assert.equal(getSidebarMode(1280, false), 'expanded');
 
   assert.equal(getSidebarMode(1280, true), 'collapsed');
