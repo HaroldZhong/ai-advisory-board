@@ -5,10 +5,11 @@ export function modelById(models) {
 // A saved model id "still resolves" if it's in the loaded registry, OR — for
 // openai-compatible providers only — it's a non-empty custom id the registry
 // never knew about in the first place (PR2: minimal custom model entry).
-// OpenRouter kind keeps the old behavior: unknown ids are dropped.
+// Unknown OpenRouter IDs cannot be confirmed; the selector keeps saved IDs visible for replacement.
 export function isSelectableModelId(id, models, providerKind) {
   if (!id) return false;
-  if ((models || []).some((model) => model.id === id)) return true;
+  const model = (models || []).find((candidate) => candidate.id === id);
+  if (model) return model.available !== false && !['utility', 'search', 'other'].includes(model.type);
   return providerKind === 'openai-compatible' && id.trim().length > 0;
 }
 
@@ -29,7 +30,10 @@ export function resolveInitialZdrPreference(settings = {}) {
 
 export function canStartPresetWithZdr(preset, models, zdrEnabled) {
   const effectiveZdr = getEffectivePresetZdr(preset, zdrEnabled);
-  return !effectiveZdr || isPresetAvailableForZdr(preset, models);
+  const byId = modelById(models);
+  const ids = [preset?.chairman_model, ...(preset?.council_models || [])];
+  return ids.every((id) => byId.has(id) && byId.get(id).available !== false)
+    && (!effectiveZdr || isPresetAvailableForZdr(preset, models));
 }
 
 // A requires_zdr preset (e.g. "private") always implies ZDR regardless of the
@@ -71,6 +75,10 @@ export function resolvePresetModels(preset, models, zdrEnabled) {
 }
 
 export function estimateSelectionCost({ chairman, council }) {
+  if ([chairman, ...(council || [])].filter(Boolean).some((model) => (
+    !['input', 'output'].every((key) => typeof model.pricing?.[key] === 'number'
+      && Number.isFinite(model.pricing[key]) && model.pricing[key] >= 0)
+  ))) return null;
   const chairmanCost = chairman
     ? Number(chairman.pricing?.input || 0) + Number(chairman.pricing?.output || 0)
     : 0;
@@ -109,7 +117,7 @@ export function getShortName(modelName = '') {
 export function filterModelsForRole(models, role, zdrEnabled) {
   const validTypes = role === 'chairman' ? ['chairman', 'both'] : ['council', 'both'];
   return (models || []).filter((model) => (
-    validTypes.includes(model.type) && (!zdrEnabled || model.supports_zdr)
+    model.available !== false && validTypes.includes(model.type) && (!zdrEnabled || model.supports_zdr === true)
   ));
 }
 

@@ -10,18 +10,74 @@ namespaces so the tests are agnostic to which module dispatches the calls
 post-unification it goes through the stage functions bound on main).
 """
 import importlib
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disconnect", ["generator", "asgi"])
+async def test_closing_sse_stream_closes_members_and_title(monkeypatch, tmp_path, disconnect):
+    main = import_main(monkeypatch)
+    monkeypatch.setattr(main.storage, "DATA_DIR", str(tmp_path))
+    main.storage.create_conversation("conv-stop")
+    _setup_council_fakes(monkeypatch, main)
+    title_started = asyncio.Event()
+    title_cancelled = asyncio.Event()
+    members_closed = asyncio.Event()
+
+    async def slow_title(*args, **kwargs):
+        title_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            title_cancelled.set()
+
+    async def members(*args, **kwargs):
+        try:
+            await title_started.wait()
+            yield "model_complete", 0, {"model": "a", "response": "partial", "usage": {}}
+            await asyncio.Future()
+        finally:
+            members_closed.set()
+
+    monkeypatch.setattr(main, "generate_conversation_title", slow_title)
+    monkeypatch.setattr(main, "stage1_collect_responses_progressive", members)
+    response = await main.send_message_stream(
+        "conv-stop", main.SendMessageRequest(content="question", mode="council"),
+    )
+    if disconnect == "generator":
+        async for chunk in response.body_iterator:
+            if '"type": "stage1_model_complete"' in chunk:
+                break
+        await response.body_iterator.aclose()
+    else:
+        disconnected = asyncio.Event()
+
+        async def receive():
+            await disconnected.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(event):
+            if b'"type": "stage1_model_complete"' in event.get("body", b""):
+                disconnected.set()
+
+        await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+    assert members_closed.is_set()
+    assert title_cancelled.is_set()
+    assert [m["role"] for m in main.storage.get_conversation("conv-stop")["messages"]] == ["user"]
+
+
 COUNCIL_KEYS = {
     "type", "stage1", "stage2", "stage3", "metadata", "evidence",
     "turn_cost", "total_cost", "session_usage", "budget_spent_pct",
+    "turn_state",
 }
 CHAT_KEYS = {
     "type", "content", "reasoning", "turn_cost", "total_cost",
     "session_usage", "budget_spent_pct", "run_plan",
+    "turn_state", "metadata",
 }
 
 

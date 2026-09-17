@@ -102,7 +102,9 @@ def get_cached_attachment(sha256: str) -> Optional[str]:
 def create_attachment(
     content: bytes,
     filename: str,
-    mime_type: str
+    mime_type: str,
+    *,
+    reuse_cache: bool = True,
 ) -> Attachment:
     """Create a new attachment from file content.
     
@@ -117,7 +119,7 @@ def create_attachment(
     sha256 = compute_sha256(content)
     
     # Check cache first
-    cached_id = get_cached_attachment(sha256)
+    cached_id = get_cached_attachment(sha256) if reuse_cache else None
     if cached_id:
         cached = get_attachment(cached_id)
         if cached:
@@ -229,7 +231,7 @@ def _remove_from_cache_index(attachment: Attachment):
     changed = False
 
     for sha256, attachment_id in list(index.items()):
-        if sha256 == attachment.sha256 or attachment_id == attachment.attachment_id:
+        if attachment_id == attachment.attachment_id:
             del index[sha256]
             changed = True
 

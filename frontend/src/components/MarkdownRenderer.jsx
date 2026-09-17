@@ -5,6 +5,7 @@ import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import { isSafeHref, isSafeImageSrc } from '../utils/safeHref';
 import { CodeBlock } from './CodeBlock';
+import { remarkEvidenceLinks } from '../utils/evidence';
 // Note: katex.min.css is loaded globally in main.jsx
 // Code block syntax colors are loaded globally in main.jsx (highlight.js/styles/github-dark.css)
 
@@ -130,7 +131,14 @@ class MarkdownErrorBoundary extends React.Component {
     }
 }
 
+const EvidenceContext = React.createContext({});
+
 const SafeAnchor = ({ href, children, ...rest }) => {
+    const { evidenceSnapshot, onCitationClick } = React.useContext(EvidenceContext);
+    const token = href?.startsWith('#aab-citation-') ? `[${href.slice(14)}]` : null;
+    if (token && evidenceSnapshot?.citations?.[token] && onCitationClick) {
+        return <button type="button" className="font-medium text-primary underline" onClick={(event) => onCitationClick(token, evidenceSnapshot, event.currentTarget)}>{children}</button>;
+    }
     if (!isSafeHref(href)) {
         return <span>{children}</span>;
     }
@@ -164,27 +172,26 @@ export default function MarkdownRenderer({
     children,
     className = '',
     components = {},
+    evidenceSnapshot,
+    onCitationClick,
     ...props
 }) {
-    // Handle null/undefined content gracefully
-    if (children == null || children === '') {
-        return null;
-    }
-
-    // Ensure we have a string
-    const rawContent = typeof children === 'string' ? children : String(children);
+    const rawContent = children == null ? '' : String(children);
 
     // Memoize the processed content to prevent unnecessary re-renders
     const processedContent = useMemo(() => {
         return preprocessMath(rawContent);
     }, [rawContent]);
 
+    if (!rawContent) return null;
+
     return (
+        <EvidenceContext.Provider value={{ evidenceSnapshot, onCitationClick }}>
         <MarkdownErrorBoundary className={className} rawContent={rawContent}>
             {/* Add overflow protection at container level */}
             <div className={`w-full overflow-x-auto ${className}`}>
                 <ReactMarkdown
-                    remarkPlugins={[remarkMath]}
+                    remarkPlugins={[remarkMath, remarkEvidenceLinks(evidenceSnapshot)]}
                     rehypePlugins={[[rehypeKatex, katexOptions], rehypeHighlight]}
                     components={{ ...components, a: SafeAnchor, img: SafeImage, pre: CodeBlock }}
                     {...props}
@@ -193,6 +200,7 @@ export default function MarkdownRenderer({
                 </ReactMarkdown>
             </div>
         </MarkdownErrorBoundary>
+        </EvidenceContext.Provider>
     );
 }
 

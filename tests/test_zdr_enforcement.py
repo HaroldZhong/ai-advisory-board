@@ -127,6 +127,11 @@ async def test_parallel_model_queries_propagate_zdr(monkeypatch):
 @pytest.mark.asyncio
 async def test_council_stage_calls_pass_zdr_to_openrouter(monkeypatch):
     council = import_module_with_api_key(monkeypatch, "backend.council")
+    from backend.tools.types import ToolDefinition
+    monkeypatch.setattr(council.ToolRegistry, "_tools", {
+        "web.search": ToolDefinition(name="web.search", description="Search", args_schema={}),
+    })
+    monkeypatch.setattr(council.ToolRegistry, "_implementations", {"web.search": lambda: None})
     parallel_calls = []
     single_calls = []
 
@@ -593,10 +598,9 @@ async def test_council_turn_with_zdr_and_attachments_skips_document_indexing(mon
 @pytest.mark.asyncio
 async def test_council_turn_skips_document_indexing_when_zdr_enabled_before_attachment_loop(monkeypatch, tmp_path):
     """Codex P1, round 5/6 (symmetric to the mid-turn index_session case,
-    closed at the root): the attachment-index loop is the FIRST thing
-    run_turn does, so a ZDR flip landing between the request's pre-flight
+    closed at the root): a ZDR flip landing between the request's pre-flight
     zdr_enabled capture and this loop's start must also be caught.
-    build_llm_context is the call immediately before the loop; simulate the
+    build_evidence_snapshot is the read before the loop; simulate the
     flip happening there via real storage.update_conversation_metadata.
     CouncilRAG.index_document's own ZDR write barrier re-checks CURRENT
     metadata synchronously right before it mutates the store, so this uses a
@@ -617,15 +621,18 @@ async def test_council_turn_skips_document_indexing_when_zdr_enabled_before_atta
     )
     _setup_council_fakes(monkeypatch, main, rag_system)
 
-    def flipping_build_llm_context(attachment_ids):
+    pipeline = importlib.import_module("backend.turn_pipeline")
+    original_build_snapshot = pipeline.build_evidence_snapshot
+
+    def flipping_build_snapshot(*args, **kwargs):
         # Simulate the user flipping ZDR on via PUT /api/conversations/{id}
         # right as this turn starts: real storage metadata now says
         # zdr_enabled=True, but this turn's zdr_enabled local variable was
         # already captured as False during pre-flight.
         main.storage.update_conversation_metadata(conversation_id, {"zdr_enabled": True})
-        return "[Attachment] secret contents"
+        return original_build_snapshot(*args, **kwargs)
 
-    monkeypatch.setattr(main, "build_llm_context", flipping_build_llm_context)
+    monkeypatch.setattr(pipeline, "build_evidence_snapshot", flipping_build_snapshot)
     monkeypatch.setattr(main, "get_attachment_text", lambda attachment_id: "secret contents")
     monkeypatch.setattr(
         main,

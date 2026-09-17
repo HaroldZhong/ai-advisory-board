@@ -3,6 +3,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
+import EvidencePanel, { TurnState } from './EvidencePanel';
 import ReasoningSection from './ReasoningSection';
 import SessionBudgetSelector from './SessionBudgetSelector';
 import AdvancedSettingsPanel from './AdvancedSettingsPanel';
@@ -12,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Paperclip, Send, Download, Loader2, Users, User, Crown, Pencil } from "lucide-react";
+import { Paperclip, Send, Download, Loader2, Users, User, Crown, Pencil, PanelRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import AttachmentPill, { AttachmentPillList } from './AttachmentPill';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -23,6 +24,8 @@ import { predictNextMessageMode } from '../utils/modePrediction';
 import { extractMessageAttachmentIds } from '../utils/messageAttachments';
 import { toast } from '@/hooks/use-toast';
 import { getExportSavedDescription } from '@/utils/conversationExport';
+import { ToastAction } from '@/components/ui/toast';
+import { shouldSubmitOnEnter } from '@/utils/composerKeys';
 
 // Stage progress component with pulsing animation
 function StageProgress({ stage, description, modelCount, icon: Icon }) {
@@ -64,14 +67,29 @@ function StageProgress({ stage, description, modelCount, icon: Icon }) {
 export default function ChatInterface({
   conversation,
   onSendMessage,
+  onStopMessage,
+  streamStatus,
   onUpdateSessionPolicy,
   onUpdateConversationPrivacy,
   onUpdateThinkingEffort,
+  onConfigureCouncil,
   budgetWarning,
   isLoading,
   zdrAvailable = true,
 }) {
   const [input, setInput] = useState('');
+  const [evidenceSourceIds, setEvidenceSourceIds] = useState(null);
+  const [evidenceSelection, setEvidenceSelection] = useState(null);
+  const [materialsOpen, setMaterialsOpen] = useState(() => window.innerWidth >= 1024);
+  const [materialsView, setMaterialsView] = useState('materials');
+  const materialsTriggerRef = useRef(null);
+  const materialsReturnFocusRef = useRef(null);
+  const openEvidence = (token, snapshot, trigger) => {
+    materialsReturnFocusRef.current = trigger;
+    setEvidenceSelection({ token, snapshot });
+    setMaterialsView('sources');
+    setMaterialsOpen(true);
+  };
   const [isUploading, setIsUploading] = useState(false);
   const [isUpdatingPrivacy, setIsUpdatingPrivacy] = useState(false);
   const [isUpdatingThinkingEffort, setIsUpdatingThinkingEffort] = useState(false);
@@ -105,6 +123,15 @@ export default function ChatInterface({
   // so edits can't be lost when a slow estimate resolves (Codex #110).
   const [isEstimating, setIsEstimating] = useState(false);
   const { settings, updateSettings } = useSettings();
+
+  const materialOptions = new Map();
+  for (const message of conversation?.messages || []) {
+    for (const id of extractMessageAttachmentIds(message)) {
+      if (!materialOptions.has(id)) materialOptions.set(id, { attachment_id: id, filename: id });
+    }
+    for (const attachment of message.attachments || []) materialOptions.set(attachment.attachment_id, attachment);
+  }
+  for (const attachment of attachments) materialOptions.set(attachment.attachment_id, attachment);
 
   const sessionPolicy = conversation?.session_policy || {};
   const sessionBudget = sessionPolicy.budget_usd ?? null;
@@ -184,6 +211,9 @@ export default function ChatInterface({
   // to B while showing A's number (Codex #110 audit P3).
   useEffect(() => {
     conversationIdRef.current = conversation?.id;
+    setEvidenceSourceIds(null);
+    setEvidenceSelection(null);
+    setMaterialsView('materials');
     setAskCouncil(false);
     setShowCouncilConfirm(false);
     setTurnEstimate(null);
@@ -353,7 +383,12 @@ export default function ChatInterface({
     // override. Resolve the actual next mode: armed -> council; else the auto
     // prediction (council on a council-default first turn, otherwise chat).
     const resolvedSendMode = askCouncil ? 'council' : nextMessageMode;
+    if (askCouncil && !conversation?.metadata?.council_models?.length && onConfigureCouncil) {
+      onConfigureCouncil();
+      return;
+    }
     const estimateConversationId = conversation?.id;
+    let estimateForSend = turnEstimate;
     if (!showCouncilConfirm) {
       // Fetch the estimate for the mode that will actually run. Never blocks: a
       // failed estimate resolves to null and the send proceeds. estimatingRef guards
@@ -366,6 +401,8 @@ export default function ChatInterface({
           estimate = await api.getTurnEstimate(estimateConversationId, {
             content: submittedInput,
             hasAttachments: submittedAttachments.length > 0,
+            attachmentIds,
+            evidenceSourceIds,
             mode: resolvedSendMode,
             executionMode: settings.executionMode,
             ragPreset: settings.ragPreset,
@@ -387,6 +424,7 @@ export default function ChatInterface({
       // The user switched conversations while the estimate was in flight -- discard it
       // rather than show A's confirm over B or send B's turn on A's estimate (Codex #110).
       if (conversationIdRef.current !== estimateConversationId) return;
+      estimateForSend = estimate;
       // Confirm before an explicitly armed council send (P3-T4) or any turn the backend
       // flags as large -- is_large now encodes BOTH D3 §5.1 warn cases (large predicted
       // spend AND high-effort full-council), decided with the send path's own effort
@@ -399,11 +437,18 @@ export default function ChatInterface({
       }
     }
 
-    const sendOptions = askCouncil ? { mode: 'council' } : {};
+    const sendOptions = {
+      ...(askCouncil ? { mode: 'council' } : {}), evidenceSourceIds,
+      ...(resolvedSendMode === 'council' ? {
+        expectedCouncilModels: estimateForSend?.council_models ?? conversation.metadata?.council_models,
+        expectedChairmanModel: estimateForSend?.chairman_model ?? conversation.metadata?.chairman_model,
+      } : {}),
+    };
 
     // Send message with attachment IDs (context built server-side)
     setInput('');
     setAttachments([]);
+    setEvidenceSourceIds(null);
     setSendError(null);
     setAskCouncil(false);
     setShowCouncilConfirm(false);
@@ -412,11 +457,14 @@ export default function ChatInterface({
     try {
       await onSendMessage(submittedInput, attachmentIds, submittedAttachments, -1, sendOptions);
     } catch (error) {
-      if (error?.status === 409) {
+      if (conversationIdRef.current !== estimateConversationId) return;
+      if ([400, 403, 409, 412].includes(error?.status)) {
         setInput(submittedInput);
         setAttachments(submittedAttachments);
+        setEvidenceSourceIds(evidenceSourceIds);
         setSendError(error.message || budgetCapBlock.detail);
-        setShowBudgetSelector(true);
+        if (error.status === 409) setShowBudgetSelector(true);
+        if (error.status === 412) setAskCouncil(resolvedSendMode === 'council');
       }
     }
 
@@ -433,7 +481,7 @@ export default function ChatInterface({
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (shouldSubmitOnEnter(e)) {
       e.preventDefault();
       handleSubmit();
     }
@@ -531,6 +579,7 @@ export default function ChatInterface({
     // confirm dialog through it is disproportionate for this rare edge case. Add a
     // shared confirm gate here if edit-of-first-message warnings are later required.
 
+    const submittedConversationId = conversation?.id;
     const submittedContent = editingContent;
     const submittedIndex = editingIndex;
     const submittedAttachmentIds = editingAttachmentIds;
@@ -539,17 +588,19 @@ export default function ChatInterface({
     setEditingContent('');
     setEditingAttachmentIds([]);
     setEditingAttachmentMetadata([]);
+    setSendError(null);
 
     try {
-      await onSendMessage(submittedContent, submittedAttachmentIds, submittedAttachmentMetadata, submittedIndex);
+      await onSendMessage(submittedContent, submittedAttachmentIds, submittedAttachmentMetadata, submittedIndex, { evidenceSourceIds });
     } catch (error) {
-      if (error?.status === 409) {
+      if (conversationIdRef.current !== submittedConversationId) return;
+      if ([400, 403, 409, 412].includes(error?.status)) {
         setEditingIndex(submittedIndex);
         setEditingContent(submittedContent);
         setEditingAttachmentIds(submittedAttachmentIds);
         setEditingAttachmentMetadata(submittedAttachmentMetadata);
         setSendError(error.message || budgetCapBlock.detail);
-        setShowBudgetSelector(true);
+        if (error.status === 409) setShowBudgetSelector(true);
       }
     }
   };
@@ -562,7 +613,15 @@ export default function ChatInterface({
       const result = await api.exportConversation(conversation.id);
       toast({
         title: 'Export saved',
-        description: <span className="break-all">{getExportSavedDescription(result.path)}</span>,
+        description: getExportSavedDescription(result.path),
+        action: result.path ? <ToastAction altText="Copy the export file path" onClick={async () => {
+          try {
+            await navigator.clipboard.writeText(result.path);
+            toast({ title: 'Path copied' });
+          } catch {
+            toast({ title: 'Copy unavailable', description: <span className="break-all">{result.path}</span> });
+          }
+        }}>Copy path</ToastAction> : undefined,
       });
     } catch (error) {
       console.error('Failed to export conversation', error);
@@ -596,7 +655,7 @@ export default function ChatInterface({
 
   return (
     <div
-      className="flex flex-col h-full bg-background relative"
+      className="flex h-full min-w-0 bg-background relative"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -611,9 +670,11 @@ export default function ChatInterface({
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between p-4 border-b h-14 shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10">
-        <h3 className="font-semibold truncate max-w-[60%]">{conversation.title}</h3>
-        <div className="flex items-center gap-1">
+      <div className="flex min-w-0 flex-1 flex-col" data-chat-column>
+      <div className="flex items-center justify-between gap-2 pl-14 pr-3 md:px-4 border-b h-14 shrink-0 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-10">
+        <h3 className="min-w-0 flex-1 font-semibold truncate">{conversation.title}</h3>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button ref={materialsTriggerRef} variant={materialsOpen ? 'secondary' : 'ghost'} size="sm" aria-label="Toggle materials sidebar" aria-expanded={materialsOpen} onClick={(event) => { materialsReturnFocusRef.current = event.currentTarget; setMaterialsOpen((open) => !open); }}><PanelRight className="h-4 w-4 sm:mr-2" /><span className="hidden sm:inline">Materials</span></Button>
           <Button variant="ghost" size="sm" onClick={handleExport} disabled={isExporting} title="Export to Markdown">
             {isExporting ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -627,15 +688,21 @@ export default function ChatInterface({
 
 
       <ScrollArea
-        className="flex-1"
+        className="min-h-0 flex-1"
         viewportRef={viewportRef}
         onScroll={handleScroll}
       >
         <div className={getChatSurfaceClass('messages')}>
           {conversation.messages.length === 0 ? (
             <div className="text-center text-muted-foreground py-10">
-              <h2 className="text-xl font-semibold mb-2">Start a conversation</h2>
-              <p>Ask a question to consult the AI Advisory Board</p>
+              <h2 className="text-xl font-semibold mb-2">What are you working on?</h2>
+              <p className="mx-auto max-w-sm text-sm leading-relaxed">Add files in Materials, or start with a question. Ask the Council when you want another perspective.</p>
+              <div className="mt-5 flex flex-wrap justify-center gap-2">
+                {[
+                  ['Summarize sources', 'Summarize the selected materials, cite the key findings, and list what remains uncertain.'],
+                  ['Compare options', 'Compare the options in the selected materials. Cite the tradeoffs and identify missing evidence.'],
+                ].map(([label, prompt]) => <Button key={label} variant="outline" size="sm" onClick={() => { setInput(prompt); textareaRef.current?.focus(); }}>{label}</Button>)}
+              </div>
             </div>
           ) : (
             conversation.messages.map((msg, index) => {
@@ -665,7 +732,7 @@ export default function ChatInterface({
                         className="min-h-[60px] max-h-[200px] resize-y text-sm mb-2"
                         autoFocus
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
+                          if (shouldSubmitOnEnter(e)) {
                             e.preventDefault();
                             handleEditSubmit();
                           }
@@ -681,7 +748,7 @@ export default function ChatInterface({
                     <div className="group/msg relative max-w-[min(85%,42rem)]">
                       <Card className="bg-primary text-primary-foreground p-3">
                         <div className="prose prose-invert max-w-none text-sm">
-                          <MarkdownRenderer>{msg.content}</MarkdownRenderer>
+                          <MarkdownRenderer evidenceSnapshot={msg.metadata?.evidence_snapshot} onCitationClick={openEvidence}>{msg.content}</MarkdownRenderer>
                         </div>
                         {msg.attachments && msg.attachments.length > 0 && (
                           <div className="mt-2 pt-2 border-t border-primary-foreground/20">
@@ -703,6 +770,29 @@ export default function ChatInterface({
                 ) : (
                   <Card className="w-full max-w-full bg-muted/50 p-3 sm:p-4">
                     <div className="flex flex-col gap-4">
+                      {msg.stage3 && (
+                        <Stage3
+                          finalResponse={msg.stage3}
+                          evidenceSnapshot={msg.metadata?.evidence_snapshot}
+                          onCitationClick={openEvidence}
+                          messageKey={`${conversation?.id || 'conversation'}-${index}`}
+                          showReasoningByDefault={settings.showReasoningByDefault}
+                        />
+                      )}
+
+                      {/* Stage 3 Loading */}
+                      {msg.loading?.stage3 && (
+                        <StageProgress
+                          stage="Stage 3: Final Synthesis"
+                          description="The Chairman is synthesizing the final answer..."
+                          modelCount={1}
+                          icon={Crown}
+                        />
+                      )}
+                      {(msg.stage1 || msg.stage2 || msg.loading?.stage1 || msg.loading?.stage2) && (
+                        <details key={msg.stage3 ? 'finished' : 'working'} open={!msg.stage3} className="rounded-md border bg-background/50 px-3 py-2">
+                          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Compare responses & peer reviews</summary>
+                          <div className="mt-4 space-y-5">
                       {/* Stage 1 Loading */}
                       {msg.loading?.stage1 && (
                         <StageProgress
@@ -740,21 +830,8 @@ export default function ChatInterface({
                         />
                       )}
 
-                      {/* Stage 3 Loading */}
-                      {msg.loading?.stage3 && (
-                        <StageProgress
-                          stage="Stage 3: Final Synthesis"
-                          description="The Chairman is synthesizing the final answer..."
-                          modelCount={1}
-                          icon={Crown}
-                        />
-                      )}
-                      {msg.stage3 && (
-                        <Stage3
-                          finalResponse={msg.stage3}
-                          messageKey={`${conversation?.id || 'conversation'}-${index}`}
-                          showReasoningByDefault={settings.showReasoningByDefault}
-                        />
+                          </div>
+                        </details>
                       )}
 
                       {/* Chat Mode */}
@@ -795,28 +872,13 @@ export default function ChatInterface({
 
                       {msg.content && (
                         <div className="prose max-w-none text-sm dark:prose-invert">
-                          <MarkdownRenderer>{msg.content}</MarkdownRenderer>
+                          <MarkdownRenderer evidenceSnapshot={msg.metadata?.evidence_snapshot} onCitationClick={openEvidence}>{msg.content}</MarkdownRenderer>
                         </div>
                       )}
 
-                      {/* Running Cost Display */}
-                      {msg.role === 'assistant' && (
-                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-xs text-muted-foreground">
-                          <span>
-                            Turn Cost: <span className="font-mono">${(msg.running_cost || 0).toFixed(6)}</span>
-                          </span>
-                          {msg.stage3?.confidence && (
-                            <span className={cn(
-                              "px-2 py-0.5 rounded text-xs font-medium",
-                              msg.stage3.confidence === 'HIGH' && "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-                              msg.stage3.confidence === 'MEDIUM' && "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-                              msg.stage3.confidence === 'LOW' && "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                            )}>
-                              {msg.stage3.confidence} Confidence
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      <TurnState message={msg} onOpen={openEvidence} />
+
+
                     </div>
                   </Card>
                 )}
@@ -834,11 +896,16 @@ export default function ChatInterface({
       </ScrollArea>
 
       <div className="border-t bg-background">
+        {streamStatus?.conversationId === conversation?.id && (
+          <p role="status" className="px-4 py-2 text-sm text-muted-foreground">
+            {streamStatus.text}. Check saved status before leaving; unconfirmed text remains available to copy.
+          </p>
+        )}
         <div className={getChatSurfaceClass('composer')}>
           <TrustRow
             conversation={conversation}
             settings={settings}
-            attachmentCount={attachments.length}
+            attachmentCount={evidenceSourceIds === null ? materialOptions.size : evidenceSourceIds.length}
             budgetWarning={budgetWarning}
             onOpenBudget={() => setShowBudgetSelector(true)}
             // D3: web search affects the estimate, so freeze its toggles while an
@@ -913,6 +980,7 @@ export default function ChatInterface({
                 aria-pressed={askCouncil}
                 disabled={composerDisabled}
                 onClick={() => {
+                  if (!askCouncil && !conversation?.metadata?.council_models?.length) onConfigureCouncil?.();
                   setAskCouncil((prev) => !prev);
                   setShowCouncilConfirm(false);
                 }}
@@ -934,6 +1002,12 @@ export default function ChatInterface({
                   : 'This looks like a larger-than-usual turn.'}
                 {turnEstimate?.predicted_cost > 0 && (
                   <> Est. ~{formatCurrency(turnEstimate.predicted_cost)} (approximate).</>
+                )}
+                {(askCouncil || nextMessageMode === 'council') && (
+                  <span className="mt-1 block break-words text-xs">
+                    Members: {(turnEstimate?.council_models || conversation?.metadata?.council_models || []).join(', ') || 'Unavailable'}
+                    <br />Chairman: {turnEstimate?.chairman_model || conversation?.metadata?.chairman_model || 'Unavailable'}
+                  </span>
                 )}
               </span>
               <div className="flex gap-2">
@@ -973,7 +1047,9 @@ export default function ChatInterface({
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask your question... (Shift+Enter for new line)"
+                aria-label="Ask your question"
+                placeholder="Ask your question…"
+                title="Shift+Enter for a new line"
                 className="min-h-[44px] max-h-[min(32vh,200px)] resize-none py-3 pr-10"
                 // D3: lock the prompt while a confirm is pending so the sent turn
                 // matches the estimate shown (Codex #110). isEstimating is already in
@@ -989,7 +1065,11 @@ export default function ChatInterface({
               />
             </div>
 
-            <Button
+            {isLoading ? (
+              <Button type="button" variant="outline" onClick={onStopMessage} aria-label="Stop response">
+                Stop
+              </Button>
+            ) : <Button
               onClick={(e) => handleSubmit(e)}
               disabled={(!input.trim() && attachments.length === 0) || composerDisabled}
               className="h-10 w-10 shrink-0"
@@ -997,7 +1077,7 @@ export default function ChatInterface({
               title={budgetCapBlock.blocked ? budgetCapBlock.action : 'Send message'}
             >
               {isUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            </Button>
+            </Button>}
           </div>
 
           <SessionBudgetSelector
@@ -1017,6 +1097,11 @@ export default function ChatInterface({
           />
         </div>
       </div>
+      </div>
+      <EvidencePanel open={materialsOpen} onClose={() => setMaterialsOpen(false)} selection={evidenceSelection}
+        view={materialsView} onViewChange={setMaterialsView} sources={[...materialOptions.values()]}
+        selectedIds={evidenceSourceIds} onSelectionChange={setEvidenceSourceIds} disabled={composerDisabled || showCouncilConfirm}
+        onAddFiles={() => fileInputRef.current?.click()} uploadDisabled={attachDisabled} isUploading={isUploading} triggerRef={materialsTriggerRef} returnFocusRef={materialsReturnFocusRef} />
     </div>
   );
 }

@@ -179,3 +179,22 @@ async def test_export_conversation_returns_404_for_missing_conversation(monkeypa
         await main.export_conversation("missing-conversation")
 
     assert exc.value.status_code == 404
+
+
+def test_export_moves_exact_manifests_after_answers_without_losing_their_association():
+    import json
+    import re
+    from backend.conversation_export import build_conversation_markdown
+
+    messages = [{"role": "assistant", "content": "Legacy"}]
+    expected = []
+    for i in range(2):
+        manifest = dict(run_id=f"run-{i}", generation_state="complete", persistence_state="saved",
+                        memory_state="pending", evidence_snapshot={"text": "```json\n原文"}, citation_checks={})
+        expected.append(manifest)
+        messages.append({"role": "assistant", "content": f"Answer {i}", "metadata": {"schema_version": 1, **manifest}})
+    exported = build_conversation_markdown({"messages": messages})
+    assert exported.index("Answer 1") < exported.index("## Turn state and evidence manifest")
+    assert "[Evidence record for answer 2](#evidence-record-2)" in exported
+    assert "[Evidence record for answer 3](#evidence-record-3)" in exported
+    assert [json.loads(m[1]) for m in re.findall(r"(`{3,})json\n(.*?)\n\1", exported, re.S)] == expected

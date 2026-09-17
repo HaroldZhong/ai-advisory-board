@@ -20,6 +20,9 @@ dependencies = [
     "pywebview>=6.1",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp==2.2.0"]
+
 [dependency-groups]
 dev = [
     "pytest",

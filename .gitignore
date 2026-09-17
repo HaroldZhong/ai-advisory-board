@@ -112,3 +112,7 @@ test_output.txt
 
 # Local planning and handoff notes
 dev docs/
+.scratch/
+
+# New local documentation stays untracked; existing installation guide remains tracked.
+/docs/

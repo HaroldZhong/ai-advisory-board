@@ -45,13 +45,8 @@ async def test_sync_council_indexes_the_conversation_after_the_assistant_message
     monkeypatch.setattr(
         main.storage,
         "get_conversation",
-        # Five reads: endpoint pre-flight, the expected_anchor read right
-        # after add_assistant_message (Codex round 17), the fresh-metadata
-        # ZDR check guarding the indexing block (_zdr_flipped_on, Codex
-        # round 14), the source-turn-intact pre-check guarding the same
-        # block (_source_turn_missing, Codex round 27), and the
-        # completion-event total-cost read.
-        Mock(side_effect=[initial_conversation, indexed_conversation, indexed_conversation, indexed_conversation, indexed_conversation]),
+        # Return the appropriate state, independent of additional metadata reads.
+        Mock(side_effect=lambda _id: indexed_conversation if main.storage.add_assistant_message.called else initial_conversation),
     )
     monkeypatch.setattr(main.storage, "add_user_message", Mock())
     monkeypatch.setattr(main.storage, "update_conversation_title", Mock())

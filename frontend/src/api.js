@@ -56,9 +56,9 @@ export const api = {
   /**
    * Get a specific conversation.
    */
-  async getConversation(conversationId) {
+  async getConversation(conversationId, options = {}) {
     const response = await fetch(
-      `${API_BASE}/api/conversations/${conversationId}`
+      `${API_BASE}/api/conversations/${conversationId}`, { signal: options.signal }
     );
     if (!response.ok) {
       throw new Error('Failed to get conversation');
@@ -99,7 +99,7 @@ export const api = {
    * pending message + routing so the backend runs the SAME task-signal routing as
    * the send path (a long/file/research turn on auto mode is not under-estimated).
    */
-  async getTurnEstimate(conversationId, { content = '', hasAttachments = false, mode = 'council', executionMode, ragPreset, modelTier, webSearchEnabled = false, webSearchDepth = 'fast', thinkingEffort } = {}) {
+  async getTurnEstimate(conversationId, { content = '', hasAttachments = false, attachmentIds, evidenceSourceIds, mode = 'council', executionMode, ragPreset, modelTier, webSearchEnabled = false, webSearchDepth = 'fast', thinkingEffort } = {}) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/estimate`,
       {
@@ -108,6 +108,8 @@ export const api = {
         body: JSON.stringify({
           content,
           has_attachments: hasAttachments,
+          attachment_ids: attachmentIds,
+          evidence_source_ids: evidenceSourceIds,
           mode,
           execution_mode: executionMode || 'auto',
           rag_preset: ragPreset || 'auto',
@@ -163,6 +165,8 @@ export const api = {
           execution_mode: options.executionMode || 'auto',
           rag_preset: options.ragPreset || 'auto',
           model_tier: options.modelTier || 'auto',
+          expected_council_models: options.expectedCouncilModels,
+          expected_chairman_model: options.expectedChairmanModel,
         }),
       }
     );
@@ -181,11 +185,12 @@ export const api = {
    * @param {string[]} attachmentIds - Optional list of attachment IDs to include
    * @returns {Promise<void>}
    */
-  async sendMessageStream(conversationId, content, onEvent, mode = 'auto', attachmentIds = [], webSearch = {}, editIndex = -1) {
+  async sendMessageStream(conversationId, content, onEvent, mode = 'auto', attachmentIds = [], webSearch = {}, editIndex = -1, signal) {
     const response = await fetch(
       `${API_BASE}/api/conversations/${conversationId}/message/stream`,
       {
         method: 'POST',
+        signal,
         headers: {
           'Content-Type': 'application/json',
         },
@@ -193,6 +198,9 @@ export const api = {
           content,
           mode,
           attachment_ids: attachmentIds,
+          evidence_source_ids: webSearch.evidenceSourceIds,
+          expected_council_models: webSearch.expectedCouncilModels,
+          expected_chairman_model: webSearch.expectedChairmanModel,
           web_search_enabled: webSearch.enabled || false,
           web_search_depth: webSearch.depth || 'fast',
           custom_instructions: webSearch.customInstructions || '',
@@ -249,8 +257,8 @@ export const api = {
   },
 
   // Get available models
-  async getModels() {
-    const response = await fetch(`${API_BASE}/api/models`);
+  async getModels({ refresh = false } = {}) {
+    const response = await fetch(`${API_BASE}/api/models${refresh ? '?refresh=true' : ''}`);
     if (!response.ok) {
       throw new Error('Failed to fetch models');
     }

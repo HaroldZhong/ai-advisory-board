@@ -112,6 +112,7 @@ class EvidencePack(BaseModel):
     key_facts: List[KeyFact] = Field(default_factory=list)
     limits: UsageLimits = Field(default_factory=UsageLimits)
     open_questions: List[str] = Field(default_factory=list)
+    material_snapshot: Optional[Dict[str, Any]] = None
 
 # -------------------------------------------------------------------------
 # Registry Types

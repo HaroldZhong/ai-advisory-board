@@ -1,6 +1,6 @@
 export const RESPONSIVE_WIDTHS = {
   minimumDesktop: 960,
-  fullDesktop: 1024,
+  fullDesktop: 1280,
 };
 
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = 'aab.sidebar.collapsed';

@@ -466,6 +466,7 @@ class CouncilRAG:
         topics: List[str],
         quality_metrics: Dict[str, Dict[str, float]],
         expected_anchor: Optional[int] = None,
+        index_outcome: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Index one council session as chronological memory blocks.
@@ -481,6 +482,8 @@ class CouncilRAG:
         Returns the summary-compression LLM call's usage dict when the P5-T5
         summary tier compressed this conversation's oldest turns, else None.
         """
+        if index_outcome is not None:
+            index_outcome["state"] = "skipped"
         if not self.enabled:
             return None
 
@@ -563,7 +566,9 @@ class CouncilRAG:
             }
             turns.append(turn_memory)
             usage = await self._maybe_compress_oldest_half(conversation_id)
-            self._save_store()
+            saved = self._save_store()
+            if index_outcome is not None:
+                index_outcome["state"] = "indexed" if saved else "failed"
             if self.enabled:
                 logger.info("[PHASE1] Indexed turn %d for conv=%s into PageIndex", turn_index, conversation_id)
             return usage
@@ -575,6 +580,7 @@ class CouncilRAG:
         answer: str,
         topics: List[str],
         expected_anchor: Optional[int] = None,
+        index_outcome: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Index one chat turn into cross-conversation memory. Chat turns
@@ -595,6 +601,8 @@ class CouncilRAG:
         Returns the summary-compression LLM call's usage dict when the P5-T5
         summary tier compressed this conversation's oldest turns, else None.
         """
+        if index_outcome is not None:
+            index_outcome["state"] = "skipped"
         if not self.enabled:
             return None
 
@@ -647,7 +655,9 @@ class CouncilRAG:
             }
             turns.append(turn_memory)
             usage = await self._maybe_compress_oldest_half(conversation_id)
-            self._save_store()
+            saved = self._save_store()
+            if index_outcome is not None:
+                index_outcome["state"] = "indexed" if saved else "failed"
             if self.enabled:
                 logger.info("[RAG] Indexed chat turn %d for conv=%s into PageIndex", turn_index, conversation_id)
             return usage

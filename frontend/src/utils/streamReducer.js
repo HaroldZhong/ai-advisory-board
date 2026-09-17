@@ -49,6 +49,13 @@ export function streamReducer(state, event, context = {}) {
   const { availableModels } = context;
 
   switch (event.type) {
+    case 'turn_state':
+      return updateLastMessage(state, (msg) => ({
+        ...msg,
+        metadata: { ...msg.metadata, ...event.metadata },
+        turn_state: event.data,
+      }));
+
     case 'stage1_start':
       return updateLastMessage(state, (msg) => ({
         ...msg,
@@ -95,7 +102,7 @@ export function streamReducer(state, event, context = {}) {
         return {
           ...msg,
           stage2,
-          metadata: event.metadata,
+          metadata: { ...msg.metadata, ...event.metadata },
           loading: { ...msg.loading, stage2: false },
           running_cost: (msg.running_cost || 0) + cost,
         };

@@ -310,13 +310,15 @@ async function installMockApi(page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Never fall through to a real backend when a mock route is missing.
+  await page.route(`${API_BASE}/**`, (route) => route.abort('blockedbyclient'));
   await page.addInitScript(() => {
     window.localStorage.clear();
   });
 });
 
 async function completeSetupToNewConversation(page) {
-  await installMockApi(page);
+  const requests = await installMockApi(page);
   await page.setViewportSize({ width: 1024, height: 900 });
   await page.goto('/app');
 
@@ -328,7 +330,90 @@ async function completeSetupToNewConversation(page) {
   await page.getByRole('button', { name: /Continue/ }).click();
   await page.getByRole('button', { name: /Finish/ }).click();
   await expect(page.getByRole('heading', { name: 'New conversation' })).toBeVisible();
+  return requests;
 }
+
+test('desktop model selector recovers from its first failed load without reopening', async ({ page }) => {
+  await completeSetupToNewConversation(page);
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  let fail = true;
+  await page.route(`${API_BASE}/api/models**`, route => route.fulfill(json(modelsPayload, fail ? 503 : 200)));
+  await page.getByRole('button', { name: 'New chat', exact: true }).click();
+  await expect(page.getByText('Failed to load models', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeDisabled();
+  fail = false;
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect(page.getByText('Failed to load models', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Claude Opus 4.8 Chairman Default Preview.*\/M in/ })).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('desktop council selection can explicitly replace a model removed by its provider', async ({ page }) => {
+  const requests = await completeSetupToNewConversation(page);
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Council', exact: true }).click();
+  await page.getByRole('button', { name: 'Custom', exact: true }).click();
+  const selected = page.getByRole('group', { name: 'Selected council models', exact: true });
+  await expect(selected.getByRole('button', { name: `Remove ${MODEL_GLM}`, exact: true })).toBeVisible();
+  await page.route(`${API_BASE}/api/models**`, route => route.fulfill(json({
+    ...modelsPayload, models: modelsPayload.models.filter(entry => entry.id !== MODEL_GLM),
+  })));
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect(selected.getByText('Needs replacement', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeDisabled();
+  await selected.getByRole('button', { name: `Remove ${MODEL_GLM}`, exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeDisabled();
+  await page.getByRole('button', { name: /Claude Haiku 4.5 Extended Reasoning Preview.*\/M in/ }).click();
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Start conversation' }).click();
+  await expect.poll(() => requests.createConversation).not.toBeNull();
+  expect(requests.createConversation.council_models).toEqual([MODEL_QWEN, MODEL_GPT_ZDR, MODEL_CLAUDE_HAIKU]);
+});
+
+test('desktop model refresh preserves choices, discovers models and reports removal/failure', async ({ page }) => {
+  await completeSetupToNewConversation(page);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  let payload = {
+    ...modelsPayload,
+    models: [...modelsPayload.models, model('new/fresh', 'New: Fresh Model', { input: null, output: null })],
+    catalog: { last_fetched: 1789600000, stale: false },
+  };
+  let fail = false;
+  await page.route(`${API_BASE}/api/models**`, route => route.fulfill(json(payload, fail ? 503 : 200)));
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect(page.getByRole('button', { name: /Claude Opus 4.8 Chairman Default Preview.*\/M in/ })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('textbox', { name: 'Search models' }).fill('new/fresh');
+  const fresh = page.getByRole('button', { name: /Fresh Model.*Price not reported/ });
+  await expect(fresh).toBeVisible();
+  await fresh.click();
+  await expect(page.getByText('n/a est.', { exact: true })).toBeVisible();
+  payload = { ...payload, models: payload.models.map(entry => entry.id === 'new/fresh' ? { ...entry, pricing: { input: 9, output: 10 } } : entry) };
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect(page.getByRole('button', { name: /Fresh Model.*\$9\/M in/ })).toHaveAttribute('aria-pressed', 'true');
+  payload = { ...payload, models: modelsPayload.models };
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect(page.getByText(/A selected model is unavailable/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeDisabled();
+  await expect(page.getByText('new/fresh', { exact: true })).toBeVisible();
+  fail = true;
+  await page.getByRole('button', { name: 'Refresh models' }).click();
+  await expect(page.getByText('Refresh failed. Keeping the previous catalog.', { exact: true })).toBeVisible();
+  await expect(page.getByText('new/fresh', { exact: true })).toBeVisible();
+});
+
+test('active desktop discovers catalog changes without clicking refresh', async ({ page }) => {
+  await page.clock.install();
+  await completeSetupToNewConversation(page);
+  await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
+  await page.route(`${API_BASE}/api/models**`, route => route.fulfill(json({
+    ...modelsPayload, models: [...modelsPayload.models, model('new/auto', 'New: Automatic Discovery')],
+    catalog: { last_fetched: 1789600000, stale: false },
+  })));
+  await page.clock.fastForward(60_000);
+  await page.getByRole('textbox', { name: 'Search models' }).fill('new/auto');
+  await expect(page.getByRole('button', { name: /Automatic Discovery.*\/M in/ })).toBeVisible();
+});
 
 async function expectVisibleModelGridsFit(page, label) {
   const metrics = await page.locator('[role="dialog"]').evaluate((dialog) => {
@@ -456,7 +541,7 @@ test('first-run setup creates a private preset conversation and renders streamed
   await expect(page.getByText('reasoning: 1.2k tokens')).toBeVisible();
   await expect(page.getByText('Reasoning complete').first()).toBeVisible();
   await expect(page.getByText('The answer is 5.')).toBeVisible();
-  await expect(page.getByText('Turn Cost:')).toBeVisible();
+  await expect(page.getByText('Recorded cost:')).toBeVisible();
   await expect(page.getByText('$0.000356')).toBeVisible();
   await expect(page.getByText('Session cost')).toBeVisible();
 
@@ -584,3 +669,291 @@ test('reopening the budget dialog re-seeds the hard-cap toggle from the saved po
   await openBudget.click();
   await expect(hardCap).not.toBeChecked();
 });
+
+const materialSnapshot = {
+  schema_version: 1, content_hash: 'demo-content',
+  sources: [{ source_id: 'att_demo1', version_id: 'v1', alias: 'S1', title: '研究资料.pdf', status: 'partial', included: [1], omitted: [2] }],
+  citations: { '[S1.1]': { source_id: 'att_demo1', version_id: 'v1', ordinal: 1, page: 2, start: 9, end: 19, text: '项目预算为100万元。' } },
+};
+
+async function openResearchConversation(page) {
+  const requests = await installMockApi(page);
+  const conversation = createConversation({ default_mode: 'chat', budget_usd: 2 });
+  conversation.title = 'Research sources';
+  conversation.messages = [
+    { role: 'user', content: '项目预算？', attachment_ids: ['att_demo1'], attachments: [{ attachment_id: 'att_demo1', filename: '研究资料.pdf', status: 'partial' }] },
+    { role: 'assistant', content: '项目预算为100万元 [S1.1]。未核验 [S9.9]。', metadata: {
+      schema_version: 1, run_id: 'saved-run', generation_state: 'complete', persistence_state: 'saved', memory_state: 'skipped',
+      evidence_snapshot: materialSnapshot, citation_checks: { items: [{ token: '[S1.1]', status: 'valid_locator' }, { token: '[S9.9]', status: 'invalid_id' }] },
+    } },
+  ];
+  await page.route(`${API_BASE}/api/config/status`, (route) => route.fulfill(json({ has_api_key: true })));
+  await page.route(`${API_BASE}/api/conversations`, (route) => route.fulfill(json([conversation])));
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}`, (route) => route.fulfill(json(conversation)));
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`, async (route) => {
+    requests.estimate = route.request().postDataJSON();
+    await route.fulfill(json({ predicted_cost: 0.01, approximate: true, is_large: false }));
+  });
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/message/stream`, async (route) => {
+    requests.stream = route.request().postDataJSON();
+    await route.fulfill(sse([
+      { type: 'chat_response', data: { content: 'Done' } },
+      { type: 'complete', data: { turn_cost: 0, total_cost: 0, session_usage: {}, budget_spent_pct: 0 } },
+    ]));
+  });
+  await page.goto(`/c/${CONVERSATION_ID}`);
+  await expect(page.getByText('项目预算为100万元', { exact: false }).first()).toBeVisible();
+  return { requests, conversation };
+}
+
+for (const width of [1280, 390]) {
+  test(`material citations open their saved source at ${width}px with keyboard dismissal`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await openResearchConversation(page);
+    const citation = page.getByRole('button', { name: '[S1.1]', exact: true });
+    await citation.focus();
+    await page.keyboard.press('Enter');
+    const panel = width < 1024 ? page.getByRole('dialog') : page.getByRole('complementary', { name: 'Materials' });
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText('[S1.1] · Page 2 · Chunk 1', { exact: false })).toBeVisible();
+    await expect(panel.getByText('partial · 1 chunks read · 1 unread')).toBeVisible();
+    if (width >= 1024) {
+      const content = await page.locator('[data-chat-column]').boundingBox();
+      const rail = await panel.boundingBox();
+      expect(content.x + content.width).toBeLessThanOrEqual(rail.x + 1);
+    }
+    await expect(page.getByRole('button', { name: '[S9.9]', exact: true })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(panel).toHaveCount(0);
+    await expect(citation).toBeFocused();
+    const materialsToggle = page.getByRole('button', { name: 'Toggle materials sidebar' });
+    await materialsToggle.click();
+    await panel.getByRole('button', { name: 'Materials', exact: true }).focus();
+    await page.keyboard.press('Escape');
+    await expect(materialsToggle).toBeFocused();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+    expect(overflow).toBe(false);
+  });
+}
+
+test('empty material scope is identical in estimate and send', async ({ page }) => {
+  const { requests } = await openResearchConversation(page);
+  if (!(await page.getByRole('button', { name: 'Use none', exact: true }).isVisible())) await page.getByRole('button', { name: 'Toggle materials sidebar' }).click();
+  await page.getByRole('button', { name: 'Use none', exact: true }).click();
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Do not use materials this turn');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect.poll(() => requests.stream).not.toBeNull();
+  expect(requests.estimate.evidence_source_ids).toEqual([]);
+  expect(requests.stream.evidence_source_ids).toEqual([]);
+  expect(requests.estimate.attachment_ids).toEqual(requests.stream.attachment_ids);
+});
+
+for (const scenario of ['waiting', 'partial', 'eof']) {
+  test(`interrupted ${scenario} response keeps a draft across navigation without claiming it saved`, async ({ page }) => {
+    await openResearchConversation(page);
+    await page.evaluate((scenario) => {
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (!String(url).endsWith('/message/stream')) return original(url, options);
+        const encoder = new TextEncoder();
+        const events = [
+          { type: 'turn_state', data: { run_id: 'pending-run', generation: 'pending', persistence: 'pending', memory: 'pending' }, metadata: { run_id: 'pending-run' } },
+          { type: 'chat_start' },
+        ];
+        if (scenario !== 'waiting') events.push({ type: 'content_delta', data: { stage: 'chat', text: '未确认的部分正文' } });
+        return new Response(new ReadableStream({ start(controller) {
+          for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          options.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')));
+          if (scenario === 'eof') controller.close();
+        } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      };
+    }, scenario);
+    await page.getByRole('textbox', { name: /Ask your question/ }).fill('Keep this pending request');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    if (scenario !== 'eof') {
+      if (scenario === 'partial') await expect(page.getByText('未确认的部分正文', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+      await expect(page.getByText('Stop requested.', { exact: false }).first()).toBeVisible();
+      await expect(page.getByText('Response failed', { exact: true })).toHaveCount(0);
+    } else {
+      await expect(page.getByText('Connection lost.', { exact: false }).first()).toBeVisible();
+    }
+    await expect(page.getByText('Unconfirmed drafts (1)', { exact: true })).toBeVisible();
+    await page.evaluate(() => { history.pushState({}, '', '/app'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    await page.getByText('Unconfirmed drafts (1)', { exact: true }).click();
+    const draft = page.getByRole('textbox', { name: 'Unconfirmed response text' });
+    await expect(draft).toContainText('Keep this pending request');
+    if (scenario !== 'waiting') await expect(draft).toContainText('未确认的部分正文');
+    await page.getByRole('button', { name: 'Discard this draft', exact: true }).click();
+    await expect(draft).toHaveCount(0);
+  });
+}
+
+test('stop during memory indexing reconciles the saved run without creating a false draft', async ({ page }) => {
+  const { conversation } = await openResearchConversation(page);
+  await page.evaluate(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = async (url, options) => {
+      if (!String(url).endsWith('/message/stream')) return original(url, options);
+      const events = [
+        { type: 'chat_start' },
+        { type: 'chat_response', data: { content: 'Already saved answer' } },
+        { type: 'turn_state', data: { run_id: 'committed-run', generation: 'complete', persistence: 'saved', memory: 'pending' }, metadata: { run_id: 'committed-run', persistence_state: 'saved', memory_state: 'pending' } },
+      ];
+      return new Response(new ReadableStream({ start(controller) {
+        const encoder = new TextEncoder();
+        for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        options.signal.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')));
+      } }), { headers: { 'content-type': 'text/event-stream' } });
+    };
+  });
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Save before indexing');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText('Already saved answer', { exact: true })).toBeVisible();
+  conversation.messages.push({ role: 'user', content: 'Save before indexing' }, {
+    role: 'assistant', content: 'Already saved answer', metadata: { schema_version: 1, run_id: 'committed-run', generation_state: 'complete', persistence_state: 'saved', memory_state: 'pending' },
+  });
+  await page.getByRole('button', { name: 'Stop response', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible();
+  await expect(page.getByText('Already saved answer', { exact: true })).toBeVisible();
+  await expect(page.getByText('Answer: complete · Saved: saved · Memory: pending', { exact: true })).toBeVisible();
+  await expect(page.getByText('Unconfirmed drafts (1)', { exact: true })).toHaveCount(0);
+});
+
+test('Chat without a roster configures Council in the same conversation before estimating or sending', async ({ page }) => {
+  const { requests, conversation } = await openResearchConversation(page);
+  delete conversation.metadata.council_models;
+  conversation.metadata.chairman_model = 'local/chat';
+  await page.route(`${API_BASE}/api/config/status`, (route) => route.fulfill(json({ has_api_key: true, provider_kind: 'openai-compatible' })));
+  let configured;
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}`, async (route) => {
+    if (route.request().method() === 'PUT') {
+      configured = route.request().postDataJSON();
+      conversation.metadata = { ...conversation.metadata, ...configured };
+    }
+    await route.fulfill(json(conversation));
+  });
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`, async (route) => {
+    requests.estimate = route.request().postDataJSON();
+    await route.fulfill(json({ predicted_cost: 0.01, approximate: true, is_large: false, council_models: conversation.metadata.council_models, chairman_model: conversation.metadata.chairman_model }));
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Ask the council', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Configure council', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Chat', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Use these models', exact: true }).click();
+  await expect.poll(() => configured).toBeTruthy();
+  expect(configured.council_models.length).toBeGreaterThanOrEqual(3);
+  expect(configured.chairman_model).toBe('local/chat');
+  expect(requests.stream).toBeNull();
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Use the configured roster');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText(`Members: ${configured.council_models.join(', ')}`, { exact: false })).toBeVisible();
+  await expect(page.getByText('Chairman: local/chat', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => requests.stream).not.toBeNull();
+  expect(requests.stream.mode).toBe('council');
+  await expect(page).toHaveURL(new RegExp(`/c/${CONVERSATION_ID}$`));
+});
+
+test('a changed Council roster restores the draft and requires a fresh confirmation', async ({ page }) => {
+  const { conversation, requests } = await openResearchConversation(page);
+  const original = ['local/a', 'local/b', 'local/c'];
+  let roster = original;
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/estimate`, async (route) => {
+    requests.estimate = route.request().postDataJSON();
+    await route.fulfill(json({ predicted_cost: 0.01, approximate: true, is_large: false, council_models: roster, chairman_model: 'local/chair' }));
+  });
+  let sends = [];
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/message/stream`, async (route) => {
+    sends.push(route.request().postDataJSON());
+    roster = ['local/new-a', 'local/new-b', 'local/new-c'];
+    await route.fulfill({ ...json({ detail: 'Council models changed. Review the new estimate and confirm again.' }), status: 412 });
+  });
+  const prompt = page.getByRole('textbox', { name: /Ask your question/ });
+  if (!(await page.getByRole('button', { name: 'Use none', exact: true }).isVisible())) await page.getByRole('button', { name: 'Toggle materials sidebar' }).click();
+  await page.getByRole('button', { name: 'Use none', exact: true }).click();
+  await page.getByRole('button', { name: 'Ask the council', exact: true }).click();
+  await prompt.fill('Keep my draft and selected scope');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText(`Members: ${original.join(', ')}`, { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect(prompt).toHaveValue('Keep my draft and selected scope');
+  await expect(page.getByText('Council models changed. Review the new estimate and confirm again.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(sends[0].expected_council_models).toEqual(original);
+  expect(sends[0].expected_chairman_model).toBe('local/chair');
+  expect(sends[0].evidence_source_ids).toEqual([]);
+  expect(conversation.messages).toHaveLength(2);
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText(`Members: ${roster.join(', ')}`, { exact: false })).toBeVisible();
+  expect(sends).toHaveLength(1);
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => sends.length).toBe(2);
+  expect(sends[1].expected_council_models).toEqual(roster);
+  expect(sends[1].evidence_source_ids).toEqual([]);
+});
+
+test('a late Council precondition error cannot overwrite another conversation draft', async ({ page }) => {
+  const { conversation } = await openResearchConversation(page);
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  let requested = false;
+  await page.route(`${API_BASE}/api/conversations/${CONVERSATION_ID}/message/stream`, async (route) => {
+    requested = true;
+    await pending;
+    await route.fulfill({ ...json({ detail: 'Council models changed. Review the new estimate and confirm again.' }), status: 412 });
+  });
+  const next = { ...conversation, id: 'other-conversation', messages: [] };
+  await page.route(`${API_BASE}/api/conversations/other-conversation`, (route) => route.fulfill(json(next)));
+  await page.getByRole('button', { name: 'Ask the council', exact: true }).click();
+  await page.getByRole('textbox', { name: /Ask your question/ }).fill('Old conversation draft');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(() => requested).toBe(true);
+  await page.evaluate(() => { history.pushState({}, '', '/c/other-conversation'); window.dispatchEvent(new PopStateEvent('popstate')); });
+  await expect(page).toHaveURL(/other-conversation$/);
+  release();
+  const prompt = page.getByRole('textbox', { name: /Ask your question/ });
+  await expect(prompt).toBeEnabled();
+  await expect(prompt).toHaveValue('');
+  await prompt.fill('New conversation draft');
+  await expect(page.getByText('Council models changed. Review the new estimate and confirm again.', { exact: true })).toHaveCount(0);
+  await expect(prompt).toHaveValue('New conversation draft');
+});
+
+
+for (const width of [1280, 1024, 1440]) {
+  test(`materials workspace preserves scope separately from saved sources at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const { requests } = await openResearchConversation(page);
+    await expect(page.locator('summary').filter({ hasText: 'Materials for this turn' })).toHaveCount(0);
+    const toggle = page.getByRole('button', { name: 'Toggle materials sidebar' });
+    if (width < 1024) await toggle.click();
+    const panel = width < 1024 ? page.getByRole('dialog') : page.getByRole('complementary', { name: 'Materials' });
+    await expect(panel.getByRole('heading', { name: 'Conversation files' })).toBeVisible();
+    await expect(panel.getByText('Partially extracted', { exact: true })).toBeVisible();
+    await panel.getByRole('checkbox', { name: 'Use 研究资料.pdf' }).uncheck();
+    await expect(panel.getByText('The next answer will not use conversation files.')).toBeVisible();
+    if (width < 1024) await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '[S1.1]', exact: true }).click();
+    await expect(panel.getByText('项目预算为100万元。', { exact: false })).toBeVisible();
+    await panel.getByRole('button', { name: 'Materials', exact: true }).click();
+    await expect(panel.getByRole('checkbox', { name: 'Use 研究资料.pdf' })).not.toBeChecked();
+    await panel.getByRole('button', { name: 'Use all', exact: true }).click();
+    if (width < 1024) await page.keyboard.press('Escape');
+    const input = page.getByRole('textbox', { name: 'Ask your question', exact: true });
+    const inputBox = await input.boundingBox();
+    expect(inputBox.y + inputBox.height).toBeLessThanOrEqual(844);
+    const column = await page.locator('[data-chat-column]').boundingBox();
+    expect(column.width).toBeGreaterThanOrEqual(560);
+    // Compact controls leave at least half the desktop window height for reading.
+    expect(inputBox.y).toBeGreaterThan(422);
+    await input.fill('Use the conversation files again');
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect.poll(() => requests.stream).not.toBeNull();
+    expect(requests.estimate.evidence_source_ids ?? null).toBeNull();
+    expect(requests.stream.evidence_source_ids ?? null).toBeNull();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+  });
+}

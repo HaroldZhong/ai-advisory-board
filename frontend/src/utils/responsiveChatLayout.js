@@ -8,11 +8,11 @@ export function getChatSurfaceClass(surface = 'messages') {
 }
 
 export function getTrustRowGridClass() {
-  return 'grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1.25fr_1fr_1fr_auto]';
+  return 'flex flex-wrap items-center gap-1.5';
 }
 
 export function getTrustRowCostTileClass() {
-  return 'col-span-1 flex min-h-[52px] items-center justify-between rounded-md border bg-muted/30 px-3 py-2 sm:col-span-2 xl:col-span-1 xl:min-w-[130px] xl:flex-col xl:items-end xl:justify-center';
+  return 'ml-auto flex h-8 items-center gap-2 text-muted-foreground';
 }
 
 export function getStageTabListClass() {

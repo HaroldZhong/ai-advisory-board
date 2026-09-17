@@ -269,3 +269,11 @@ test('B5: per-member reasoning_tokens actuals carry through completes without br
   }, { availableModels });
   assert.equal(lastMessage(s3).stage3.reasoning_tokens, 64);
 });
+
+test('turn_state survives stage metadata and keeps save separate from generation', () => {
+  let state = { conversation: { messages: [{ role: 'assistant' }] }, isLoading: true, budgetWarning: null };
+  state = streamReducer(state, { type: 'turn_state', data: { run_id: 'r', generation: 'complete', persistence: 'pending', memory: 'pending' }, metadata: { run_id: 'r', evidence_snapshot: { citations: {} } } });
+  state = streamReducer(state, { type: 'stage2_complete', data: [], metadata: { label_to_model: {} } }, { availableModels: [] });
+  assert.equal(state.conversation.messages[0].metadata.run_id, 'r');
+  assert.equal(state.conversation.messages[0].turn_state.persistence, 'pending');
+});

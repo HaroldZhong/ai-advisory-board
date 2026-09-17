@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { streamReducer } from '../utils/streamReducer';
 import { applyStreamUpdateToActiveConversation } from '../utils/reasoningMessages';
-import { rollbackFailedSendConversation } from '../utils/optimisticMessages';
+import { rollbackFailedSendConversation, reconcileInterruptedRun } from '../utils/optimisticMessages';
 import { normalizeAdvancedSettingsForMode } from '../utils/advancedSettingsAvailability';
 import { resolveSendMode } from '../utils/modePrediction';
 import { resolveEffectiveZdr } from '../utils/trustState';
@@ -35,9 +35,25 @@ export function useStreamingConversation({
   availableModels,
   loadConversations,
   settings,
+  onRetainDraft,
   zdrAvailable = true,
 }) {
   const [isLoading, setIsLoading] = useState(false);
+  const activeRequest = useRef(null);
+  const latestRequest = useRef(null);
+  const [streamStatus, setStreamStatus] = useState(null);
+
+  useEffect(() => () => {
+    activeRequest.current?.controller.abort();
+    latestRequest.current = null;
+  }, []);
+
+  const stopMessage = () => {
+    const request = activeRequest.current;
+    if (!request) return;
+    setStreamStatus({ conversationId: request.conversationId, text: 'Stop requested' });
+    request.controller.abort();
+  };
 
   // Warn before an accidental tab close/reload mid-stream (P3-T8 item 5) —
   // standard browser confirm dialog, only attached while a turn is in
@@ -58,21 +74,34 @@ export function useStreamingConversation({
   const sendMessage = async (content, attachmentIds = [], attachmentMetadata = [], editIndex = -1, options = {}) => {
     const { mode: explicitMode } = options;
     const targetConversationId = conversationId;
-    if (!targetConversationId) return;
+    if (!targetConversationId || activeRequest.current) return;
+    const request = {
+      id: crypto.randomUUID(), controller: new AbortController(),
+      conversationId: targetConversationId, runId: null,
+    };
+    activeRequest.current = request;
+    latestRequest.current = request;
+    let sawEvent = false;
+    let terminal = false;
+    let streamError = null;
+    // React may apply queued updates after the transport's finally has run.
+    const isCurrent = () => latestRequest.current === request;
 
     const previousMessages = editIndex >= 0
       ? [...(currentConversation?.messages || [])]
       : null;
     const updateTargetConversation = (updater) => {
       setCurrentConversation((prev) => (
-        applyStreamUpdateToActiveConversation(prev, targetConversationId, updater)
+        isCurrent() ? applyStreamUpdateToActiveConversation(prev, targetConversationId, updater) : prev
       ));
     };
 
     setIsLoading(true);
+    setStreamStatus(null);
     try {
       const userMessage = {
         role: 'user',
+        client_request_id: request.id,
         content,
         attachments: attachmentMetadata,
       };
@@ -106,6 +135,7 @@ export function useStreamingConversation({
       if (predictedMode === 'council') {
         const assistantMessage = {
           role: 'assistant',
+          client_request_id: request.id,
           stage1: null,
           stage2: null,
           stage3: null,
@@ -117,6 +147,7 @@ export function useStreamingConversation({
             stage3_status: 'pending',
           },
         };
+        request.draft = assistantMessage;
 
         updateTargetConversation((prev) => ({
           ...prev,
@@ -125,11 +156,13 @@ export function useStreamingConversation({
       } else {
         const assistantMessage = {
           role: 'assistant',
+          client_request_id: request.id,
           content: '',
           loading: {
             chat: true,
           },
         };
+        request.draft = assistantMessage;
 
         updateTargetConversation((prev) => ({
           ...prev,
@@ -144,10 +177,14 @@ export function useStreamingConversation({
         'chat_start', 'chat_response',
         'reasoning_delta', 'content_delta',
         'title_complete', 'budget_warning',
-        'complete', 'error',
+        'complete', 'error', 'turn_state',
       ]);
 
       await api.sendMessageStream(targetConversationId, content, (eventType, event) => {
+        if (!isCurrent() || request.controller.signal.aborted) return;
+        sawEvent = true;
+        if (eventType === 'turn_state') request.runId = event.data.run_id;
+        if (eventType === 'complete' || eventType === 'error') terminal = true;
         if (!knownEventTypes.has(eventType)) {
           console.warn('Unknown event type:', eventType);
           return;
@@ -158,6 +195,10 @@ export function useStreamingConversation({
           return;
         }
 
+        request.draft = streamReducer(
+          { conversation: { messages: [request.draft] }, isLoading: true, budgetWarning: null },
+          event, { availableModels },
+        ).conversation.messages[0];
         updateTargetConversation((prev) => {
           const result = streamReducer(
             { conversation: prev, isLoading: true, budgetWarning: null },
@@ -172,62 +213,65 @@ export function useStreamingConversation({
 
         if (eventType === 'complete') {
           loadConversations();
-          setIsLoading(false);
         } else if (eventType === 'error') {
-          console.error('Stream error:', event.message);
-          toast({
-            variant: 'destructive',
-            title: 'Response failed',
-            description: formatStreamErrorMessage(event.message),
-          });
-          api.getConversation(targetConversationId)
-            .then((persisted) => {
-              setCurrentConversation((prev) => (
-                prev?.id === targetConversationId ? persisted : prev
-              ));
-              loadConversations();
-            })
-            .catch(() => {
-              setCurrentConversation((prev) => (
-                rollbackFailedSendConversation(prev, {
-                  conversationId: targetConversationId,
-                  editIndex,
-                  previousMessages,
-                })
-              ));
-            })
-            .finally(() => {
-              setIsLoading(false);
-            });
+          streamError = new Error(formatStreamErrorMessage(event.message));
         }
       }, explicitMode || 'auto', attachmentIds, {
         enabled: settings.webSearchEnabled,
+        evidenceSourceIds: options.evidenceSourceIds,
+        expectedCouncilModels: options.expectedCouncilModels,
+        expectedChairmanModel: options.expectedChairmanModel,
         depth: settings.webSearchDepth,
         customInstructions: requestSettings.customInstructions,
         zdrEnabled: requestSettings.zdrEnabled,
         executionMode: requestSettings.executionMode,
         ragPreset: requestSettings.ragPreset,
         modelTier: requestSettings.modelTier,
-      }, editIndex);
+      }, editIndex, request.controller.signal);
+      if (streamError) throw streamError;
+      if (!terminal) throw new Error('Connection lost before the final turn state');
     } catch (error) {
-      console.error('Failed to send message:', error);
-      const isBudgetCapError = error?.status === 409;
-      if (!isBudgetCapError) {
-        alert(`Failed to send message: ${error.message || 'Unknown error'}`);
+      if (!isCurrent()) return;
+      const stopped = request.controller.signal.aborted || error?.name === 'AbortError';
+      const isPreflightRejection = !sawEvent && [400, 403, 409, 412].includes(error?.status);
+      if (stopped || sawEvent || error?.status == null) {
+        const reason = stopped ? 'Stop requested' : (streamError ? 'Response failed' : 'Connection lost');
+        setStreamStatus({ conversationId: targetConversationId, text: reason });
+        const scope = { conversationId: targetConversationId, requestId: request.id, runId: request.runId, reason };
+        updateTargetConversation((prev) => reconcileInterruptedRun(prev, null, scope));
+        let persisted = null;
+        try {
+          persisted = await api.getConversation(targetConversationId, { signal: AbortSignal.timeout(5000) });
+          updateTargetConversation((prev) => reconcileInterruptedRun(prev, persisted, scope));
+          if (isCurrent()) loadConversations();
+        } catch {
+          // Keep the visible draft. A failed read cannot prove it was saved.
+        }
+        if (isCurrent() && request.draft) {
+          const draft = reconcileInterruptedRun(
+            { id: targetConversationId, messages: [request.draft] }, persisted, scope,
+          ).messages[0];
+          if (draft.unconfirmed) onRetainDraft?.({ id: request.id, conversationId: targetConversationId, prompt: content, message: draft });
+        }
+        if (!stopped) {
+          toast({ variant: 'destructive', title: reason, description: error.message });
+        }
+      } else {
+        if (!isPreflightRejection) {
+          toast({ variant: 'destructive', title: 'Response failed', description: error.message || 'Unknown error' });
+        }
+        updateTargetConversation((prev) => rollbackFailedSendConversation(prev, {
+          conversationId: targetConversationId, editIndex, previousMessages,
+        }));
       }
-      setCurrentConversation((prev) => {
-        return rollbackFailedSendConversation(prev, {
-          conversationId: targetConversationId,
-          editIndex,
-          previousMessages,
-        });
-      });
-      setIsLoading(false);
-      if (isBudgetCapError) {
-        throw error;
+      if (isPreflightRejection) throw error;
+    } finally {
+      if (isCurrent()) {
+        activeRequest.current = null;
+        setIsLoading(false);
       }
     }
   };
 
-  return { sendMessage, isLoading };
+  return { sendMessage, stopMessage, isLoading, streamStatus };
 }

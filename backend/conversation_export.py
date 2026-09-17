@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import json
 from typing import Any, Dict
 
 
@@ -96,6 +97,8 @@ def build_conversation_markdown(conversation: Dict[str, Any]) -> str:
 
     markdown += "---\n\n"
 
+    manifests = []
+    answer_number = 0
     for message in messages:
         role = message.get("role")
         if role not in {"user", "assistant"}:
@@ -105,6 +108,7 @@ def build_conversation_markdown(conversation: Dict[str, Any]) -> str:
             markdown += f"## User\n\n{message.get('content', '')}\n\n---\n\n"
             continue
 
+        answer_number += 1
         has_stages = message.get("stage1") or message.get("stage2") or message.get("stage3")
         if has_stages:
             markdown += "## AI Advisory Board\n\n"
@@ -149,7 +153,7 @@ def build_conversation_markdown(conversation: Dict[str, Any]) -> str:
                 markdown += "### Stage 3: Final Answer\n"
                 markdown += f"**Chairman**: {_short_model_name(stage3.get('model'), fallback='Chairman')}"
                 if stage3.get("confidence"):
-                    markdown += f" | **Confidence**: {stage3['confidence']}"
+                    markdown += f" | **Model self-assessment (not verified)**: {stage3['confidence']}"
                 markdown += f"\n\n{stage3.get('response', '')}\n\n"
         else:
             markdown += f"## Assistant\n\n{message.get('content', '')}\n\n"
@@ -158,10 +162,25 @@ def build_conversation_markdown(conversation: Dict[str, Any]) -> str:
         if running_cost is not None and running_cost > 0:
             markdown += f"*Turn Cost: ${running_cost:.4f}*\n\n"
 
+        turn_metadata = message.get("metadata") or {}
+        if turn_metadata.get("schema_version") == 1:
+            markdown += f"[Evidence record for answer {answer_number}](#evidence-record-{answer_number})\n\n"
+            manifest = {key: turn_metadata.get(key, "unknown") for key in (
+                "run_id", "generation_state", "persistence_state", "memory_state",
+                "evidence_snapshot", "citation_checks",
+            )}
+            # JSON escapes retain excerpt bytes; a variable fence cannot be closed by source text.
+            rendered = json.dumps(manifest, ensure_ascii=False, indent=2)
+            fence = "`" * max(3, 1 + max((len(match.group()) for match in re.finditer(r"`+", rendered)), default=0))
+            manifests.append(f"### Evidence record {answer_number}\n\n{fence}json\n{rendered}\n{fence}\n\n")
+
         markdown += "---\n\n"
 
     if total_cost is not None and total_cost > 0:
         markdown += f"**Total Session Cost: ${total_cost:.4f}**\n\n"
+
+    if manifests:
+        markdown += "## Turn state and evidence manifest\n\n" + "".join(manifests)
 
     markdown += "*Note: System messages excluded from export.*\n"
     return markdown
