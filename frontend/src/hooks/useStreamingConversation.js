@@ -232,7 +232,7 @@ export function useStreamingConversation({
     } catch (error) {
       if (!isCurrent()) return;
       const stopped = request.controller.signal.aborted || error?.name === 'AbortError';
-      const isPreflightRejection = error?.status === 409 || error?.status === 412;
+      const isPreflightRejection = !sawEvent && [400, 403, 409, 412].includes(error?.status);
       if (stopped || sawEvent || error?.status == null) {
         const reason = stopped ? 'Stop requested' : (streamError ? 'Response failed' : 'Connection lost');
         setStreamStatus({ conversationId: targetConversationId, text: reason });

@@ -458,7 +458,7 @@ export default function ChatInterface({
       await onSendMessage(submittedInput, attachmentIds, submittedAttachments, -1, sendOptions);
     } catch (error) {
       if (conversationIdRef.current !== estimateConversationId) return;
-      if (error?.status === 409 || error?.status === 412) {
+      if ([400, 403, 409, 412].includes(error?.status)) {
         setInput(submittedInput);
         setAttachments(submittedAttachments);
         setEvidenceSourceIds(evidenceSourceIds);
@@ -579,6 +579,7 @@ export default function ChatInterface({
     // confirm dialog through it is disproportionate for this rare edge case. Add a
     // shared confirm gate here if edit-of-first-message warnings are later required.
 
+    const submittedConversationId = conversation?.id;
     const submittedContent = editingContent;
     const submittedIndex = editingIndex;
     const submittedAttachmentIds = editingAttachmentIds;
@@ -587,17 +588,19 @@ export default function ChatInterface({
     setEditingContent('');
     setEditingAttachmentIds([]);
     setEditingAttachmentMetadata([]);
+    setSendError(null);
 
     try {
-      await onSendMessage(submittedContent, submittedAttachmentIds, submittedAttachmentMetadata, submittedIndex);
+      await onSendMessage(submittedContent, submittedAttachmentIds, submittedAttachmentMetadata, submittedIndex, { evidenceSourceIds });
     } catch (error) {
-      if (error?.status === 409) {
+      if (conversationIdRef.current !== submittedConversationId) return;
+      if ([400, 403, 409, 412].includes(error?.status)) {
         setEditingIndex(submittedIndex);
         setEditingContent(submittedContent);
         setEditingAttachmentIds(submittedAttachmentIds);
         setEditingAttachmentMetadata(submittedAttachmentMetadata);
         setSendError(error.message || budgetCapBlock.detail);
-        setShowBudgetSelector(true);
+        if (error.status === 409) setShowBudgetSelector(true);
       }
     }
   };

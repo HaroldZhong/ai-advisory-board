@@ -168,6 +168,48 @@ async def test_followup_and_council_reuse_sources_persist_state_and_reject_forei
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['chat', 'council'])
+@pytest.mark.parametrize('selection', ['inherit', 'none', 'subset'])
+async def test_regeneration_applies_selection_after_prefix_validation(materials, monkeypatch, mode, selection):
+    from backend import main
+    from fastapi import HTTPException
+    from unittest.mock import AsyncMock
+    from test_pipeline_unification import _setup_chat_fakes, _setup_council_fakes
+
+    first, second, later = [materials(text) for text in ('Allowed A', 'Allowed B', 'Edited-away source')]
+    storage.create_conversation('edit-scope', {'default_mode': mode})
+    storage.add_user_message('edit-scope', 'Read these', attachment_ids=[first, second])
+    storage.add_chat_message('edit-scope', 'Earlier answer')
+    storage.add_user_message('edit-scope', 'Question to revise')
+    storage.add_chat_message('edit-scope', 'Old answer')
+    storage.add_user_message('edit-scope', 'Later upload', attachment_ids=[later])
+    (_setup_chat_fakes if mode == 'chat' else _setup_council_fakes)(monkeypatch, main)
+    main.rag_system.purge_truncated_memories = AsyncMock()
+    main.rag_system.purge_document_memories = AsyncMock()
+    name = 'chat_with_chairman' if mode == 'chat' else 'stage3_synthesize_final'
+    generate = AsyncMock(wraps=getattr(main, name))
+    monkeypatch.setattr(main, name, generate)
+
+    before = storage.get_conversation('edit-scope')['messages']
+    request = main.SendMessageRequest(content='Revised question', mode=mode, edit_index=2, evidence_source_ids=[later])
+    with pytest.raises(HTTPException) as exc:
+        await main.send_message('edit-scope', request)
+    assert exc.value.status_code == 403
+    assert storage.get_conversation('edit-scope')['messages'] == before
+    generate.assert_not_awaited()
+
+    selected = {'inherit': None, 'none': [], 'subset': [second]}[selection]
+    expected = [first, second] if selected is None else selected
+    result = await main.send_message('edit-scope', request.model_copy(update={'evidence_source_ids': selected}))
+    pack = generate.await_args.kwargs['evidence_pack']
+    assert [s['source_id'] for s in pack.material_snapshot['sources']] == expected
+    assert [s['source_id'] for s in result['metadata']['evidence_snapshot']['sources']] == expected
+    saved = storage.get_conversation('edit-scope')['messages']
+    assert len(saved) == 4
+    assert saved[-1]['metadata']['evidence_snapshot'] == result['metadata']['evidence_snapshot']
+
+
+@pytest.mark.asyncio
 async def test_memory_failure_does_not_remove_saved_evidence_answer(materials, monkeypatch):
     from unittest.mock import AsyncMock
     from backend import main
