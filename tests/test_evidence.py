@@ -385,6 +385,69 @@ async def test_new_upload_ids_cannot_adopt_foreign_source_but_reupload_can(mater
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['success', 'partial'])
+async def test_each_upload_owns_its_source_before_either_conversation_sends(materials, monkeypatch, status):
+    import io
+    from fastapi import UploadFile
+    from unittest.mock import AsyncMock
+    from backend import main
+    from backend.file_processing import ExtractionResult
+    from test_pipeline_unification import _setup_chat_fakes
+
+    text = 'Repeated upload content'
+    extraction = ExtractionResult(status=status, text=text, warning='Partial pages' if status == 'partial' else None,
+                                  stats={'char_count': len(text)})
+    process = AsyncMock(return_value=extraction)
+    monkeypatch.setattr(main, 'process_file', process)
+    uploads = []
+    for filename in ['first.txt', 'second.txt']:
+        uploads.append(await main.create_attachment_endpoint(UploadFile(file=io.BytesIO(text.encode()), filename=filename)))
+    first, second = [u['attachment_id'] for u in uploads]
+    assert first != second
+    assert [u['cached'] for u in uploads] == [False, True]
+    process.assert_awaited_once()
+    for source_id, filename in [(first, 'first.txt'), (second, 'second.txt')]:
+        item = attachments.get_attachment(source_id)
+        assert item.conversation_ids == []
+        assert (item.filename, item.status, item.warning, item.stats.char_count) == (filename, status, extraction.warning, len(text))
+        assert attachments.get_attachment_text(source_id) == text
+
+    _setup_chat_fakes(monkeypatch, main)
+    main.rag_system.index_document = AsyncMock()
+    for cid, source_id in [('a', first), ('b', second)]:
+        storage.create_conversation(cid, {'default_mode': 'chat'})
+        result = await main.send_message(cid, main.SendMessageRequest(content='Read', mode='chat', attachment_ids=[source_id]))
+        assert result['metadata']['evidence_snapshot']['sources'][0]['source_id'] == source_id
+        assert attachments.get_attachment(source_id).conversation_ids == [cid]
+
+    # Deleting one identity must not invalidate the other upload's cached extraction.
+    attachments.delete_attachment(first, conversation_id='a')
+    assert attachments.get_cached_attachment(attachments.compute_sha256(text.encode())) == second
+    third = await main.create_attachment_endpoint(UploadFile(file=io.BytesIO(text.encode()), filename='third.txt'))
+    assert third['attachment_id'] not in (first, second) and third['cached'] is True
+    process.assert_awaited_once()
+    assert attachments.get_attachment(second).conversation_ids == ['b']
+
+
+@pytest.mark.asyncio
+async def test_upload_reextracts_when_cached_text_is_missing(materials, monkeypatch):
+    import io
+    from fastapi import UploadFile
+    from unittest.mock import AsyncMock
+    from backend import main
+    from backend.file_processing import ExtractionResult
+
+    old = materials('Repeated bytes')
+    monkeypatch.setattr(main, 'get_attachment_text', lambda source_id: None)
+    process = AsyncMock(return_value=ExtractionResult(text='Re-extracted'))
+    monkeypatch.setattr(main, 'process_file', process)
+    uploaded = await main.create_attachment_endpoint(UploadFile(file=io.BytesIO(b'Repeated bytes'), filename='new.txt'))
+    assert uploaded['attachment_id'] != old and uploaded['cached'] is False
+    assert attachments.get_attachment_text(uploaded['attachment_id']) == 'Re-extracted'
+    process.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_rewrite_projects_old_aliases_before_context_truncation(materials, monkeypatch):
     from unittest.mock import AsyncMock
     old = materials('Old first source')

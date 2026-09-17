@@ -1298,9 +1298,9 @@ async def create_attachment_endpoint(
     
     # Create attachment record (stores raw file)
     attachment = create_attachment(content, file.filename, mime_type)
-    if attachment.conversation_ids:
-        # Re-upload proves possession of the bytes. Reuse extraction, not another
-        # conversation's source identity; old shared sources remain untouched.
+    if attachment.status in ("success", "partial"):
+        # Every upload owns its identity, including uploads not yet sent.
+        # Reuse the extraction only; existing sources remain untouched.
         cached = attachment
         attachment = create_attachment(content, file.filename, mime_type, reuse_cache=False)
         cached_text = get_attachment_text(cached.attachment_id)

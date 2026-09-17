@@ -231,7 +231,7 @@ def _remove_from_cache_index(attachment: Attachment):
     changed = False
 
     for sha256, attachment_id in list(index.items()):
-        if sha256 == attachment.sha256 or attachment_id == attachment.attachment_id:
+        if attachment_id == attachment.attachment_id:
             del index[sha256]
             changed = True
 
