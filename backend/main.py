@@ -951,9 +951,11 @@ async def estimate_turn_endpoint(conversation_id: str, request: TurnEstimateRequ
             run_plan.chairman_model, thinking_effort
         )
 
-    # Web search adds a Stage 0 Perplexity grounding call before either path (Codex #110).
+    # Price Stage 0 using the same provider resolver as the turn pipeline.
     if request.web_search_enabled:
-        predicted += estimate_web_search_cost(request.web_search_depth)
+        predicted += estimate_web_search_cost(
+            request.web_search_depth, zdr_enabled=metadata.get("zdr_enabled") is True
+        )
 
     predicted = round(predicted, 6)
     # "Large" = the D3 contract's two warn cases (§5.1): a large predicted spend, OR a
