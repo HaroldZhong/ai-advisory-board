@@ -24,7 +24,7 @@ A desktop AI assistant with a **multi-LLM deliberative council**. Models indepen
 
 ### Web Search
 
-- **Perplexity Integration**: Native web search via OpenRouter (Sonar models)
+- **Web grounding**: Parallel Search MCP for keyless Fast search, or Perplexity via OpenRouter (Sonar models)
 - **Fast/Deep Modes**: Quick web lookups or thorough research-grade searches
 - **Inline Toggle**: One-click enable from the chat input bar
 
@@ -133,7 +133,7 @@ uv run --group packaging python build_exe.py
 ```
 User Query
     ↓
-[Optional] Web Search (Perplexity Sonar)
+[Optional] Web Search (Parallel Fast / Perplexity)
     ↓
 Query Rewriting (resolve coreferences)
     ↓
@@ -202,10 +202,35 @@ On an OpenAI-compatible provider, a free-text custom model id is also accepted; 
 
 ### In-App Settings
 
+#### Web search providers
+
+The existing Web Search toggle controls whether the question is sent for web
+grounding in Chat and Council. It stays off by default. Set
+`AAB_WEB_SEARCH_PROVIDER` in the backend environment or the app data directory's
+`.env` file, then restart the backend:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Keep Perplexity when an OpenRouter key is configured. Otherwise use Parallel for Fast search, including with local OpenAI-compatible models. Deep search and ZDR retain the Perplexity path. |
+| `parallel` | Use [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) for Fast search, without a Parallel account or API key. |
+| `perplexity` | Always use the existing Sonar/Sonar Pro path; requires OpenRouter credentials. |
+| `disabled` | Disable web grounding even when the toggle is enabled. |
+
+Parallel returns web excerpts and source URLs for the answering model. Anonymous
+search uses Fast mode and has service rate limits; Deep search is still a
+Perplexity feature. Parallel is unavailable with ZDR enabled, and never receives
+ZDR queries. Explicit provider failures do not switch services: the turn continues
+without web context and the backend logs the failure. Model inference still uses
+the configured model provider. This adds no page-fetch tool.
+
+Parallel requests require HTTPS access to `search.parallel.ai`; the existing
+backend proxy environment variables apply. API keys for the model provider are
+never sent to Parallel.
+
 | Setting | Description |
 |---------|-------------|
 | **Session Budget** | Spending limit per conversation ($1/$2/$5/unlimited) |
-| **Web Search** | Enable Perplexity web search (fast/deep) |
+| **Web Search** | Enable web grounding (Parallel Fast or Perplexity fast/deep) |
 | **Custom Instructions** | Persistent persona/system prompt |
 | **RAG Preset** | Memory retrieval depth (auto/low/medium/high/max) |
 | **Zero Data Retention** | ZDR mode for privacy-sensitive queries |
@@ -224,7 +249,8 @@ backend/
 ├── rag.py                   # Reasoning-based memory system
 ├── storage.py               # JSON-based conversation storage
 ├── config.py                # Models, RAG, and budget configuration
-├── web_search.py            # Perplexity web search integration
+├── web_search.py            # Web grounding provider selection
+├── parallel_search.py       # Anonymous Parallel Search MCP client
 ├── file_processing.py       # PDF/DOCX/PPTX/XLSX/image extraction
 ├── attachment_storage.py    # Attachment lifecycle management
 ├── analytics.py             # Usage and cost analytics

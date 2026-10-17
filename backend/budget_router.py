@@ -204,11 +204,19 @@ def estimate_reasoning_cost(model_id: Optional[str], thinking_effort: str = "med
     return _model_call_cost(model_id, 0, reasoning_out)
 
 
-def estimate_web_search_cost(depth: str = "fast") -> float:
-    """Rough cost of the Stage 0 web-search grounding call (Perplexity), when web
-    search is enabled -- priced on the same SEARCH_MODELS the pipeline uses (Codex
-    #110). Deep (sonar-pro) costs materially more than fast (sonar)."""
-    from .web_search import SEARCH_MODELS
+def estimate_web_search_cost(depth: str = "fast", zdr_enabled: bool = False) -> float:
+    """Rough Stage 0 cost for the resolved provider; anonymous Parallel is free.
+
+    Perplexity uses the same SEARCH_MODELS as the pipeline. Deep (sonar-pro)
+    costs materially more than fast (sonar).
+    """
+    from .web_search import SEARCH_MODELS, resolve_search_provider
+
+    try:
+        if resolve_search_provider(depth, zdr_enabled) != "perplexity":
+            return 0.0
+    except ValueError:
+        return 0.0  # Invalid configuration also prevents a grounding request.
 
     model = SEARCH_MODELS.get(depth, SEARCH_MODELS["fast"])
     tokens = _WEB_SEARCH_TOKENS.get(depth, _WEB_SEARCH_TOKENS["fast"])

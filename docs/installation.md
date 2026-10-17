@@ -112,7 +112,9 @@ The clean-VM acceptance test should use a Windows environment with no Python ins
 
 ## Network access, proxies, and restricted regions
 
-The app requires HTTPS access to `openrouter.ai`. Nothing is downloaded from
+The app requires HTTPS access to `openrouter.ai` (or the configured model provider).
+Parallel web grounding additionally requires `search.parallel.ai`; see the README's
+Web search providers section for selection and privacy behavior. Nothing is downloaded from
 Hugging Face or any other model host — if the app cannot work, it is the
 OpenRouter connection (or your API key), not a model download.
 

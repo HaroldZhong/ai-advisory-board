@@ -289,6 +289,7 @@ async def _run_turn(
                     request.content,
                     depth=request.web_search_depth,
                     zdr_enabled=zdr_enabled,
+                    conversation_id=conversation_id,
                 )
                 web_context = search_result.get("context", "")
                 if search_result.get("usage"):
@@ -683,6 +684,7 @@ async def _run_turn(
                     request.content,
                     depth=request.web_search_depth,
                     zdr_enabled=zdr_enabled,
+                    conversation_id=conversation_id,
                 )
                 chat_web_context = search_result.get("context", "")
                 if search_result.get("usage"):
